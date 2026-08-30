@@ -1,7 +1,7 @@
 # WoWPS - World of Warcraft Console-Port
 
 <p align="center">
-  An OpenOrbis World of Warcraft client for PS4/PS5.
+  An OpenOrbis World of Warcraft client for PS4.
 </p>
 
 
