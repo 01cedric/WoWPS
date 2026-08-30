@@ -11,7 +11,7 @@
 
 
 > [!IMPORTANT]
-> WoWPS is an research project. It contains no official assets, data, or proprietary code. You must supply your own
+> WoWPS is a research project. It contains no official assets, data, or proprietary code. You must supply your own
 > legally obtained game data and comply with the laws in your jurisdiction.
 > WoWPS is not affiliated with or endorsed by Blizzard Entertainment.
 
