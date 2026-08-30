@@ -3,9 +3,8 @@
 <p align="center">
   An OpenOrbis World of Warcraft client for PS4/PS5.
 </p>
-
-WoWPS currently only support **WotLK 3.3.5a BUILD 12340** 
-It runs its own custom LAN-Functionality 
+-
+WoWPS currently only support **WotLK 3.3.5a BUILD 12340** - It runs its own custom LAN-Functionality 
 
 > [!IMPORTANT]
 > WoWPS is an research project. It contains no official assets, data, or proprietary code. You must supply your own
