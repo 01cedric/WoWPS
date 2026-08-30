@@ -27,9 +27,3 @@ Install your legally obtained official Data for the build **WotLK 3.3.5a BUILD 1
 ### 3. Run
 
 Run the game on your PS4 and have fun.
-
-
-## License and references
-
-WoWPS source code is available for everyone and has no License. World of
-Warcraft and its assets are property of Blizzard Entertainment, Inc.
