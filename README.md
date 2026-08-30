@@ -26,7 +26,7 @@ Install your legally obtained official Data from the Data folder onto your PS4 i
 
 ### 3. Run
 
-Run the game on your PS4 or PS5 and have fun.
+Run the game on your PS4 and have fun.
 
 
 ## License and references
