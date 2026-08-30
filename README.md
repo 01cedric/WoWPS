@@ -19,7 +19,7 @@
 
 ### 1. Install dependencies
 
-Generate the .pkg using the official OPENOrbis Toolchain or download the latest compiled release from the release section.
+Generate the .pkg using the official OpenOrbis Toolchain or download the latest compiled release from the release section.
 
 ### 2. Install your official game data
 Install your legally obtained official Data from the Data folder onto your PS4 inside the folders **data/wow_ps/Data**
