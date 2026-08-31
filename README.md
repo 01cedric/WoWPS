@@ -1,12 +1,5 @@
 # WoWPS - World of Warcraft Console-Port
-
-<p align="center">
-  An OpenOrbis World of Warcraft client for PS4.
-</p>
-
-
-
- WoWPS currently only support **WotLK 3.3.5a BUILD 12340** - It runs its own custom LAN-Functionality 
+ WoWPS is a Client to run World of Warcraft on your PS4 based on the OpenOrbis Toolchain. It currently only supports **WotLK 3.3.5a BUILD 12340** - It runs its own custom LAN-Functionality 
 
 
 
