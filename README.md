@@ -421,6 +421,7 @@ available console feedback, not a full hardware certification.
 ## Mentions and credits
 
 WoWPS would not exist without other people's work.
+
 [**WoWee**](https://github.com/Kelsidavis/WoWee) — Kelsi Davis and contributors.
 The major technical foundation of this project: the C++ client, the custom
 Vulkan renderer, the MPQ/DBC/M2/WMO pipeline, the FrameXML host and the network
