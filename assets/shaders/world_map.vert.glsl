@@ -1,0 +1,19 @@
+#version 450
+
+layout(push_constant) uniform Push {
+    vec2 gridOffset;
+    float gridCols;
+    float gridRows;
+} push;
+
+layout(location = 0) in vec2 aPos;
+layout(location = 1) in vec2 aUV;
+
+layout(location = 0) out vec2 TexCoord;
+
+void main() {
+    TexCoord = aUV;
+    vec2 pos = (aPos + push.gridOffset) / vec2(push.gridCols, push.gridRows);
+    pos = pos * 2.0 - 1.0;
+    gl_Position = vec4(pos, 0.0, 1.0);
+}

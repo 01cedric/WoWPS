@@ -1,0 +1,218 @@
+#include "core/config_paths.hpp"
+
+#include "core/logger.hpp"
+
+#include <cstdlib>
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <system_error>
+
+#if defined(_WIN32)
+#include <windows.h>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
+#else
+#include <unistd.h>
+#endif
+#ifdef WOWEE_PS4
+#include "platform/ps4/ps4_platform.hpp"
+#endif
+
+namespace wowee::core {
+
+namespace fs = std::filesystem;
+
+bool enterResourceRoot() {
+#ifdef WOWEE_PS4
+    // A PS4 homebrew process can open /app0 files while chdir("/app0")
+    // returns EPERM. B1 mistakenly made that unsupported operation a fatal
+    // prerequisite and exited before constructing the renderer. Check actual
+    // package reads instead; all callers must use absolute asset paths.
+    const char* configured = std::getenv("WOWEE_RESOURCE_ROOT");
+    if (configured && *configured && configured[0] != '/') {
+        LOG_ERROR("PS4 package resource root must be absolute: ", configured);
+        return false;
+    }
+    static const char* const required[] = {
+        "Data/expansions/wotlk/expansion.json",
+        "Data/expansions/wotlk/opcodes.json",
+        "Data/expansions/wotlk/update_fields.json",
+        "Data/expansions/wotlk/dbc_layouts.json",
+        "assets/shaders/m2.vert.spv", "assets/shaders/m2.frag.spv",
+        "assets/shaders/terrain.vert.spv", "assets/shaders/terrain.frag.spv",
+        "assets/shaders/character.vert.spv", "assets/shaders/character.frag.spv",
+        "assets/shaders/wmo.vert.spv", "assets/shaders/wmo.frag.spv",
+    };
+    bool ready = true;
+    for (const char* relative : required) {
+        const std::string path = resolveRelativeAssetPath(relative);
+        std::FILE* file = std::fopen(path.c_str(), "rb");
+        if (!file) {
+            const int error = errno;
+            LOG_ERROR("Required package resource unreadable: ", path,
+                      " errno=", error, " (", std::strerror(error), ")");
+            ready = false;
+            continue;
+        }
+        unsigned char header[20]{};
+        const size_t count = std::fread(header, 1, sizeof(header), file);
+        const bool readError = std::ferror(file) != 0;
+        std::fclose(file);
+        const bool shader = path.size() >= 4 && path.compare(path.size() - 4, 4, ".spv") == 0;
+        const bool valid = !readError && count > 0 && (!shader ||
+            (count == sizeof(header) && header[0] == 0x03 && header[1] == 0x02 &&
+             header[2] == 0x23 && header[3] == 0x07));
+        if (!valid) {
+            LOG_ERROR("Required package resource is empty, unreadable or has an invalid SPIR-V header: ", path);
+            ready = false;
+        }
+    }
+    if (ready) LOG_INFO("PS4 package resources readable at ",
+                        configured && *configured ? configured : platform::ps4::appRoot().c_str(),
+                        " (absolute file access; no working-directory change)");
+    return ready;
+#else
+    const char* root = std::getenv("WOWEE_RESOURCE_ROOT");
+    if (!root || !*root) return true;
+
+    std::error_code ec;
+    const fs::path current = fs::current_path(ec);
+    if (!ec && current == fs::path(root)) return true;
+
+    fs::current_path(fs::path(root), ec);
+    if (ec) {
+        LOG_ERROR("Could not enter resource root ", root, ": ", ec.message());
+        return false;
+    }
+    LOG_INFO("Working directory set to the resource root ", root,
+             " (was ", ec ? "unknown" : current.string(), ")");
+    return true;
+#endif
+}
+
+std::string resolveRelativeAssetPath(const std::string& path) {
+#ifdef WOWEE_PS4
+    if (path.empty() || path.front() == '/') return path;
+    const char* configured = std::getenv("WOWEE_RESOURCE_ROOT");
+    const std::string root = configured && configured[0] == '/'
+        ? configured : platform::ps4::appRoot();
+    return root + (root.back() == '/' ? "" : "/") + path;
+#else
+    return path;
+#endif
+}
+
+namespace {
+
+// Per-user config location: %APPDATA%\wowee on Windows, ~/.wowps elsewhere.
+// This is the default (non-portable) home and the migration source.
+std::string perUserConfigDir() {
+#if defined(_WIN32)
+    const char* appdata = std::getenv("APPDATA");
+    return appdata ? std::string(appdata) + "\\wowee" : ".";
+#else
+    const char* home = std::getenv("HOME");
+    return home ? std::string(home) + "/.wowps" : ".";
+#endif
+}
+
+}  // namespace
+
+std::string getExecutableDir() {
+#if defined(WOWEE_PS4)
+    return platform::ps4::appRoot();
+#elif defined(_WIN32)
+    std::wstring buf(MAX_PATH, L'\0');
+    DWORD len = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
+    // Grow if the path was truncated (GetModuleFileNameW does not report the
+    // required size; a full buffer signals truncation).
+    while (len == buf.size()) {
+        buf.resize(buf.size() * 2);
+        len = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
+    }
+    if (len == 0) return {};
+    return fs::path(buf.substr(0, len)).parent_path().string();
+#elif defined(__APPLE__)
+    uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);
+    std::string buf(size, '\0');
+    if (_NSGetExecutablePath(buf.data(), &size) != 0) return {};
+    // buf includes a trailing NUL from the API; strip to the reported path.
+    if (auto nul = buf.find('\0'); nul != std::string::npos) buf.resize(nul);
+    return fs::path(buf).parent_path().string();
+#else
+    char buf[4096];
+    ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf));
+    if (len <= 0) return {};
+    return fs::path(std::string(buf, static_cast<size_t>(len))).parent_path().string();
+#endif
+}
+
+std::string getConfigRoot() {
+    std::error_code ec;
+    // An explicit root wins over everything.
+    //
+    // The tools write here too - the missing-API list and the Lua error list
+    // are both rewritten on exit - so a headless run beside a real session
+    // overwrote the two files a bug report is read from. A harness needs its
+    // own corner rather than the player's.
+    if (const char* root = std::getenv("WOWEE_CONFIG_ROOT"); root && *root) {
+        fs::create_directories(root, ec);
+        return root;
+    }
+    const std::string exeDir = getExecutableDir();
+    if (!exeDir.empty()) {
+        const fs::path portableMarker = fs::path(exeDir) / "portable.txt";
+        const fs::path portableDir = fs::path(exeDir) / "config";
+        // Either the opt-in marker file, or a config folder created by a prior
+        // portable run, keeps config folder-local.
+        if (fs::exists(portableMarker, ec) || fs::is_directory(portableDir, ec)) {
+            return portableDir.string();
+        }
+    }
+    return perUserConfigDir();
+}
+
+void migratePortableConfigIfNeeded() {
+#ifdef WOWEE_PS4
+    // The package is read-only and PS4 saves already have a writable config
+    // root. Never attempt desktop portable-config migration into /app0.
+    return;
+#else
+    std::error_code ec;
+    const std::string exeDir = getExecutableDir();
+    if (exeDir.empty()) return;
+
+    const fs::path marker = fs::path(exeDir) / "portable.txt";
+    const fs::path portableDir = fs::path(exeDir) / "config";
+
+    // Migration only applies the first time the user opts in via the marker.
+    // Once the portable config folder exists it is the established store, so
+    // there is nothing to seed and later launches copy nothing.
+    if (!fs::exists(marker, ec)) return;
+    if (fs::exists(portableDir, ec)) return;
+
+    const fs::path userDir = perUserConfigDir();
+    if (userDir.empty() || !fs::is_directory(userDir, ec)) {
+        // Nothing to migrate; create the folder so portable mode is established
+        // and this check does not repeat every launch.
+        fs::create_directories(portableDir, ec);
+        return;
+    }
+
+    fs::create_directories(portableDir, ec);
+    fs::copy(userDir, portableDir,
+             fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
+    if (ec) {
+        LOG_WARNING("Portable config migration from ", userDir.string(), " to ",
+                    portableDir.string(), " failed: ", ec.message());
+    } else {
+        LOG_INFO("Migrated existing config from ", userDir.string(),
+                 " into portable folder ", portableDir.string());
+    }
+#endif
+}
+
+}  // namespace wowee::core

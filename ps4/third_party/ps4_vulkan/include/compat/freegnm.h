@@ -1,0 +1,248 @@
+#ifndef OPENGNM_COMPAT_FREEGNM_H
+#define OPENGNM_COMPAT_FREEGNM_H
+
+/*
+ * Source-level compatibility aliases for projects that used the old freegnm
+ * gnm* wrapper names. This header deliberately does not add exported gnm*
+ * symbols; it rewrites compatible source calls to the Sony SDK-style sceGnm*
+ * ABI that opengnm implements.
+ */
+
+#include <gnm.h>
+
+/* error/platform */
+#define gnmStrError sceGnmStrError
+#define gnmSetMessageHandler sceGnmSetMessageHandler
+#define gnmWriteMsg sceGnmWriteMsg
+#define gnmWriteMsgf sceGnmWriteMsgf
+#define gnmGpuMode sceGnmGpuMode
+#define gnmPlatInit sceGnmPlatInit
+#define gnmPlatGetBufferLabelAddress sceGnmPlatGetBufferLabelAddress
+
+/* gpuaddr */
+#define gpaStrError sceGpaStrError
+#define gpaComputeSurfaceInfo sceGpaComputeSurfaceInfo
+#define gpaComputeHtileInfo sceGpaComputeHtileInfo
+#define gpaComputeCmaskInfo sceGpaComputeCmaskInfo
+#define gpaComputeFmaskInfo sceGpaComputeFmaskInfo
+#define gpaComputeSurfaceTileMode sceGpaComputeSurfaceTileMode
+#define gpaInitSurfaceContext sceGpaInitSurfaceContext
+#define gpaComputeSurfaceCoord sceGpaComputeSurfaceCoord
+#define gpaComputeSurfaceSizeOffset sceGpaComputeSurfaceSizeOffset
+#define gpaFindOptimalSurface sceGpaFindOptimalSurface
+#define gpaGetTileInfo sceGpaGetTileInfo
+#define gpaComputeBaseSwizzle sceGpaComputeBaseSwizzle
+#define gpaGetDecompressedSize sceGpaGetDecompressedSize
+#define gpaDecompressTexture sceGpaDecompressTexture
+#define gpaTpInit sceGpaTpInit
+#define gpaTileSurface sceGpaTileSurface
+#define gpaTileSurfaceRegion sceGpaTileSurfaceRegion
+#define gpaTileTextureIndexed sceGpaTileTextureIndexed
+#define gpaTileTextureAll sceGpaTileTextureAll
+
+/* command buffers */
+#define gnmCmdInit sceGnmCmdInit
+#define gnmCmdReset sceGnmCmdReset
+#define gnmCmdAllocInside sceGnmCmdAllocInside
+
+/* data formats */
+#define gnmDfInitFromFmask sceGnmDfInitFromFmask
+#define gnmDfInitFromZ sceGnmDfInitFromZ
+#define gnmDfInitFromStencil sceGnmDfInitFromStencil
+#define gnmDfGetTexelsPerElement sceGnmDfGetTexelsPerElement
+#define gnmDfGetNumComponents sceGnmDfGetNumComponents
+#define gnmDfGetBitsPerElement sceGnmDfGetBitsPerElement
+#define gnmDfGetTotalBitsPerElement sceGnmDfGetTotalBitsPerElement
+#define gnmDfGetBytesPerElement sceGnmDfGetBytesPerElement
+#define gnmDfGetTotalBytesPerElement sceGnmDfGetTotalBytesPerElement
+#define gnmDfIsBlockCompressed sceGnmDfIsBlockCompressed
+#define gnmDfGetRtChannelType sceGnmDfGetRtChannelType
+#define gnmDfGetRtChannelOrder sceGnmDfGetRtChannelOrder
+#define gnmDfGetZFormat sceGnmDfGetZFormat
+#define gnmDfGetStencilFormat sceGnmDfGetStencilFormat
+#define gnmDfGetTexelsPerElementWide sceGnmDfGetTexelsPerElementWide
+#define gnmDfGetTexelsPerElementTall sceGnmDfGetTexelsPerElementTall
+
+/* descriptors and resources */
+#define gnmBufGetBaseAddress sceGnmBufGetBaseAddress
+#define gnmBufSetBaseAddress sceGnmBufSetBaseAddress
+#define gnmBufGetFormat sceGnmBufGetFormat
+#define gnmBufSetFormat sceGnmBufSetFormat
+#define gnmBufSetMemoryType sceGnmBufSetMemoryType
+#define gnmCreateConstBuffer sceGnmCreateConstBuffer
+#define gnmCreateVertexBuffer sceGnmCreateVertexBuffer
+#define gnmSampGetAnisotropyRatio sceGnmSampGetAnisotropyRatio
+
+/* textures */
+#define gnmCreateTexture sceGnmCreateTexture
+#define gnmTexGetBaseAddress sceGnmTexGetBaseAddress
+#define gnmTexSetBaseAddress sceGnmTexSetBaseAddress
+#define gnmTexGetFormat sceGnmTexGetFormat
+#define gnmTexSetFormat sceGnmTexSetFormat
+#define gnmTexGetWidth sceGnmTexGetWidth
+#define gnmTexSetWidth sceGnmTexSetWidth
+#define gnmTexGetHeight sceGnmTexGetHeight
+#define gnmTexSetHeight sceGnmTexSetHeight
+#define gnmTexGetDepth sceGnmTexGetDepth
+#define gnmTexSetDepth sceGnmTexSetDepth
+#define gnmTexGetPitch sceGnmTexGetPitch
+#define gnmTexSetPitch sceGnmTexSetPitch
+#define gnmTexGetBaseMipLevel sceGnmTexGetBaseMipLevel
+#define gnmTexGetLastMipLevel sceGnmTexGetLastMipLevel
+#define gnmTexGetNumMips sceGnmTexGetNumMips
+#define gnmTexGetNumFaces sceGnmTexGetNumFaces
+#define gnmTexGetTotalArraySlices sceGnmTexGetTotalArraySlices
+#define gnmTexGetNumArraySlices sceGnmTexGetNumArraySlices
+#define gnmTexGetNumFragments sceGnmTexGetNumFragments
+#define gnmTexSetMemoryType sceGnmTexSetMemoryType
+#define gnmTexBuildInfo sceGnmTexBuildInfo
+#define gnmTexCalcByteSize sceGnmTexCalcByteSize
+
+/* render targets */
+#define gnmCreateRenderTarget sceGnmCreateRenderTarget
+#define gnmRtGetFormat sceGnmRtGetFormat
+#define gnmRtGetBaseAddr sceGnmRtGetBaseAddr
+#define gnmRtSetBaseAddr sceGnmRtSetBaseAddr
+#define gnmRtGetPitch sceGnmRtGetPitch
+#define gnmRtGetSliceSize sceGnmRtGetSliceSize
+#define gnmRtGetNumSlices sceGnmRtGetNumSlices
+#define gnmRtGetNumSamples sceGnmRtGetNumSamples
+#define gnmRtGetNumFragments sceGnmRtGetNumFragments
+#define gnmRtBuildInfo sceGnmRtBuildInfo
+#define gnmRtCalcByteSize sceGnmRtCalcByteSize
+
+/* depth render targets */
+#define gnmCreateDepthRenderTarget sceGnmCreateDepthRenderTarget
+#define gnmDrtCalcByteSize sceGnmDrtCalcByteSize
+#define gnmDrtCalcStencilByteOffset sceGnmDrtCalcStencilByteOffset
+#define gnmDrtGetNumFragments sceGnmDrtGetNumFragments
+#define gnmDrtSetNumFragments sceGnmDrtSetNumFragments
+#define gnmDrtSetTileMode sceGnmDrtSetTileMode
+#define gnmDrtGetZReadAddress sceGnmDrtGetZReadAddress
+#define gnmDrtSetZReadAddress sceGnmDrtSetZReadAddress
+#define gnmDrtGetStencilReadAddress sceGnmDrtGetStencilReadAddress
+#define gnmDrtSetStencilReadAddress sceGnmDrtSetStencilReadAddress
+#define gnmDrtGetZWriteAddress sceGnmDrtGetZWriteAddress
+#define gnmDrtSetZWriteAddress sceGnmDrtSetZWriteAddress
+#define gnmDrtGetStencilWriteAddress sceGnmDrtGetStencilWriteAddress
+#define gnmDrtSetStencilWriteAddress sceGnmDrtSetStencilWriteAddress
+#define gnmDrtGetSliceSize sceGnmDrtGetSliceSize
+#define gnmDrtSetSliceSize sceGnmDrtSetSliceSize
+#define gnmDrtGetPaddedWidth sceGnmDrtGetPaddedWidth
+#define gnmDrtSetPaddedWidth sceGnmDrtSetPaddedWidth
+#define gnmDrtGetPaddedHeight sceGnmDrtGetPaddedHeight
+#define gnmDrtSetPaddedHeight sceGnmDrtSetPaddedHeight
+#define gnmDrtGetNumSlices sceGnmDrtGetNumSlices
+#define gnmDrtGetHtileAddress sceGnmDrtGetHtileAddress
+#define gnmDrtSetHtileAddress sceGnmDrtSetHtileAddress
+#define gnmDrtGetMinGpuMode sceGnmDrtGetMinGpuMode
+#define gnmDrtGetWidth sceGnmDrtGetWidth
+#define gnmDrtSetWidth sceGnmDrtSetWidth
+#define gnmDrtGetHeight sceGnmDrtGetHeight
+#define gnmDrtSetHeight sceGnmDrtSetHeight
+
+/* shader helpers */
+#define gnmVsRegsSetAddress sceGnmVsRegsSetAddress
+#define gnmPsRegsSetAddress sceGnmPsRegsSetAddress
+#define gnmCsRegsSetAddress sceGnmCsRegsSetAddress
+#define gnmGsRegsSetAddress sceGnmGsRegsSetAddress
+#define gnmEsRegsSetAddress sceGnmEsRegsSetAddress
+#define gnmHsRegsSetAddress sceGnmHsRegsSetAddress
+#define gnmLsRegsSetAddress sceGnmLsRegsSetAddress
+#define gnmFetchShaderCalcSize sceGnmFetchShaderCalcSize
+#define gnmCreateFetchShader sceGnmCreateFetchShader
+#define gnmVsRegsSetFetchShaderModifier sceGnmVsRegsSetFetchShaderModifier
+#define gnmShaderCommonCodeSize sceGnmShaderCommonCodeSize
+#define gnmShaderInputUsageTypeSize sceGnmShaderInputUsageTypeSize
+#define gnmShfCommonData sceGnmShfCommonData
+#define gnmVsShaderInputUsageSlotTable sceGnmVsShaderInputUsageSlotTable
+#define gnmVsShaderInputSemanticTable sceGnmVsShaderInputSemanticTable
+#define gnmVsShaderExportSemanticTable sceGnmVsShaderExportSemanticTable
+#define gnmVsShaderCalcSize sceGnmVsShaderCalcSize
+#define gnmVsShaderCodePtr sceGnmVsShaderCodePtr
+#define gnmPsShaderInputUsageSlotTable sceGnmPsShaderInputUsageSlotTable
+#define gnmPsShaderInputSemanticTable sceGnmPsShaderInputSemanticTable
+#define gnmPsShaderCalcSize sceGnmPsShaderCalcSize
+#define gnmPsShaderCodePtr sceGnmPsShaderCodePtr
+
+/* draw command-buffer helpers */
+#define gnmDrawCmdInitDefaultHardwareState sceGnmDrawCmdInitDefaultHardwareState
+#define gnmDrawCmdDrawIndex sceGnmDrawCmdDrawIndex
+#define gnmDrawCmdDrawIndex2 sceGnmDrawCmdDrawIndex2
+#define gnmDrawCmdDrawIndexAuto sceGnmDrawCmdDrawIndexAuto
+#define gnmDrawCmdDrawIndexAuto2 sceGnmDrawCmdDrawIndexAuto2
+#define gnmDrawCmdDrawIndexIndirect sceGnmDrawCmdDrawIndexIndirect
+#define gnmDrawCmdDrawIndexIndirect2 sceGnmDrawCmdDrawIndexIndirect2
+#define gnmDrawCmdDrawIndirect sceGnmDrawCmdDrawIndirect
+#define gnmDrawCmdDrawIndirect2 sceGnmDrawCmdDrawIndirect2
+#define gnmDrawCmdDrawIndexIndirectMulti sceGnmDrawCmdDrawIndexIndirectMulti
+#define gnmDrawCmdDrawIndirectMulti sceGnmDrawCmdDrawIndirectMulti
+#define gnmDrawCmdDrawIndexIndirectCountMulti sceGnmDrawCmdDrawIndexIndirectCountMulti
+#define gnmDrawCmdSetDepthClearValue sceGnmDrawCmdSetDepthClearValue
+#define gnmDrawCmdSetDepthRenderTarget sceGnmDrawCmdSetDepthRenderTarget
+#define gnmDrawCmdSetGuardBands sceGnmDrawCmdSetGuardBands
+#define gnmDrawCmdSetHwScreenOffset sceGnmDrawCmdSetHwScreenOffset
+#define gnmDrawCmdSetIndexBuffer sceGnmDrawCmdSetIndexBuffer
+#define gnmDrawCmdSetIndexCount sceGnmDrawCmdSetIndexCount
+#define gnmDrawCmdSetIndexSize sceGnmDrawCmdSetIndexSize
+#define gnmDrawCmdSetIndirectArgs sceGnmDrawCmdSetIndirectArgs
+#define gnmDrawCmdSetIndexedIndirectArgs sceGnmDrawCmdSetIndexedIndirectArgs
+#define gnmDrawCmdSetInstanceStepRate sceGnmDrawCmdSetInstanceStepRate
+#define gnmDrawCmdSetNumInstances sceGnmDrawCmdSetNumInstances
+#define gnmDrawCmdSetPrimitiveType sceGnmDrawCmdSetPrimitiveType
+#define gnmDrawCmdSetRenderTarget sceGnmDrawCmdSetRenderTarget
+#define gnmDrawCmdSetRenderTargetMask sceGnmDrawCmdSetRenderTargetMask
+#define gnmDrawCmdSetScreenScissor sceGnmDrawCmdSetScreenScissor
+#define gnmDrawCmdSetViewport sceGnmDrawCmdSetViewport
+#define gnmDrawCmdSetPsShader sceGnmDrawCmdSetPsShader
+#define gnmDrawCmdSetEmbeddedPsShader sceGnmDrawCmdSetEmbeddedPsShader
+#define gnmDrawCmdSetVsShader sceGnmDrawCmdSetVsShader
+#define gnmDrawCmdSetEmbeddedVsShader sceGnmDrawCmdSetEmbeddedVsShader
+#define gnmDrawCmdSetCsShader sceGnmDrawCmdSetCsShader
+#define gnmDrawCmdSetCsShaderWithModifier sceGnmDrawCmdSetCsShaderWithModifier
+#define gnmDrawCmdSetGsShader sceGnmDrawCmdSetGsShader
+#define gnmDrawCmdSetEsShader sceGnmDrawCmdSetEsShader
+#define gnmDrawCmdSetHsShader sceGnmDrawCmdSetHsShader
+#define gnmDrawCmdSetLsShader sceGnmDrawCmdSetLsShader
+#define gnmDrawCmdDispatchDirect sceGnmDrawCmdDispatchDirect
+#define gnmDrawCmdDispatchIndirect sceGnmDrawCmdDispatchIndirect
+#define gnmDrawCmdDrawIndexOffset sceGnmDrawCmdDrawIndexOffset
+#define gnmDrawCmdSetPsInputUsage sceGnmDrawCmdSetPsInputUsage
+#define gnmDrawCmdSetVsharpUserData sceGnmDrawCmdSetVsharpUserData
+#define gnmDrawCmdSetTsharpUserData sceGnmDrawCmdSetTsharpUserData
+#define gnmDrawCmdSetSsharpUserData sceGnmDrawCmdSetSsharpUserData
+#define gnmDrawCmdSetPointerUserData sceGnmDrawCmdSetPointerUserData
+#define gnmDrawCmdSetBlendControl sceGnmDrawCmdSetBlendControl
+#define gnmDrawCmdSetDepthStencilControl sceGnmDrawCmdSetDepthStencilControl
+#define gnmDrawCmdSetDbRenderControl sceGnmDrawCmdSetDbRenderControl
+#define gnmDrawCmdSetPrimitiveSetup sceGnmDrawCmdSetPrimitiveSetup
+#define gnmDrawCmdSetViewportTransformControl sceGnmDrawCmdSetViewportTransformControl
+#define gnmDrawCmdEventWriteEop sceGnmDrawCmdEventWriteEop
+#define gnmDrawCmdFillMemory sceGnmDrawCmdFillMemory
+#define gnmDrawCmdCopyMemory sceGnmDrawCmdCopyMemory
+#define gnmDrawCmdWaitGraphicsWrite sceGnmDrawCmdWaitGraphicsWrite
+#define gnmDrawCmdWaitMem sceGnmDrawCmdWaitMem
+#define gnmDrawCmdWaitUntilSafeForRendering sceGnmDrawCmdWaitUntilSafeForRendering
+#define gnmDrawCmdSetStreamOutConfig sceGnmDrawCmdSetStreamOutConfig
+#define gnmDrawCmdSetStreamOutBuffer sceGnmDrawCmdSetStreamOutBuffer
+#define gnmDrawCmdResetQuery sceGnmDrawCmdResetQuery
+#define gnmDrawCmdBeginQuery sceGnmDrawCmdBeginQuery
+#define gnmDrawCmdEndQuery sceGnmDrawCmdEndQuery
+
+/* firmware/driver wrappers that had exact freegnm equivalents */
+#define gnmDriverDrawInitDefaultHardwareState350 sceGnmDriverDrawInitDefaultHardwareState350
+#define gnmDriverDrawIndex sceGnmDriverDrawIndex
+#define gnmDriverDrawIndexAuto sceGnmDriverDrawIndexAuto
+#define gnmDriverDrawIndexIndirect sceGnmDriverDrawIndexIndirect
+#define gnmDriverDrawIndirect sceGnmDriverDrawIndirect
+#define gnmDriverDrawIndexIndirectMulti sceGnmDriverDrawIndexIndirectMulti
+#define gnmDriverDrawIndirectMulti sceGnmDriverDrawIndirectMulti
+#define gnmDriverDrawIndexIndirectCountMulti sceGnmDriverDrawIndexIndirectCountMulti
+#define gnmDriverSetVsShader sceGnmDriverSetVsShader
+#define gnmDriverSetPsShader sceGnmDriverSetPsShader
+#define gnmDriverSetPsShader350 sceGnmDriverSetPsShader350
+#define gnmDriverSetEmbeddedVsShader sceGnmDriverSetEmbeddedVsShader
+#define gnmDriverSetEmbeddedPsShader sceGnmDriverSetEmbeddedPsShader
+#define gnmDriverInsertWaitFlipDone sceGnmDriverInsertWaitFlipDone
+
+#endif /* OPENGNM_COMPAT_FREEGNM_H */

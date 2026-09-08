@@ -1,0 +1,7 @@
+## Interface: 30300
+## Title: WoWPS All Bags
+## Notes: Inventory, keyring and bank in one window, with search, sorting and rarity borders.
+## Author: wowee
+## SavedVariables: WoweeAllBagsSettings
+
+WoweeAllBags.lua

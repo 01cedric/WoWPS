@@ -1,0 +1,6 @@
+#ifndef OPENGNM_GNM_COMPAT_PM4_SID_H
+#define OPENGNM_GNM_COMPAT_PM4_SID_H
+
+#include <pm4/sid.h>
+
+#endif /* OPENGNM_GNM_COMPAT_PM4_SID_H */

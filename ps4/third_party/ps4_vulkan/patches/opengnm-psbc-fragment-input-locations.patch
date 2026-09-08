@@ -1,0 +1,98 @@
+--- a/libpsbc/psbc_compile.c
++++ b/libpsbc/psbc_compile.c
+@@ -811,46 +811,56 @@
+         offset += sizeof(slot);
+     }
+ 
+-    /* write input/export semantics */
++    /* Preserve API locations, rather than enumerate the number of set
++     * bits. Vertex and fragment stages can consume different subsets; a
++     * fragment input at location 2 must still link to that location when
++     * locations 0 and 1 are absent. Mesa varying slots are unique byte IDs. */
+     switch (ctx->stage) {
+     case MESA_SHADER_VERTEX:
+-    case MESA_SHADER_TESS_EVAL:  /* DS uses same semantics as VS */
+-        for (uint32_t i = 0;
+-             i < util_bitcount64(ctx->nir->info.inputs_read); i += 1) {
++    case MESA_SHADER_TESS_EVAL: {
++        uint64_t inputs = ctx->nir->info.inputs_read;
++        while (inputs) {
++            const unsigned location = __builtin_ctzll(inputs) - VERT_ATTRIB_GENERIC0;
++            inputs &= inputs - 1;
++            const unsigned arg_index = ctx->rargs->vs_inputs[location].arg_index;
+             const GnmVertexInputSemantic input = {
+-                .semantic = i,
+-                .vgpr =
+-                    ctx->rargs->ac
+-                        .args[ctx->rargs->vs_inputs[i].arg_index]
+-                        .offset,
+-                .sizeinelements =
+-                    ctx->rargs->ac
+-                        .args[ctx->rargs->vs_inputs[i].arg_index]
+-                        .size,
++                .semantic = location,
++                .vgpr = ctx->rargs->ac.args[arg_index].offset,
++                .sizeinelements = ctx->rargs->ac.args[arg_index].size,
+             };
+             memcpy(buf + offset, &input, sizeof(input));
+             offset += sizeof(input);
+         }
+-        for (uint32_t i = 0; i < outputswritten; i += 1) {
++        uint64_t outputs = ctx->nir->info.outputs_written & ~VARYING_BIT_POS;
++        while (outputs) {
++            const unsigned location = __builtin_ctzll(outputs);
++            outputs &= outputs - 1;
+             const GnmVertexExportSemantic out = {
+-                .semantic = 15 + i,
+-                .outindex = i,
++                .semantic = location,
++                .outindex = ctx->rinfo->outinfo.vs_output_param_offset[location],
+                 .exportf16 = 0,
+             };
+             memcpy(buf + offset, &out, sizeof(out));
+             offset += sizeof(out);
+         }
+         break;
+-    case MESA_SHADER_FRAGMENT:
+-        for (uint32_t i = 0;
+-             i < util_bitcount64(ctx->nir->info.inputs_read); i += 1) {
+-            const GnmPixelInputSemantic input = {
+-                .semantic = 15 + i,
+-            };
+-            memcpy(buf + offset, &input, sizeof(input));
+-            offset += sizeof(input);
+-        }
+-        break;
++    }
++    case MESA_SHADER_FRAGMENT: {
++        /* Table order is the physical ATTR index used by v_interp. */
++        const unsigned count = util_bitcount64(ctx->nir->info.inputs_read);
++        GnmPixelInputSemantic inputs[64] = {0};
++        uint64_t mask = ctx->nir->info.inputs_read;
++        while (mask) {
++            const unsigned location = __builtin_ctzll(mask);
++            mask &= mask - 1;
++            const unsigned index = ac_nir_get_io_driver_location(
++                ctx->nir, location, true);
++            inputs[index].semantic = location;
++        }
++        memcpy(buf + offset, inputs, count * sizeof(*inputs));
++        offset += count * sizeof(*inputs);
++        break;
++    }
+     case MESA_SHADER_GEOMETRY:
+         /* GS input/export semantics use the same vertex semantic format */
+         for (uint32_t i = 0;
+@@ -1207,6 +1217,12 @@
+     /* Gather info again — outputs_read can be out-of-date */
+     nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+     radv_nir_lower_io(nir);
++    /* B8: Standalone compilation must assign the hardware interpolator
++     * index before the info pass and ACO. RADV normally does this in
++     * radv_fill_shader_info(). Without it every load retains base=0, so
++     * character UVs and normals both read the position varying at ATTR0. */
++    if (mesa_stage == MESA_SHADER_FRAGMENT)
++        NIR_PASS(_, nir, ac_nir_assign_fs_input_locations);
+ 
+     /* Shader info + args + postprocess */
+     radv_nir_shader_info_init(stage.stage, stage.next_stage, &stage.info);

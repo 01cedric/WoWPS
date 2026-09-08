@@ -1,0 +1,9016 @@
+{
+  "schemaVersion": 1,
+  "name": "Northshire and Goldshire — local realm adaptation",
+  "provenance": {
+    "repository": "https://github.com/azerothcore/azerothcore-wotlk",
+    "commit": "4e80596cdaa21fa31830522f6f2d7ed8750bfffd",
+    "source": "data/sql/base/db_world",
+    "licenseFiles": [
+      "LICENSE-AC-GPL-2.0.txt"
+    ],
+    "region": {
+      "mapId": 0,
+      "x": -8949.95,
+      "y": -132.493,
+      "radius": 850,
+      "bounds": [
+        -9850,
+        -1050,
+        -8550,
+        250
+      ]
+    },
+    "exactFields": "NPC/item/quest IDs, names, model display IDs, spawn positions, objective targets/counts, quest prerequisites, item sell values",
+    "adaptedFields": "combat stats, XP, abilities, consumable effects, drop selection/count probability, spawn respawn clamp; see IMPORT_REPORT.json"
+  },
+  "start": {
+    "mapId": 0,
+    "x": -8949.95,
+    "y": -132.493,
+    "z": 83.5312,
+    "orientation": 0,
+    "items": [
+      {
+        "itemId": 25,
+        "count": 1
+      },
+      {
+        "itemId": 39,
+        "count": 1
+      },
+      {
+        "itemId": 40,
+        "count": 1
+      },
+      {
+        "itemId": 117,
+        "count": 5
+      },
+      {
+        "itemId": 118,
+        "count": 3
+      },
+      {
+        "itemId": 159,
+        "count": 5
+      }
+    ],
+    "spells": [
+      900001,
+      900002
+    ]
+  },
+  "items": [
+    {
+      "id": 25,
+      "name": "Worn Shortsword",
+      "displayId": 1542,
+      "inventoryType": 21,
+      "slot": 1,
+      "stack": 1,
+      "maxHealth": 0,
+      "attack": 2,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 7
+    },
+    {
+      "id": 39,
+      "name": "Recruit's Pants",
+      "displayId": 9892,
+      "inventoryType": 7,
+      "slot": 3,
+      "stack": 1,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 1
+    },
+    {
+      "id": 40,
+      "name": "Recruit's Boots",
+      "displayId": 10141,
+      "inventoryType": 8,
+      "slot": 4,
+      "stack": 1,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 1
+    },
+    {
+      "id": 80,
+      "name": "Soft Fur-lined Shoes",
+      "displayId": 16854,
+      "inventoryType": 8,
+      "slot": 4,
+      "stack": 1,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 1,
+      "heal": 0,
+      "mana": 0,
+      "value": 7
+    },
+    {
+      "id": 117,
+      "name": "Tough Jerky",
+      "displayId": 2473,
+      "inventoryType": 0,
+      "slot": 0,
+      "stack": 20,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 30,
+      "mana": 0,
+      "value": 1
+    },
+    {
+      "id": 118,
+      "name": "Minor Healing Potion",
+      "displayId": 15710,
+      "inventoryType": 0,
+      "slot": 0,
+      "stack": 20,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 70,
+      "mana": 0,
+      "value": 5
+    },
+    {
+      "id": 159,
+      "name": "Refreshing Spring Water",
+      "displayId": 18084,
+      "inventoryType": 0,
+      "slot": 0,
+      "stack": 20,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 40,
+      "value": 1
+    },
+    {
+      "id": 182,
+      "name": "Garrick's Head",
+      "displayId": 7038,
+      "inventoryType": 0,
+      "slot": 0,
+      "stack": 1,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 0
+    },
+    {
+      "id": 752,
+      "name": "Red Burlap Bandana",
+      "displayId": 1272,
+      "inventoryType": 0,
+      "slot": 0,
+      "stack": 20,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 0
+    },
+    {
+      "id": 755,
+      "name": "Melted Candle",
+      "displayId": 6677,
+      "inventoryType": 0,
+      "slot": 0,
+      "stack": 5,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 1
+    },
+    {
+      "id": 769,
+      "name": "Chunk of Boar Meat",
+      "displayId": 6348,
+      "inventoryType": 0,
+      "slot": 0,
+      "stack": 20,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 3
+    },
+    {
+      "id": 772,
+      "name": "Large Candle",
+      "displayId": 7066,
+      "inventoryType": 0,
+      "slot": 0,
+      "stack": 20,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 0
+    },
+    {
+      "id": 773,
+      "name": "Gold Dust",
+      "displayId": 7137,
+      "inventoryType": 0,
+      "slot": 0,
+      "stack": 20,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 0
+    },
+    {
+      "id": 779,
+      "name": "Shiny Seashell",
+      "displayId": 7714,
+      "inventoryType": 0,
+      "slot": 0,
+      "stack": 5,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 18
+    },
+    {
+      "id": 781,
+      "name": "Stone Gnoll Hammer",
+      "displayId": 19644,
+      "inventoryType": 21,
+      "slot": 1,
+      "stack": 1,
+      "maxHealth": 0,
+      "attack": 8,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 110
+    },
+    {
+      "id": 1175,
+      "name": "A Gold Tooth",
+      "displayId": 6659,
+      "inventoryType": 0,
+      "slot": 0,
+      "stack": 1,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 28
+    },
+    {
+      "id": 1191,
+      "name": "Bag of Marbles",
+      "displayId": 1816,
+      "inventoryType": 0,
+      "slot": 0,
+      "stack": 1,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 82
+    },
+    {
+      "id": 1195,
+      "name": "Kobold Mining Shovel",
+      "displayId": 7495,
+      "inventoryType": 17,
+      "slot": 1,
+      "stack": 1,
+      "maxHealth": 0,
+      "attack": 8,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 47
+    },
+    {
+      "id": 1399,
+      "name": "Magic Candle",
+      "displayId": 6395,
+      "inventoryType": 0,
+      "slot": 0,
+      "stack": 20,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 12
+    },
+    {
+      "id": 1434,
+      "name": "Glowing Wax Stick",
+      "displayId": 6383,
+      "inventoryType": 0,
+      "slot": 0,
+      "stack": 20,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 43
+    },
+    {
+      "id": 1476,
+      "name": "Snapped Spider Limb",
+      "displayId": 6619,
+      "inventoryType": 0,
+      "slot": 0,
+      "stack": 5,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 6
+    },
+    {
+      "id": 2055,
+      "name": "Small Wooden Hammer",
+      "displayId": 8579,
+      "inventoryType": 21,
+      "slot": 1,
+      "stack": 1,
+      "maxHealth": 0,
+      "attack": 3,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 16
+    },
+    {
+      "id": 2057,
+      "name": "Pitted Defias Shortsword",
+      "displayId": 20175,
+      "inventoryType": 21,
+      "slot": 1,
+      "stack": 1,
+      "maxHealth": 0,
+      "attack": 3,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 16
+    },
+    {
+      "id": 2070,
+      "name": "Darnassian Bleu",
+      "displayId": 6353,
+      "inventoryType": 0,
+      "slot": 0,
+      "stack": 20,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 1
+    },
+    {
+      "id": 2186,
+      "name": "Outfitter Belt",
+      "displayId": 4545,
+      "inventoryType": 6,
+      "slot": 0,
+      "stack": 1,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 6
+    },
+    {
+      "id": 2224,
+      "name": "Militia Dagger",
+      "displayId": 6432,
+      "inventoryType": 13,
+      "slot": 1,
+      "stack": 1,
+      "maxHealth": 0,
+      "attack": 3,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 24
+    },
+    {
+      "id": 2589,
+      "name": "Linen Cloth",
+      "displayId": 7383,
+      "inventoryType": 0,
+      "slot": 0,
+      "stack": 20,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 13
+    },
+    {
+      "id": 2672,
+      "name": "Stringy Wolf Meat",
+      "displayId": 6680,
+      "inventoryType": 0,
+      "slot": 0,
+      "stack": 20,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 4
+    },
+    {
+      "id": 3171,
+      "name": "Broken Boar Tusk",
+      "displayId": 3429,
+      "inventoryType": 0,
+      "slot": 0,
+      "stack": 5,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 6
+    },
+    {
+      "id": 3233,
+      "name": "Gnoll Hide Sack",
+      "displayId": 3410,
+      "inventoryType": 18,
+      "slot": 0,
+      "stack": 1,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 212
+    },
+    {
+      "id": 3300,
+      "name": "Rabbit's Foot",
+      "displayId": 6682,
+      "inventoryType": 0,
+      "slot": 0,
+      "stack": 5,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 9
+    },
+    {
+      "id": 4536,
+      "name": "Shiny Red Apple",
+      "displayId": 6410,
+      "inventoryType": 0,
+      "slot": 0,
+      "stack": 20,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 1
+    },
+    {
+      "id": 4656,
+      "name": "Small Pumpkin",
+      "displayId": 6402,
+      "inventoryType": 0,
+      "slot": 0,
+      "stack": 20,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 1
+    },
+    {
+      "id": 4865,
+      "name": "Ruined Pelt",
+      "displayId": 7086,
+      "inventoryType": 0,
+      "slot": 0,
+      "stack": 5,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 5
+    },
+    {
+      "id": 5465,
+      "name": "Small Spider Leg",
+      "displayId": 7345,
+      "inventoryType": 0,
+      "slot": 0,
+      "stack": 20,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 3
+    },
+    {
+      "id": 6076,
+      "name": "Tapered Pants",
+      "displayId": 16843,
+      "inventoryType": 7,
+      "slot": 3,
+      "stack": 1,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 1,
+      "heal": 0,
+      "mana": 0,
+      "value": 9
+    },
+    {
+      "id": 6147,
+      "name": "Ratty Old Belt",
+      "displayId": 9508,
+      "inventoryType": 6,
+      "slot": 0,
+      "stack": 1,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 37
+    },
+    {
+      "id": 6148,
+      "name": "Web-covered Boots",
+      "displayId": 16853,
+      "inventoryType": 8,
+      "slot": 4,
+      "stack": 1,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 1,
+      "heal": 0,
+      "mana": 0,
+      "value": 44
+    },
+    {
+      "id": 6202,
+      "name": "Fingerless Gloves",
+      "displayId": 10535,
+      "inventoryType": 10,
+      "slot": 0,
+      "stack": 1,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 37
+    },
+    {
+      "id": 6303,
+      "name": "Raw Slitherskin Mackerel",
+      "displayId": 24697,
+      "inventoryType": 0,
+      "slot": 0,
+      "stack": 20,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 1
+    },
+    {
+      "id": 7073,
+      "name": "Broken Fang",
+      "displayId": 6002,
+      "inventoryType": 0,
+      "slot": 0,
+      "stack": 5,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 6
+    },
+    {
+      "id": 50432,
+      "name": "Diseased Wolf Pelt",
+      "displayId": 8952,
+      "inventoryType": 0,
+      "slot": 0,
+      "stack": 20,
+      "maxHealth": 0,
+      "attack": 0,
+      "armor": 0,
+      "heal": 0,
+      "mana": 0,
+      "value": 0
+    }
+  ],
+  "spells": [
+    {
+      "id": 900001,
+      "name": "Kraftschlag (lokal)",
+      "mana": 6,
+      "cooldownMs": 1500,
+      "range": 4.5,
+      "damage": 18,
+      "heal": 0
+    },
+    {
+      "id": 900002,
+      "name": "Erholung (lokal)",
+      "mana": 20,
+      "cooldownMs": 10000,
+      "range": 0,
+      "damage": 0,
+      "heal": 50
+    }
+  ],
+  "quests": [
+    {
+      "id": 6,
+      "title": "Bounty on Garrick Padfoot",
+      "description": "Kill Garrick Padfoot and bring his head to Deputy Willem at Northshire Abbey.",
+      "giverEntry": 823,
+      "turnInEntry": 823,
+      "minLevel": 2,
+      "prerequisite": 18,
+      "xp": 400,
+      "money": 0,
+      "rewardItem": 6076,
+      "rewardCount": 1,
+      "objectives": [
+        {
+          "type": "collect",
+          "entry": 182,
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Kobold Camp Cleanup",
+      "description": "Kill 8 Kobold Vermin, then return to Marshal McBride.",
+      "giverEntry": 197,
+      "turnInEntry": 197,
+      "minLevel": 1,
+      "prerequisite": 783,
+      "xp": 160,
+      "money": 25,
+      "rewardItem": 0,
+      "rewardCount": 0,
+      "objectives": [
+        {
+          "type": "kill",
+          "entry": 6,
+          "count": 8
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "title": "Investigate Echo Ridge",
+      "description": "Kill 8 Kobold Workers, then report back to Marshal McBride.",
+      "giverEntry": 197,
+      "turnInEntry": 197,
+      "minLevel": 1,
+      "prerequisite": 7,
+      "xp": 240,
+      "money": 40,
+      "rewardItem": 0,
+      "rewardCount": 0,
+      "objectives": [
+        {
+          "type": "kill",
+          "entry": 257,
+          "count": 8
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "title": "Brotherhood of Thieves",
+      "description": "Bring 8 Red Burlap Bandanas to Deputy Willem outside the Northshire Abbey.",
+      "giverEntry": 823,
+      "turnInEntry": 823,
+      "minLevel": 2,
+      "prerequisite": 783,
+      "xp": 320,
+      "money": 0,
+      "rewardItem": 2224,
+      "rewardCount": 1,
+      "objectives": [
+        {
+          "type": "collect",
+          "entry": 752,
+          "count": 8
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "title": "Skirmish at Echo Ridge",
+      "description": "Kill 8 Kobold Laborers, then return to Marshal McBride at Northshire Abbey.",
+      "giverEntry": 197,
+      "turnInEntry": 197,
+      "minLevel": 1,
+      "prerequisite": 15,
+      "xp": 400,
+      "money": 0,
+      "rewardItem": 2186,
+      "rewardCount": 1,
+      "objectives": [
+        {
+          "type": "kill",
+          "entry": 80,
+          "count": 8
+        }
+      ]
+    },
+    {
+      "id": 33,
+      "title": "Wolves Across the Border",
+      "description": "Bring 8 Diseased Wolf Pelts to Eagan Peltskinner outside Northshire Abbey.",
+      "giverEntry": 196,
+      "turnInEntry": 196,
+      "minLevel": 1,
+      "prerequisite": 5261,
+      "xp": 160,
+      "money": 0,
+      "rewardItem": 80,
+      "rewardCount": 1,
+      "objectives": [
+        {
+          "type": "collect",
+          "entry": 50432,
+          "count": 8
+        }
+      ]
+    },
+    {
+      "id": 40,
+      "title": "A Fishy Peril",
+      "description": "Remy \"Two Times\" wants you to speak with Marshal Dughan in Goldshire.",
+      "giverEntry": 241,
+      "turnInEntry": 240,
+      "minLevel": 7,
+      "prerequisite": 0,
+      "xp": 800,
+      "money": 0,
+      "rewardItem": 0,
+      "rewardCount": 0,
+      "objectives": [
+        {
+          "type": "talk",
+          "entry": 240,
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": 47,
+      "title": "Gold Dust Exchange",
+      "description": "Bring 10 Gold Dust to Remy \"Two Times\" in Goldshire.  Gold Dust is gathered from Kobolds in Elwynn Forest.",
+      "giverEntry": 241,
+      "turnInEntry": 241,
+      "minLevel": 4,
+      "prerequisite": 0,
+      "xp": 560,
+      "money": 175,
+      "rewardItem": 1191,
+      "rewardCount": 1,
+      "objectives": [
+        {
+          "type": "collect",
+          "entry": 773,
+          "count": 10
+        }
+      ]
+    },
+    {
+      "id": 60,
+      "title": "Kobold Candles",
+      "description": "Bring 8 Large Candles to William Pestle in Goldshire.",
+      "giverEntry": 253,
+      "turnInEntry": 253,
+      "minLevel": 3,
+      "prerequisite": 0,
+      "xp": 560,
+      "money": 125,
+      "rewardItem": 1434,
+      "rewardCount": 5,
+      "objectives": [
+        {
+          "type": "collect",
+          "entry": 772,
+          "count": 8
+        }
+      ]
+    },
+    {
+      "id": 783,
+      "title": "A Threat Within",
+      "description": "Speak with Marshal McBride.",
+      "giverEntry": 823,
+      "turnInEntry": 197,
+      "minLevel": 1,
+      "prerequisite": 0,
+      "xp": 80,
+      "money": 0,
+      "rewardItem": 0,
+      "rewardCount": 0,
+      "objectives": [
+        {
+          "type": "talk",
+          "entry": 197,
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": 2158,
+      "title": "Rest and Relaxation",
+      "description": "Speak with Innkeeper Farley at the Lion's Pride Inn.",
+      "giverEntry": 6774,
+      "turnInEntry": 295,
+      "minLevel": 1,
+      "prerequisite": 0,
+      "xp": 400,
+      "money": 0,
+      "rewardItem": 4656,
+      "rewardCount": 5,
+      "objectives": [
+        {
+          "type": "talk",
+          "entry": 295,
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": 3903,
+      "title": "Milly Osworth",
+      "description": "Speak with Milly Osworth.",
+      "giverEntry": 823,
+      "turnInEntry": 9296,
+      "minLevel": 2,
+      "prerequisite": 33,
+      "xp": 320,
+      "money": 0,
+      "rewardItem": 0,
+      "rewardCount": 0,
+      "objectives": [
+        {
+          "type": "talk",
+          "entry": 9296,
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": 5261,
+      "title": "Eagan Peltskinner",
+      "description": "Speak with Eagan Peltskinner.",
+      "giverEntry": 823,
+      "turnInEntry": 196,
+      "minLevel": 1,
+      "prerequisite": 783,
+      "xp": 160,
+      "money": 0,
+      "rewardItem": 0,
+      "rewardCount": 0,
+      "objectives": [
+        {
+          "type": "talk",
+          "entry": 196,
+          "count": 1
+        }
+      ]
+    }
+  ],
+  "npcs": [
+    {
+      "id": 6,
+      "name": "Kobold Vermin",
+      "displayId": 10913,
+      "level": 1,
+      "health": 42,
+      "damage": 2,
+      "armor": 0,
+      "hostile": true,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [
+        {
+          "itemId": 755,
+          "count": 1
+        }
+      ],
+      "xp": 50,
+      "money": 3
+    },
+    {
+      "id": 30,
+      "name": "Forest Spider",
+      "displayId": 382,
+      "level": 5,
+      "health": 102,
+      "damage": 5,
+      "armor": 6,
+      "hostile": true,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 18,
+      "loot": [
+        {
+          "itemId": 5465,
+          "count": 1
+        },
+        {
+          "itemId": 1476,
+          "count": 1
+        }
+      ],
+      "xp": 70,
+      "money": 0
+    },
+    {
+      "id": 38,
+      "name": "Defias Thug",
+      "displayId": 5035,
+      "level": 3,
+      "health": 71,
+      "damage": 3,
+      "armor": 2,
+      "hostile": true,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [
+        {
+          "itemId": 752,
+          "count": 1
+        },
+        {
+          "itemId": 2057,
+          "count": 1
+        }
+      ],
+      "xp": 60,
+      "money": 3
+    },
+    {
+      "id": 40,
+      "name": "Kobold Miner",
+      "displayId": 373,
+      "level": 6,
+      "health": 120,
+      "damage": 7,
+      "armor": 8,
+      "hostile": true,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 18,
+      "loot": [
+        {
+          "itemId": 772,
+          "count": 1
+        },
+        {
+          "itemId": 773,
+          "count": 1
+        },
+        {
+          "itemId": 2589,
+          "count": 1
+        },
+        {
+          "itemId": 4536,
+          "count": 1
+        }
+      ],
+      "xp": 75,
+      "money": 6
+    },
+    {
+      "id": 43,
+      "name": "Mine Spider",
+      "displayId": 368,
+      "level": 8,
+      "health": 156,
+      "damage": 10,
+      "armor": 15,
+      "hostile": true,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 18,
+      "loot": [
+        {
+          "itemId": 1476,
+          "count": 1
+        },
+        {
+          "itemId": 5465,
+          "count": 1
+        }
+      ],
+      "xp": 85,
+      "money": 0
+    },
+    {
+      "id": 54,
+      "name": "Corina Steele",
+      "displayId": 1287,
+      "level": 10,
+      "health": 198,
+      "damage": 13,
+      "armor": 23,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 60,
+      "name": "Ruklar the Trapper",
+      "displayId": 2153,
+      "level": 8,
+      "health": 148,
+      "damage": 10,
+      "armor": 15,
+      "hostile": true,
+      "questGiver": false,
+      "respawnSeconds": 300,
+      "aggroRadius": 18,
+      "loot": [
+        {
+          "itemId": 2589,
+          "count": 1
+        },
+        {
+          "itemId": 4536,
+          "count": 1
+        }
+      ],
+      "xp": 85,
+      "money": 10
+    },
+    {
+      "id": 61,
+      "name": "Thuros Lightfingers",
+      "displayId": 3341,
+      "level": 11,
+      "health": 222,
+      "damage": 15,
+      "armor": 26,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 300,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 66,
+      "name": "Tharynn Bouden",
+      "displayId": 1298,
+      "level": 10,
+      "health": 198,
+      "damage": 13,
+      "armor": 23,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 69,
+      "name": "Diseased Timber Wolf",
+      "displayId": 31048,
+      "level": 2,
+      "health": 55,
+      "damage": 2,
+      "armor": 1,
+      "hostile": true,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [
+        {
+          "itemId": 50432,
+          "count": 1
+        }
+      ],
+      "xp": 55,
+      "money": 0
+    },
+    {
+      "id": 74,
+      "name": "Kurran Steele",
+      "displayId": 1289,
+      "level": 10,
+      "health": 198,
+      "damage": 13,
+      "armor": 23,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 78,
+      "name": "Janos Hammerknuckle",
+      "displayId": 3275,
+      "level": 5,
+      "health": 102,
+      "damage": 5,
+      "armor": 6,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 79,
+      "name": "Narg the Taskmaster",
+      "displayId": 774,
+      "level": 10,
+      "health": 257,
+      "damage": 13,
+      "armor": 23,
+      "hostile": true,
+      "questGiver": false,
+      "respawnSeconds": 300,
+      "aggroRadius": 20,
+      "loot": [
+        {
+          "itemId": 6147,
+          "count": 1
+        },
+        {
+          "itemId": 2589,
+          "count": 1
+        }
+      ],
+      "xp": 95,
+      "money": 15
+    },
+    {
+      "id": 80,
+      "name": "Kobold Laborer",
+      "displayId": 365,
+      "level": 3,
+      "health": 71,
+      "damage": 3,
+      "armor": 2,
+      "hostile": true,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [
+        {
+          "itemId": 755,
+          "count": 1
+        },
+        {
+          "itemId": 2055,
+          "count": 1
+        }
+      ],
+      "xp": 60,
+      "money": 3
+    },
+    {
+      "id": 94,
+      "name": "Defias Cutpurse",
+      "displayId": 2361,
+      "level": 5,
+      "health": 102,
+      "damage": 5,
+      "armor": 6,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 97,
+      "name": "Riverpaw Runt",
+      "displayId": 10791,
+      "level": 8,
+      "health": 156,
+      "damage": 10,
+      "armor": 15,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 103,
+      "name": "Garrick Padfoot",
+      "displayId": 2073,
+      "level": 5,
+      "health": 102,
+      "damage": 5,
+      "armor": 6,
+      "hostile": true,
+      "questGiver": false,
+      "respawnSeconds": 60,
+      "aggroRadius": 0,
+      "loot": [
+        {
+          "itemId": 182,
+          "count": 1
+        },
+        {
+          "itemId": 2057,
+          "count": 1
+        }
+      ],
+      "xp": 70,
+      "money": 4
+    },
+    {
+      "id": 113,
+      "name": "Stonetusk Boar",
+      "displayId": 503,
+      "level": 5,
+      "health": 102,
+      "damage": 5,
+      "armor": 6,
+      "hostile": true,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 18,
+      "loot": [
+        {
+          "itemId": 769,
+          "count": 1
+        },
+        {
+          "itemId": 3171,
+          "count": 1
+        }
+      ],
+      "xp": 70,
+      "money": 0
+    },
+    {
+      "id": 116,
+      "name": "Defias Bandit",
+      "displayId": 2357,
+      "level": 8,
+      "health": 156,
+      "damage": 10,
+      "armor": 15,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 118,
+      "name": "Prowler",
+      "displayId": 11415,
+      "level": 9,
+      "health": 176,
+      "damage": 12,
+      "armor": 19,
+      "hostile": true,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 18,
+      "loot": [
+        {
+          "itemId": 2672,
+          "count": 1
+        },
+        {
+          "itemId": 3300,
+          "count": 1
+        }
+      ],
+      "xp": 90,
+      "money": 0
+    },
+    {
+      "id": 151,
+      "name": "Brog Hamfist",
+      "displayId": 1292,
+      "level": 10,
+      "health": 198,
+      "damage": 13,
+      "armor": 23,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 152,
+      "name": "Brother Danil",
+      "displayId": 3277,
+      "level": 5,
+      "health": 102,
+      "damage": 5,
+      "armor": 6,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 190,
+      "name": "Dermot Johns",
+      "displayId": 3276,
+      "level": 5,
+      "health": 102,
+      "damage": 5,
+      "armor": 6,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 196,
+      "name": "Eagan Peltskinner",
+      "displayId": 3251,
+      "level": 3,
+      "health": 71,
+      "damage": 3,
+      "armor": 2,
+      "hostile": false,
+      "questGiver": true,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 197,
+      "name": "Marshal McBride",
+      "displayId": 1859,
+      "level": 20,
+      "health": 484,
+      "damage": 29,
+      "armor": 42,
+      "hostile": false,
+      "questGiver": true,
+      "respawnSeconds": 190,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 198,
+      "name": "Khelden Bremen",
+      "displayId": 5001,
+      "level": 5,
+      "health": 102,
+      "damage": 5,
+      "armor": 6,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 240,
+      "name": "Marshal Dughan",
+      "displayId": 1985,
+      "level": 25,
+      "health": 713,
+      "damage": 36,
+      "armor": 50,
+      "hostile": false,
+      "questGiver": true,
+      "respawnSeconds": 250,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 241,
+      "name": "Remy \"Two Times\"",
+      "displayId": 3254,
+      "level": 5,
+      "health": 102,
+      "damage": 5,
+      "armor": 6,
+      "hostile": false,
+      "questGiver": true,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 253,
+      "name": "William Pestle",
+      "displayId": 5038,
+      "level": 6,
+      "health": 120,
+      "damage": 7,
+      "armor": 8,
+      "hostile": false,
+      "questGiver": true,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 257,
+      "name": "Kobold Worker",
+      "displayId": 2299,
+      "level": 3,
+      "health": 71,
+      "damage": 3,
+      "armor": 2,
+      "hostile": true,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [
+        {
+          "itemId": 755,
+          "count": 1
+        }
+      ],
+      "xp": 60,
+      "money": 3
+    },
+    {
+      "id": 285,
+      "name": "Murloc",
+      "displayId": 617,
+      "level": 6,
+      "health": 120,
+      "damage": 7,
+      "armor": 8,
+      "hostile": true,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 18,
+      "loot": [
+        {
+          "itemId": 779,
+          "count": 1
+        },
+        {
+          "itemId": 6303,
+          "count": 1
+        }
+      ],
+      "xp": 75,
+      "money": 6
+    },
+    {
+      "id": 295,
+      "name": "Innkeeper Farley",
+      "displayId": 1291,
+      "level": 30,
+      "health": 1003,
+      "damage": 42,
+      "armor": 59,
+      "hostile": false,
+      "questGiver": true,
+      "respawnSeconds": 300,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 299,
+      "name": "Diseased Young Wolf",
+      "displayId": 31049,
+      "level": 1,
+      "health": 42,
+      "damage": 2,
+      "armor": 0,
+      "hostile": true,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [
+        {
+          "itemId": 50432,
+          "count": 1
+        }
+      ],
+      "xp": 50,
+      "money": 0
+    },
+    {
+      "id": 313,
+      "name": "Theocritus",
+      "displayId": 3348,
+      "level": 24,
+      "health": 664,
+      "damage": 34,
+      "armor": 49,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 190,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 327,
+      "name": "Goldtooth",
+      "displayId": 2299,
+      "level": 8,
+      "health": 156,
+      "damage": 10,
+      "armor": 15,
+      "hostile": true,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 18,
+      "loot": [
+        {
+          "itemId": 772,
+          "count": 1
+        },
+        {
+          "itemId": 773,
+          "count": 1
+        },
+        {
+          "itemId": 2589,
+          "count": 1
+        },
+        {
+          "itemId": 1175,
+          "count": 1
+        }
+      ],
+      "xp": 85,
+      "money": 8
+    },
+    {
+      "id": 328,
+      "name": "Zaldimar Wefhellt",
+      "displayId": 1294,
+      "level": 13,
+      "health": 273,
+      "damage": 18,
+      "armor": 30,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 375,
+      "name": "Priestess Anetta",
+      "displayId": 3344,
+      "level": 5,
+      "health": 102,
+      "damage": 5,
+      "armor": 6,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 377,
+      "name": "Priestess Josetta",
+      "displayId": 1295,
+      "level": 13,
+      "health": 273,
+      "damage": 18,
+      "armor": 30,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 383,
+      "name": "Jason Mathers",
+      "displayId": 3273,
+      "level": 7,
+      "health": 137,
+      "damage": 9,
+      "armor": 12,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 459,
+      "name": "Drusilla La Salle",
+      "displayId": 3345,
+      "level": 5,
+      "health": 102,
+      "damage": 5,
+      "armor": 6,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 465,
+      "name": "Barkeep Dobbins",
+      "displayId": 3266,
+      "level": 10,
+      "health": 198,
+      "damage": 13,
+      "armor": 23,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 471,
+      "name": "Mother Fang",
+      "displayId": 2541,
+      "level": 10,
+      "health": 198,
+      "damage": 13,
+      "armor": 23,
+      "hostile": true,
+      "questGiver": false,
+      "respawnSeconds": 300,
+      "aggroRadius": 20,
+      "loot": [
+        {
+          "itemId": 5465,
+          "count": 1
+        },
+        {
+          "itemId": 6148,
+          "count": 1
+        }
+      ],
+      "xp": 95,
+      "money": 0
+    },
+    {
+      "id": 472,
+      "name": "Fedfennel",
+      "displayId": 175,
+      "level": 12,
+      "health": 247,
+      "damage": 17,
+      "armor": 28,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 300,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 474,
+      "name": "Defias Rogue Wizard",
+      "displayId": 2359,
+      "level": 9,
+      "health": 160,
+      "damage": 8,
+      "armor": 17,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 475,
+      "name": "Kobold Tunneler",
+      "displayId": 139,
+      "level": 5,
+      "health": 102,
+      "damage": 5,
+      "armor": 6,
+      "hostile": true,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 18,
+      "loot": [
+        {
+          "itemId": 772,
+          "count": 1
+        },
+        {
+          "itemId": 773,
+          "count": 1
+        },
+        {
+          "itemId": 2589,
+          "count": 1
+        },
+        {
+          "itemId": 1195,
+          "count": 1
+        }
+      ],
+      "xp": 70,
+      "money": 6
+    },
+    {
+      "id": 476,
+      "name": "Kobold Geomancer",
+      "displayId": 163,
+      "level": 7,
+      "health": 126,
+      "damage": 6,
+      "armor": 10,
+      "hostile": true,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 18,
+      "loot": [
+        {
+          "itemId": 772,
+          "count": 1
+        },
+        {
+          "itemId": 773,
+          "count": 1
+        },
+        {
+          "itemId": 2589,
+          "count": 1
+        },
+        {
+          "itemId": 1399,
+          "count": 1
+        }
+      ],
+      "xp": 80,
+      "money": 8
+    },
+    {
+      "id": 478,
+      "name": "Riverpaw Outrunner",
+      "displayId": 512,
+      "level": 9,
+      "health": 176,
+      "damage": 12,
+      "armor": 19,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 514,
+      "name": "Smith Argus",
+      "displayId": 1288,
+      "level": 24,
+      "health": 664,
+      "damage": 34,
+      "armor": 49,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 190,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 524,
+      "name": "Rockhide Boar",
+      "displayId": 389,
+      "level": 7,
+      "health": 137,
+      "damage": 9,
+      "armor": 12,
+      "hostile": true,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 18,
+      "loot": [
+        {
+          "itemId": 769,
+          "count": 1
+        },
+        {
+          "itemId": 3171,
+          "count": 1
+        }
+      ],
+      "xp": 80,
+      "money": 0
+    },
+    {
+      "id": 525,
+      "name": "Mangy Wolf",
+      "displayId": 903,
+      "level": 5,
+      "health": 102,
+      "damage": 5,
+      "armor": 6,
+      "hostile": true,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 18,
+      "loot": [
+        {
+          "itemId": 2672,
+          "count": 1
+        },
+        {
+          "itemId": 3300,
+          "count": 1
+        }
+      ],
+      "xp": 70,
+      "money": 0
+    },
+    {
+      "id": 735,
+      "name": "Murloc Streamrunner",
+      "displayId": 527,
+      "level": 6,
+      "health": 120,
+      "damage": 7,
+      "armor": 8,
+      "hostile": true,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 18,
+      "loot": [
+        {
+          "itemId": 779,
+          "count": 1
+        },
+        {
+          "itemId": 6303,
+          "count": 1
+        }
+      ],
+      "xp": 75,
+      "money": 8
+    },
+    {
+      "id": 794,
+      "name": "Matt",
+      "displayId": 338,
+      "level": 1,
+      "health": 42,
+      "damage": 2,
+      "armor": 0,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 795,
+      "name": "Mark",
+      "displayId": 338,
+      "level": 1,
+      "health": 42,
+      "damage": 2,
+      "armor": 0,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 796,
+      "name": "Joshua",
+      "displayId": 221,
+      "level": 1,
+      "health": 42,
+      "damage": 2,
+      "armor": 0,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 797,
+      "name": "Bo",
+      "displayId": 338,
+      "level": 1,
+      "health": 42,
+      "damage": 2,
+      "armor": 0,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 804,
+      "name": "Dana",
+      "displayId": 257,
+      "level": 1,
+      "health": 42,
+      "damage": 2,
+      "armor": 0,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 805,
+      "name": "Cameron",
+      "displayId": 262,
+      "level": 1,
+      "health": 42,
+      "damage": 2,
+      "armor": 0,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 806,
+      "name": "John",
+      "displayId": 338,
+      "level": 1,
+      "health": 42,
+      "damage": 2,
+      "armor": 0,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 807,
+      "name": "Lisa",
+      "displayId": 252,
+      "level": 1,
+      "health": 42,
+      "damage": 2,
+      "armor": 0,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 810,
+      "name": "Aaron",
+      "displayId": 338,
+      "level": 1,
+      "health": 42,
+      "damage": 2,
+      "armor": 0,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 811,
+      "name": "Jose",
+      "displayId": 221,
+      "level": 1,
+      "health": 42,
+      "damage": 2,
+      "armor": 0,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 822,
+      "name": "Young Forest Bear",
+      "displayId": 1006,
+      "level": 8,
+      "health": 195,
+      "damage": 10,
+      "armor": 15,
+      "hostile": true,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 18,
+      "loot": [
+        {
+          "itemId": 7073,
+          "count": 1
+        },
+        {
+          "itemId": 4865,
+          "count": 1
+        }
+      ],
+      "xp": 85,
+      "money": 0
+    },
+    {
+      "id": 823,
+      "name": "Deputy Willem",
+      "displayId": 2072,
+      "level": 18,
+      "health": 417,
+      "damage": 26,
+      "armor": 38,
+      "hostile": false,
+      "questGiver": true,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 906,
+      "name": "Maximillian Crowe",
+      "displayId": 3271,
+      "level": 10,
+      "health": 198,
+      "damage": 13,
+      "armor": 23,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 911,
+      "name": "Llane Beshere",
+      "displayId": 3343,
+      "level": 5,
+      "health": 102,
+      "damage": 5,
+      "armor": 6,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 913,
+      "name": "Lyria Du Lac",
+      "displayId": 1300,
+      "level": 12,
+      "health": 247,
+      "damage": 17,
+      "armor": 28,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 915,
+      "name": "Jorik Kerridan",
+      "displayId": 3351,
+      "level": 5,
+      "health": 102,
+      "damage": 5,
+      "armor": 6,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 917,
+      "name": "Keryn Sylvius",
+      "displayId": 1297,
+      "level": 11,
+      "health": 222,
+      "damage": 15,
+      "armor": 26,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 925,
+      "name": "Brother Sammuel",
+      "displayId": 3346,
+      "level": 5,
+      "health": 102,
+      "damage": 5,
+      "armor": 6,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 927,
+      "name": "Brother Wilhelm",
+      "displayId": 1299,
+      "level": 11,
+      "health": 222,
+      "damage": 15,
+      "armor": 26,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 951,
+      "name": "Brother Paxton",
+      "displayId": 3253,
+      "level": 27,
+      "health": 840,
+      "damage": 38,
+      "armor": 54,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 250,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 952,
+      "name": "Brother Neals",
+      "displayId": 3317,
+      "level": 50,
+      "health": 2769,
+      "damage": 85,
+      "armor": 148,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 300,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 958,
+      "name": "Dawn Brightstar",
+      "displayId": 3347,
+      "level": 35,
+      "health": 1342,
+      "damage": 49,
+      "armor": 67,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 300,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 959,
+      "name": "Morley Eberlein",
+      "displayId": 5012,
+      "level": 10,
+      "health": 198,
+      "damage": 13,
+      "armor": 23,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 1213,
+      "name": "Godric Rothgar",
+      "displayId": 3278,
+      "level": 5,
+      "health": 102,
+      "damage": 5,
+      "armor": 6,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 1215,
+      "name": "Alchemist Mallory",
+      "displayId": 3237,
+      "level": 26,
+      "health": 788,
+      "damage": 37,
+      "armor": 52,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 250,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 1218,
+      "name": "Herbalist Pomeroy",
+      "displayId": 3269,
+      "level": 10,
+      "health": 198,
+      "damage": 13,
+      "armor": 23,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 1423,
+      "name": "Stormwind Guard",
+      "displayId": 3258,
+      "level": 22,
+      "health": 1124,
+      "damage": 32,
+      "armor": 45,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 190,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 1430,
+      "name": "Tomas",
+      "displayId": 1293,
+      "level": 10,
+      "health": 198,
+      "damage": 13,
+      "armor": 23,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 1632,
+      "name": "Adele Fielder",
+      "displayId": 3335,
+      "level": 22,
+      "health": 573,
+      "damage": 32,
+      "armor": 45,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 190,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 1651,
+      "name": "Lee Brown",
+      "displayId": 3272,
+      "level": 8,
+      "health": 156,
+      "damage": 10,
+      "armor": 15,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 1922,
+      "name": "Gray Forest Wolf",
+      "displayId": 380,
+      "level": 7,
+      "health": 137,
+      "damage": 9,
+      "armor": 12,
+      "hostile": true,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 18,
+      "loot": [
+        {
+          "itemId": 2672,
+          "count": 1
+        },
+        {
+          "itemId": 3300,
+          "count": 1
+        }
+      ],
+      "xp": 80,
+      "money": 0
+    },
+    {
+      "id": 1949,
+      "name": "Servant of Azora",
+      "displayId": 5015,
+      "level": 8,
+      "health": 156,
+      "damage": 10,
+      "armor": 15,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 2046,
+      "name": "Andrew Krighton",
+      "displayId": 3340,
+      "level": 8,
+      "health": 156,
+      "damage": 10,
+      "armor": 15,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 2329,
+      "name": "Michelle Belle",
+      "displayId": 1296,
+      "level": 11,
+      "health": 222,
+      "damage": 15,
+      "armor": 26,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 3935,
+      "name": "Toddrick",
+      "displayId": 3236,
+      "level": 10,
+      "health": 198,
+      "damage": 13,
+      "armor": 23,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 5403,
+      "name": "Riding White Stallion",
+      "displayId": 2410,
+      "level": 1,
+      "health": 42,
+      "damage": 2,
+      "armor": 0,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 5406,
+      "name": "Palomino",
+      "displayId": 2408,
+      "level": 1,
+      "health": 42,
+      "damage": 2,
+      "armor": 0,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 6121,
+      "name": "Remen Marcot",
+      "displayId": 4866,
+      "level": 10,
+      "health": 178,
+      "damage": 9,
+      "armor": 21,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 6306,
+      "name": "Helene Peltskinner",
+      "displayId": 5365,
+      "level": 12,
+      "health": 247,
+      "damage": 17,
+      "armor": 28,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 6367,
+      "name": "Donni Anthania",
+      "displayId": 5086,
+      "level": 5,
+      "health": 102,
+      "damage": 5,
+      "armor": 6,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 6373,
+      "name": "Dane Winslow",
+      "displayId": 5087,
+      "level": 8,
+      "health": 143,
+      "damage": 7,
+      "armor": 13,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 6374,
+      "name": "Cylina Darkheart",
+      "displayId": 5092,
+      "level": 11,
+      "health": 199,
+      "damage": 11,
+      "armor": 22,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 6491,
+      "name": "Spirit Healer",
+      "displayId": 5233,
+      "level": 60,
+      "health": 4120,
+      "damage": 104,
+      "armor": 188,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 60,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 6749,
+      "name": "Erma",
+      "displayId": 9257,
+      "level": 30,
+      "health": 1003,
+      "damage": 42,
+      "armor": 59,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 250,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 6774,
+      "name": "Falkhaan Isenstrider",
+      "displayId": 5526,
+      "level": 10,
+      "health": 198,
+      "damage": 13,
+      "armor": 23,
+      "hostile": false,
+      "questGiver": true,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 6778,
+      "name": "Melika Isenstrider",
+      "displayId": 5527,
+      "level": 11,
+      "health": 222,
+      "damage": 15,
+      "armor": 26,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 7381,
+      "name": "Silver Tabby Cat",
+      "displayId": 5555,
+      "level": 1,
+      "health": 42,
+      "damage": 2,
+      "armor": 0,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 300,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 7382,
+      "name": "Orange Tabby Cat",
+      "displayId": 5554,
+      "level": 1,
+      "health": 42,
+      "damage": 2,
+      "armor": 0,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 300,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 7384,
+      "name": "Cornish Rex Cat",
+      "displayId": 5586,
+      "level": 1,
+      "health": 42,
+      "damage": 2,
+      "armor": 0,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 7385,
+      "name": "Bombay Cat",
+      "displayId": 5556,
+      "level": 1,
+      "health": 42,
+      "damage": 2,
+      "armor": 0,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 300,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 9296,
+      "name": "Milly Osworth",
+      "displayId": 8489,
+      "level": 2,
+      "health": 55,
+      "damage": 2,
+      "armor": 1,
+      "hostile": false,
+      "questGiver": true,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 11260,
+      "name": "Northshire Peasant",
+      "displayId": 11354,
+      "level": 1,
+      "health": 42,
+      "damage": 2,
+      "armor": 0,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 11940,
+      "name": "Merissa Stilwell",
+      "displayId": 11898,
+      "level": 5,
+      "health": 102,
+      "damage": 5,
+      "armor": 6,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    },
+    {
+      "id": 12423,
+      "name": "Guard Roberts",
+      "displayId": 3258,
+      "level": 7,
+      "health": 137,
+      "damage": 9,
+      "armor": 12,
+      "hostile": false,
+      "questGiver": false,
+      "respawnSeconds": 180,
+      "aggroRadius": 0,
+      "loot": [],
+      "xp": 0,
+      "money": 0
+    }
+  ],
+  "spawns": [
+    {
+      "id": 11,
+      "entry": 1215,
+      "mapId": 0,
+      "x": -9056,
+      "y": 152.629,
+      "z": 115.116,
+      "orientation": 3.159
+    },
+    {
+      "id": 12,
+      "entry": 1218,
+      "mapId": 0,
+      "x": -9060,
+      "y": 148.566,
+      "z": 115.222,
+      "orientation": 1.606
+    },
+    {
+      "id": 30,
+      "entry": 794,
+      "mapId": 0,
+      "x": -9387.13,
+      "y": -117.859,
+      "z": 58.9627,
+      "orientation": 2.818
+    },
+    {
+      "id": 79615,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9684.52,
+      "y": -550.147,
+      "z": 49.0968,
+      "orientation": 1.22744
+    },
+    {
+      "id": 79616,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9664.94,
+      "y": -522.64,
+      "z": 51.4993,
+      "orientation": 3.76278
+    },
+    {
+      "id": 79617,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9670.05,
+      "y": -496.888,
+      "z": 51.6273,
+      "orientation": 0.165244
+    },
+    {
+      "id": 79618,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9623.76,
+      "y": -490.877,
+      "z": 58.2497,
+      "orientation": 4.21573
+    },
+    {
+      "id": 79619,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9473.71,
+      "y": -431.412,
+      "z": 59.8586,
+      "orientation": 4.67748
+    },
+    {
+      "id": 79620,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9479.72,
+      "y": -430.688,
+      "z": 58.7018,
+      "orientation": 5.53269
+    },
+    {
+      "id": 79621,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9484.21,
+      "y": -423.217,
+      "z": 59.9518,
+      "orientation": 1.26246
+    },
+    {
+      "id": 79622,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9500.72,
+      "y": -434.34,
+      "z": 56.3074,
+      "orientation": 2.20692
+    },
+    {
+      "id": 79623,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9485.44,
+      "y": -409.706,
+      "z": 59.806,
+      "orientation": 2.51726
+    },
+    {
+      "id": 79624,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9487.15,
+      "y": -437.875,
+      "z": 58.9326,
+      "orientation": 4.38078
+    },
+    {
+      "id": 79625,
+      "entry": 735,
+      "mapId": 0,
+      "x": -9547.14,
+      "y": -449.578,
+      "z": 60.4493,
+      "orientation": 2.82642
+    },
+    {
+      "id": 79626,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9553.39,
+      "y": -445.932,
+      "z": 61.0743,
+      "orientation": 3.30387
+    },
+    {
+      "id": 79627,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9484.85,
+      "y": -328.59,
+      "z": 54.8925,
+      "orientation": 0.418879
+    },
+    {
+      "id": 79628,
+      "entry": 6491,
+      "mapId": 0,
+      "x": -9341,
+      "y": 165.021,
+      "z": 61.641,
+      "orientation": 1.096
+    },
+    {
+      "id": 79629,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9456.27,
+      "y": -331.956,
+      "z": 55.4854,
+      "orientation": 2.46553
+    },
+    {
+      "id": 79630,
+      "entry": 735,
+      "mapId": 0,
+      "x": -9411.46,
+      "y": -324.322,
+      "z": 58.9587,
+      "orientation": 4.71239
+    },
+    {
+      "id": 79631,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9413.56,
+      "y": -271.553,
+      "z": 66.1763,
+      "orientation": 3.94092
+    },
+    {
+      "id": 79632,
+      "entry": 735,
+      "mapId": 0,
+      "x": -9445.9,
+      "y": -287.94,
+      "z": 58.0796,
+      "orientation": 3.96317
+    },
+    {
+      "id": 79634,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9476.74,
+      "y": -194.136,
+      "z": 56.734,
+      "orientation": 0.994268
+    },
+    {
+      "id": 79635,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9472.11,
+      "y": -220.709,
+      "z": 56.3165,
+      "orientation": 4.6669
+    },
+    {
+      "id": 79636,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9517.01,
+      "y": -114.266,
+      "z": 60.9928,
+      "orientation": 2.3195
+    },
+    {
+      "id": 79637,
+      "entry": 6306,
+      "mapId": 0,
+      "x": -9380.23,
+      "y": -69.5295,
+      "z": 64.5206,
+      "orientation": 4.55531
+    },
+    {
+      "id": 79638,
+      "entry": 805,
+      "mapId": 0,
+      "x": -9373,
+      "y": -66.3365,
+      "z": 69.3026,
+      "orientation": 1.03083
+    },
+    {
+      "id": 79639,
+      "entry": 806,
+      "mapId": 0,
+      "x": -9375.01,
+      "y": -64.1496,
+      "z": 69.303,
+      "orientation": 1.07403
+    },
+    {
+      "id": 79640,
+      "entry": 804,
+      "mapId": 0,
+      "x": -9371.5,
+      "y": -63.8449,
+      "z": 69.2032,
+      "orientation": 1.07202
+    },
+    {
+      "id": 79641,
+      "entry": 811,
+      "mapId": 0,
+      "x": -9370.07,
+      "y": -67.0083,
+      "z": 69.2028,
+      "orientation": 1.29179
+    },
+    {
+      "id": 79642,
+      "entry": 807,
+      "mapId": 0,
+      "x": -9375.8,
+      "y": -67.6207,
+      "z": 69.3021,
+      "orientation": 0.965543
+    },
+    {
+      "id": 79643,
+      "entry": 810,
+      "mapId": 0,
+      "x": -9372.78,
+      "y": -69.4064,
+      "z": 69.2021,
+      "orientation": 0.922176
+    },
+    {
+      "id": 79645,
+      "entry": 917,
+      "mapId": 0,
+      "x": -9465.79,
+      "y": 12.6454,
+      "z": 63.9038,
+      "orientation": 1.09956
+    },
+    {
+      "id": 79646,
+      "entry": 2329,
+      "mapId": 0,
+      "x": -9456.81,
+      "y": 29.361,
+      "z": 63.9038,
+      "orientation": 2.96706
+    },
+    {
+      "id": 79647,
+      "entry": 465,
+      "mapId": 0,
+      "x": -9459.98,
+      "y": 8.41135,
+      "z": 57.1459,
+      "orientation": 1.46608
+    },
+    {
+      "id": 79648,
+      "entry": 299,
+      "mapId": 0,
+      "x": -9393.36,
+      "y": 52.5792,
+      "z": 59.7772,
+      "orientation": 3.15888
+    },
+    {
+      "id": 79650,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9281.85,
+      "y": 93.0241,
+      "z": 70.4579,
+      "orientation": 2.90704
+    },
+    {
+      "id": 79651,
+      "entry": 299,
+      "mapId": 0,
+      "x": -9288.78,
+      "y": 93.2141,
+      "z": 70.1062,
+      "orientation": 3.68034
+    },
+    {
+      "id": 79653,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9190.44,
+      "y": 187.539,
+      "z": 74.0354,
+      "orientation": 3.28073
+    },
+    {
+      "id": 79877,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9217.53,
+      "y": 232.167,
+      "z": 73.2003,
+      "orientation": 4.64607
+    },
+    {
+      "id": 79885,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9193.79,
+      "y": 179.546,
+      "z": 73.7525,
+      "orientation": 5.65411
+    },
+    {
+      "id": 79887,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9184.27,
+      "y": 82.9969,
+      "z": 77.8678,
+      "orientation": 0
+    },
+    {
+      "id": 79888,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9162.37,
+      "y": 84.6315,
+      "z": 77.0762,
+      "orientation": 1.91986
+    },
+    {
+      "id": 79889,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9158.63,
+      "y": 88.1075,
+      "z": 76.4952,
+      "orientation": 3.05433
+    },
+    {
+      "id": 79890,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9162.57,
+      "y": 94.5477,
+      "z": 76.3557,
+      "orientation": 3.78736
+    },
+    {
+      "id": 79891,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9185.47,
+      "y": 118.826,
+      "z": 74.5898,
+      "orientation": 4.68115
+    },
+    {
+      "id": 79892,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9210.65,
+      "y": 134.54,
+      "z": 72.7013,
+      "orientation": 4.70716
+    },
+    {
+      "id": 79893,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9237.66,
+      "y": 40.2561,
+      "z": 73.3568,
+      "orientation": 3.72285
+    },
+    {
+      "id": 79894,
+      "entry": 299,
+      "mapId": 0,
+      "x": -9221.41,
+      "y": 46.3592,
+      "z": 74.7942,
+      "orientation": 6.15518
+    },
+    {
+      "id": 79895,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9211.86,
+      "y": 49.6484,
+      "z": 75.6888,
+      "orientation": 1.7138
+    },
+    {
+      "id": 79896,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9143.14,
+      "y": 58.0315,
+      "z": 77.4185,
+      "orientation": 5.11831
+    },
+    {
+      "id": 79897,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9178.42,
+      "y": 37.4651,
+      "z": 77.9614,
+      "orientation": 4.87576
+    },
+    {
+      "id": 79898,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9197.86,
+      "y": 73.8136,
+      "z": 77.4574,
+      "orientation": 4.42985
+    },
+    {
+      "id": 79899,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9277.91,
+      "y": -11.2201,
+      "z": 70.6536,
+      "orientation": 0.121179
+    },
+    {
+      "id": 79900,
+      "entry": 299,
+      "mapId": 0,
+      "x": -9222.11,
+      "y": -39.7406,
+      "z": 73.8181,
+      "orientation": 1.76359
+    },
+    {
+      "id": 79901,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9251.36,
+      "y": -11.6955,
+      "z": 73.4498,
+      "orientation": 4.86727
+    },
+    {
+      "id": 79905,
+      "entry": 7385,
+      "mapId": 0,
+      "x": -9173.6,
+      "y": -0.252902,
+      "z": 80.3948,
+      "orientation": 1.99512
+    },
+    {
+      "id": 79907,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9213.33,
+      "y": 19.113,
+      "z": 77.096,
+      "orientation": 0.692428
+    },
+    {
+      "id": 79908,
+      "entry": 7381,
+      "mapId": 0,
+      "x": -9173.94,
+      "y": 1.30174,
+      "z": 80.3945,
+      "orientation": 6.09201
+    },
+    {
+      "id": 79909,
+      "entry": 7382,
+      "mapId": 0,
+      "x": -9170.25,
+      "y": 2.46752,
+      "z": 80.4049,
+      "orientation": 1.56278
+    },
+    {
+      "id": 79910,
+      "entry": 7384,
+      "mapId": 0,
+      "x": -9175.33,
+      "y": 3.87259,
+      "z": 80.4912,
+      "orientation": 4.33778
+    },
+    {
+      "id": 79912,
+      "entry": 6367,
+      "mapId": 0,
+      "x": -9176.5,
+      "y": 0.704102,
+      "z": 80.4761,
+      "orientation": 5.79449
+    },
+    {
+      "id": 79917,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9120.66,
+      "y": 38.1426,
+      "z": 82.754,
+      "orientation": 5.63773
+    },
+    {
+      "id": 79920,
+      "entry": 299,
+      "mapId": 0,
+      "x": -9290,
+      "y": -10.2439,
+      "z": 69.5077,
+      "orientation": 5.69506
+    },
+    {
+      "id": 79921,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9222.78,
+      "y": -53.9854,
+      "z": 73.6102,
+      "orientation": 5.97606
+    },
+    {
+      "id": 79923,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9109.14,
+      "y": 6.64692,
+      "z": 88.2881,
+      "orientation": 5.75035
+    },
+    {
+      "id": 79925,
+      "entry": 6774,
+      "mapId": 0,
+      "x": -9044.56,
+      "y": -45.9817,
+      "z": 88.4193,
+      "orientation": 3.08923
+    },
+    {
+      "id": 79928,
+      "entry": 299,
+      "mapId": 0,
+      "x": -9025.26,
+      "y": -113.884,
+      "z": 88.0811,
+      "orientation": 5.90885
+    },
+    {
+      "id": 79933,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8953.62,
+      "y": -48.5983,
+      "z": 92.078,
+      "orientation": 1.52582
+    },
+    {
+      "id": 79934,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8971.19,
+      "y": -52.8166,
+      "z": 91.7821,
+      "orientation": 5.59298
+    },
+    {
+      "id": 79935,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8979.68,
+      "y": -64.6176,
+      "z": 90.5127,
+      "orientation": 4.30211
+    },
+    {
+      "id": 79936,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8970.22,
+      "y": -87.6545,
+      "z": 87.1446,
+      "orientation": 3.96984
+    },
+    {
+      "id": 79937,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8952.08,
+      "y": -83.9177,
+      "z": 88.3006,
+      "orientation": 5.93131
+    },
+    {
+      "id": 79938,
+      "entry": 299,
+      "mapId": 0,
+      "x": -9002.51,
+      "y": -129.957,
+      "z": 84.2971,
+      "orientation": 2.56219
+    },
+    {
+      "id": 79939,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8938.02,
+      "y": -49.7685,
+      "z": 90.7206,
+      "orientation": 2.82973
+    },
+    {
+      "id": 79940,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8925.81,
+      "y": -38.3764,
+      "z": 92.2095,
+      "orientation": 6.08847
+    },
+    {
+      "id": 79941,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8919.35,
+      "y": -52.6967,
+      "z": 87.9581,
+      "orientation": 0.302009
+    },
+    {
+      "id": 79942,
+      "entry": 823,
+      "mapId": 0,
+      "x": -8947.64,
+      "y": -132.319,
+      "z": 83.7199,
+      "orientation": 3.33358
+    },
+    {
+      "id": 79943,
+      "entry": 5403,
+      "mapId": 0,
+      "x": -8933.85,
+      "y": -166.93,
+      "z": 81.0317,
+      "orientation": 0
+    },
+    {
+      "id": 79945,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8993.86,
+      "y": -153.85,
+      "z": 81.2608,
+      "orientation": 0.192583
+    },
+    {
+      "id": 79946,
+      "entry": 299,
+      "mapId": 0,
+      "x": -9023.11,
+      "y": -141.786,
+      "z": 83.659,
+      "orientation": 2.96681
+    },
+    {
+      "id": 79949,
+      "entry": 11940,
+      "mapId": 0,
+      "x": -8908.31,
+      "y": -108.521,
+      "z": 81.9314,
+      "orientation": 4.13643
+    },
+    {
+      "id": 79950,
+      "entry": 152,
+      "mapId": 0,
+      "x": -8901.59,
+      "y": -112.716,
+      "z": 82.0314,
+      "orientation": 3.31613
+    },
+    {
+      "id": 79951,
+      "entry": 190,
+      "mapId": 0,
+      "x": -8897.71,
+      "y": -115.328,
+      "z": 81.9982,
+      "orientation": 3.78736
+    },
+    {
+      "id": 79952,
+      "entry": 1213,
+      "mapId": 0,
+      "x": -8898.23,
+      "y": -119.838,
+      "z": 82.016,
+      "orientation": 2.74017
+    },
+    {
+      "id": 79953,
+      "entry": 78,
+      "mapId": 0,
+      "x": -8909.46,
+      "y": -104.163,
+      "z": 82.0314,
+      "orientation": 4.39823
+    },
+    {
+      "id": 79954,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8867.79,
+      "y": -69.8964,
+      "z": 84.732,
+      "orientation": 2.01698
+    },
+    {
+      "id": 79955,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8879.21,
+      "y": -50.3677,
+      "z": 86.811,
+      "orientation": 3.42225
+    },
+    {
+      "id": 79956,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8872.65,
+      "y": -57.9788,
+      "z": 86.311,
+      "orientation": 1.4592
+    },
+    {
+      "id": 79957,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8918.72,
+      "y": -73.92,
+      "z": 88.3627,
+      "orientation": 5.72065
+    },
+    {
+      "id": 79958,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8883.51,
+      "y": -59.0416,
+      "z": 85.936,
+      "orientation": 5.39762
+    },
+    {
+      "id": 79959,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8886.96,
+      "y": -85.4681,
+      "z": 85.3813,
+      "orientation": 1.99338
+    },
+    {
+      "id": 79960,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8876.07,
+      "y": -114.909,
+      "z": 81.4776,
+      "orientation": 5.51329
+    },
+    {
+      "id": 79961,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8989.88,
+      "y": -170.731,
+      "z": 78.3374,
+      "orientation": 1.19042
+    },
+    {
+      "id": 79962,
+      "entry": 198,
+      "mapId": 0,
+      "x": -8851.57,
+      "y": -188.234,
+      "z": 89.4958,
+      "orientation": 2.9147
+    },
+    {
+      "id": 79963,
+      "entry": 375,
+      "mapId": 0,
+      "x": -8853.59,
+      "y": -193.336,
+      "z": 82.1157,
+      "orientation": 2.54818
+    },
+    {
+      "id": 79964,
+      "entry": 911,
+      "mapId": 0,
+      "x": -8918.36,
+      "y": -208.411,
+      "z": 82.3088,
+      "orientation": 6.05629
+    },
+    {
+      "id": 79965,
+      "entry": 6373,
+      "mapId": 0,
+      "x": -8927.62,
+      "y": -201.787,
+      "z": 80.6824,
+      "orientation": 2.26893
+    },
+    {
+      "id": 79966,
+      "entry": 459,
+      "mapId": 0,
+      "x": -8926.74,
+      "y": -195.589,
+      "z": 80.7714,
+      "orientation": 2.79253
+    },
+    {
+      "id": 79967,
+      "entry": 925,
+      "mapId": 0,
+      "x": -8914.57,
+      "y": -215.016,
+      "z": 82.2996,
+      "orientation": 1.20428
+    },
+    {
+      "id": 79968,
+      "entry": 952,
+      "mapId": 0,
+      "x": -8902.13,
+      "y": -181.646,
+      "z": 113.24,
+      "orientation": 0.872665
+    },
+    {
+      "id": 79969,
+      "entry": 951,
+      "mapId": 0,
+      "x": -8874.87,
+      "y": -186.332,
+      "z": 82.1206,
+      "orientation": 1.309
+    },
+    {
+      "id": 79970,
+      "entry": 197,
+      "mapId": 0,
+      "x": -8902.59,
+      "y": -162.606,
+      "z": 82.0223,
+      "orientation": 2.04204
+    },
+    {
+      "id": 79971,
+      "entry": 196,
+      "mapId": 0,
+      "x": -8869.22,
+      "y": -163.237,
+      "z": 80.9719,
+      "orientation": 0.959931
+    },
+    {
+      "id": 79974,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8826.85,
+      "y": -159.473,
+      "z": 80.208,
+      "orientation": 3.99024
+    },
+    {
+      "id": 79975,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8851.41,
+      "y": -84.09,
+      "z": 84.0794,
+      "orientation": 5.4171
+    },
+    {
+      "id": 79976,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8860.79,
+      "y": -87.9941,
+      "z": 82.4953,
+      "orientation": 4.86537
+    },
+    {
+      "id": 79977,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8815.7,
+      "y": -110.295,
+      "z": 82.4108,
+      "orientation": 1.8314
+    },
+    {
+      "id": 79978,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8820.1,
+      "y": -91.1454,
+      "z": 84.7704,
+      "orientation": 2.26079
+    },
+    {
+      "id": 79979,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8844.26,
+      "y": -45.0241,
+      "z": 86.9295,
+      "orientation": 1.89413
+    },
+    {
+      "id": 79980,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8854.87,
+      "y": -106.428,
+      "z": 80.9344,
+      "orientation": 5.97907
+    },
+    {
+      "id": 79981,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8827.2,
+      "y": -100.013,
+      "z": 84.5956,
+      "orientation": 5.23202
+    },
+    {
+      "id": 79982,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8820.37,
+      "y": -79.6791,
+      "z": 86.4006,
+      "orientation": 6.21158
+    },
+    {
+      "id": 79983,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8828.87,
+      "y": -69.3906,
+      "z": 87.0256,
+      "orientation": 0.512979
+    },
+    {
+      "id": 79984,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8856.48,
+      "y": -131.607,
+      "z": 81.3476,
+      "orientation": 3.83983
+    },
+    {
+      "id": 79985,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8838.49,
+      "y": -133.395,
+      "z": 81.4415,
+      "orientation": 4.58528
+    },
+    {
+      "id": 79986,
+      "entry": 915,
+      "mapId": 0,
+      "x": -8863.47,
+      "y": -210.905,
+      "z": 80.755,
+      "orientation": 4.41568
+    },
+    {
+      "id": 79987,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8813.36,
+      "y": -179.602,
+      "z": 82.1866,
+      "orientation": 1.63724
+    },
+    {
+      "id": 79988,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8810.28,
+      "y": -179.303,
+      "z": 82.2459,
+      "orientation": 1.96849
+    },
+    {
+      "id": 79989,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8804.49,
+      "y": -136.622,
+      "z": 83.8785,
+      "orientation": 3.02099
+    },
+    {
+      "id": 79990,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8806.25,
+      "y": -143.212,
+      "z": 83.724,
+      "orientation": 1.33151
+    },
+    {
+      "id": 79992,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8783.05,
+      "y": -161.565,
+      "z": 82.0352,
+      "orientation": 0.904036
+    },
+    {
+      "id": 79993,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8774.13,
+      "y": -184.494,
+      "z": 83.1764,
+      "orientation": 1.59099
+    },
+    {
+      "id": 79994,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8794.45,
+      "y": -170.399,
+      "z": 81.5514,
+      "orientation": 1.74907
+    },
+    {
+      "id": 79995,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8794.96,
+      "y": -134.15,
+      "z": 83.0352,
+      "orientation": 2.1558
+    },
+    {
+      "id": 79996,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8789.91,
+      "y": -143.313,
+      "z": 82.8382,
+      "orientation": 2.96193
+    },
+    {
+      "id": 79997,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8747.56,
+      "y": -135.783,
+      "z": 83.7125,
+      "orientation": 5.44551
+    },
+    {
+      "id": 79998,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8768.46,
+      "y": -176.434,
+      "z": 83.4446,
+      "orientation": 3.31613
+    },
+    {
+      "id": 79999,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8752.95,
+      "y": -160.776,
+      "z": 84.377,
+      "orientation": 2.22203
+    },
+    {
+      "id": 80000,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8779.8,
+      "y": -195.355,
+      "z": 84.0514,
+      "orientation": 3.78246
+    },
+    {
+      "id": 80001,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8775.9,
+      "y": -148.466,
+      "z": 81.4102,
+      "orientation": 4.05152
+    },
+    {
+      "id": 80002,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8785.46,
+      "y": -171.229,
+      "z": 81.6764,
+      "orientation": 5.11032
+    },
+    {
+      "id": 80003,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8763.31,
+      "y": -159.256,
+      "z": 82.9625,
+      "orientation": 5.98151
+    },
+    {
+      "id": 80004,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8756.81,
+      "y": -171.434,
+      "z": 84.8866,
+      "orientation": 3.52798
+    },
+    {
+      "id": 80005,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8769.9,
+      "y": -138.115,
+      "z": 82.5352,
+      "orientation": 0.362188
+    },
+    {
+      "id": 80006,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8824.51,
+      "y": -58.7339,
+      "z": 88.6915,
+      "orientation": 3.69501
+    },
+    {
+      "id": 80007,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8808.48,
+      "y": -91.4317,
+      "z": 84.1506,
+      "orientation": 3.60744
+    },
+    {
+      "id": 80008,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8781.32,
+      "y": -59.8318,
+      "z": 91.9924,
+      "orientation": 5.18477
+    },
+    {
+      "id": 80009,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8752.63,
+      "y": -81.9882,
+      "z": 92.7991,
+      "orientation": 0.638906
+    },
+    {
+      "id": 80010,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8761.9,
+      "y": -66.2644,
+      "z": 92.2944,
+      "orientation": 4.47272
+    },
+    {
+      "id": 80011,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8765.28,
+      "y": -93.41,
+      "z": 89.8321,
+      "orientation": 0.129198
+    },
+    {
+      "id": 80012,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8771.45,
+      "y": -115.916,
+      "z": 83.365,
+      "orientation": 0.383972
+    },
+    {
+      "id": 80013,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8794.01,
+      "y": -118.5,
+      "z": 83.5315,
+      "orientation": 1.02964
+    },
+    {
+      "id": 80014,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8778.78,
+      "y": -125.732,
+      "z": 82.7815,
+      "orientation": 1.30576
+    },
+    {
+      "id": 80015,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8781.3,
+      "y": -115.552,
+      "z": 82.8641,
+      "orientation": 0.122173
+    },
+    {
+      "id": 80016,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8766.97,
+      "y": -117.391,
+      "z": 83.6927,
+      "orientation": 2.30383
+    },
+    {
+      "id": 80017,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8761.02,
+      "y": -127.543,
+      "z": 83.4305,
+      "orientation": 1.01327
+    },
+    {
+      "id": 80018,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8780.05,
+      "y": -108.379,
+      "z": 83.6632,
+      "orientation": 5.79449
+    },
+    {
+      "id": 80019,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8772.89,
+      "y": -103.59,
+      "z": 86.1565,
+      "orientation": 5.22354
+    },
+    {
+      "id": 80020,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8768.63,
+      "y": -113.135,
+      "z": 83.7794,
+      "orientation": 0.0699
+    },
+    {
+      "id": 80021,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8786.94,
+      "y": -105.911,
+      "z": 83.4065,
+      "orientation": 0.976494
+    },
+    {
+      "id": 80022,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8770.12,
+      "y": -117.703,
+      "z": 83.4954,
+      "orientation": 0
+    },
+    {
+      "id": 80023,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8767.71,
+      "y": -111.647,
+      "z": 84.3424,
+      "orientation": 4.15388
+    },
+    {
+      "id": 80024,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8749.15,
+      "y": -114.985,
+      "z": 86.0692,
+      "orientation": 6.13703
+    },
+    {
+      "id": 80025,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8789.76,
+      "y": -69.806,
+      "z": 90.19,
+      "orientation": 5.7897
+    },
+    {
+      "id": 80026,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8752.36,
+      "y": -101.854,
+      "z": 87.9305,
+      "orientation": 1.63139
+    },
+    {
+      "id": 80027,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8799.31,
+      "y": -70.4097,
+      "z": 88.9475,
+      "orientation": 1.9513
+    },
+    {
+      "id": 80028,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8753.58,
+      "y": -192.765,
+      "z": 85.7976,
+      "orientation": 1.5708
+    },
+    {
+      "id": 80030,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8718.79,
+      "y": -148.353,
+      "z": 86.1238,
+      "orientation": 3.38237
+    },
+    {
+      "id": 80031,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8757.55,
+      "y": -180.684,
+      "z": 85.0116,
+      "orientation": 1.62418
+    },
+    {
+      "id": 80032,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8768.17,
+      "y": -190.502,
+      "z": 84.7417,
+      "orientation": 6.08596
+    },
+    {
+      "id": 80033,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8721.69,
+      "y": -155.805,
+      "z": 85.3738,
+      "orientation": 5.30705
+    },
+    {
+      "id": 80034,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8717.47,
+      "y": -144.581,
+      "z": 86.4988,
+      "orientation": 0.432977
+    },
+    {
+      "id": 80035,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8698.78,
+      "y": -161.758,
+      "z": 89.1669,
+      "orientation": 1.97494
+    },
+    {
+      "id": 80036,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8742.24,
+      "y": -176.21,
+      "z": 85.6366,
+      "orientation": 5.59501
+    },
+    {
+      "id": 80037,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8727.35,
+      "y": -133.797,
+      "z": 86.9388,
+      "orientation": 0.016385
+    },
+    {
+      "id": 80040,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8736.29,
+      "y": -72.8328,
+      "z": 92.3321,
+      "orientation": 6.01294
+    },
+    {
+      "id": 80041,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8753.2,
+      "y": -33.3754,
+      "z": 92.5098,
+      "orientation": 1.87129
+    },
+    {
+      "id": 80042,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8748.67,
+      "y": -50.3176,
+      "z": 92.2134,
+      "orientation": 2.86224
+    },
+    {
+      "id": 80043,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8737.09,
+      "y": -94.3173,
+      "z": 90.1741,
+      "orientation": 3.34832
+    },
+    {
+      "id": 80045,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8706.28,
+      "y": -129.849,
+      "z": 86.2483,
+      "orientation": 3.47469
+    },
+    {
+      "id": 80046,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8701.35,
+      "y": -118.101,
+      "z": 88.8733,
+      "orientation": 0.843928
+    },
+    {
+      "id": 80047,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8718.7,
+      "y": -98.3166,
+      "z": 88.3631,
+      "orientation": 5.60389
+    },
+    {
+      "id": 80048,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8695.02,
+      "y": -114.396,
+      "z": 89.3617,
+      "orientation": 3.886
+    },
+    {
+      "id": 80049,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8695.04,
+      "y": -103.437,
+      "z": 89.6117,
+      "orientation": 3.47724
+    },
+    {
+      "id": 80050,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8713.42,
+      "y": -90.302,
+      "z": 89.5737,
+      "orientation": 5.2409
+    },
+    {
+      "id": 80051,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8707.58,
+      "y": -108.406,
+      "z": 89.1233,
+      "orientation": 2.23404
+    },
+    {
+      "id": 80052,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8691.02,
+      "y": -80.2893,
+      "z": 90.1544,
+      "orientation": 0.100076
+    },
+    {
+      "id": 80053,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8684.79,
+      "y": -71.4061,
+      "z": 91.0294,
+      "orientation": 1.34379
+    },
+    {
+      "id": 80054,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8698.44,
+      "y": -70.5609,
+      "z": 90.2794,
+      "orientation": 2.97837
+    },
+    {
+      "id": 80055,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8686.47,
+      "y": -108.002,
+      "z": 89.3114,
+      "orientation": 3.22886
+    },
+    {
+      "id": 80056,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8680.79,
+      "y": -120.071,
+      "z": 90.8183,
+      "orientation": 2.58309
+    },
+    {
+      "id": 80057,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8671.76,
+      "y": -127.471,
+      "z": 92.0538,
+      "orientation": 3.69248
+    },
+    {
+      "id": 80058,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8725.92,
+      "y": -109.693,
+      "z": 86.2483,
+      "orientation": 0.481521
+    },
+    {
+      "id": 80059,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8667.23,
+      "y": -116.46,
+      "z": 92.5587,
+      "orientation": 1.51229
+    },
+    {
+      "id": 80060,
+      "entry": 80,
+      "mapId": 0,
+      "x": -8671.83,
+      "y": -123.34,
+      "z": 92.1135,
+      "orientation": 1.68621
+    },
+    {
+      "id": 80064,
+      "entry": 80,
+      "mapId": 0,
+      "x": -8632.33,
+      "y": -143.753,
+      "z": 86.3842,
+      "orientation": 3.27452
+    },
+    {
+      "id": 80065,
+      "entry": 80,
+      "mapId": 0,
+      "x": -8616.27,
+      "y": -143.334,
+      "z": 87.4937,
+      "orientation": 0.409049
+    },
+    {
+      "id": 80066,
+      "entry": 80,
+      "mapId": 0,
+      "x": -8640.19,
+      "y": -143.559,
+      "z": 86.8829,
+      "orientation": 1.44862
+    },
+    {
+      "id": 80067,
+      "entry": 80,
+      "mapId": 0,
+      "x": -8640.58,
+      "y": -113.289,
+      "z": 87.0824,
+      "orientation": 2.97738
+    },
+    {
+      "id": 80068,
+      "entry": 80,
+      "mapId": 0,
+      "x": -8635.27,
+      "y": -110.326,
+      "z": 86.9396,
+      "orientation": 4.78637
+    },
+    {
+      "id": 80069,
+      "entry": 80,
+      "mapId": 0,
+      "x": -8657.9,
+      "y": -124.669,
+      "z": 91.0275,
+      "orientation": 5.76153
+    },
+    {
+      "id": 80070,
+      "entry": 80,
+      "mapId": 0,
+      "x": -8639.08,
+      "y": -132.949,
+      "z": 87.094,
+      "orientation": 6.08973
+    },
+    {
+      "id": 80071,
+      "entry": 80,
+      "mapId": 0,
+      "x": -8654.91,
+      "y": -127.006,
+      "z": 89.6647,
+      "orientation": 2.8159
+    },
+    {
+      "id": 80072,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8741.43,
+      "y": -193.606,
+      "z": 86.2892,
+      "orientation": 1.22173
+    },
+    {
+      "id": 80074,
+      "entry": 80,
+      "mapId": 0,
+      "x": -8613.77,
+      "y": -152.982,
+      "z": 86.2569,
+      "orientation": 3.08878
+    },
+    {
+      "id": 80075,
+      "entry": 80,
+      "mapId": 0,
+      "x": -8610.92,
+      "y": -171.602,
+      "z": 85.7916,
+      "orientation": 0.602958
+    },
+    {
+      "id": 80076,
+      "entry": 80,
+      "mapId": 0,
+      "x": -8596.08,
+      "y": -173.872,
+      "z": 87.2408,
+      "orientation": 2.94578
+    },
+    {
+      "id": 80077,
+      "entry": 80,
+      "mapId": 0,
+      "x": -8609.08,
+      "y": -141.239,
+      "z": 87.7624,
+      "orientation": 3.50514
+    },
+    {
+      "id": 80078,
+      "entry": 80,
+      "mapId": 0,
+      "x": -8601.23,
+      "y": -138.195,
+      "z": 87.8068,
+      "orientation": 4.00536
+    },
+    {
+      "id": 80079,
+      "entry": 80,
+      "mapId": 0,
+      "x": -8588.97,
+      "y": -147.395,
+      "z": 89.6137,
+      "orientation": 2.07603
+    },
+    {
+      "id": 80080,
+      "entry": 80,
+      "mapId": 0,
+      "x": -8550.41,
+      "y": -163.072,
+      "z": 86.6575,
+      "orientation": 3.8533
+    },
+    {
+      "id": 80081,
+      "entry": 80,
+      "mapId": 0,
+      "x": -8582.82,
+      "y": -171.929,
+      "z": 91.1493,
+      "orientation": 4.1382
+    },
+    {
+      "id": 80082,
+      "entry": 80,
+      "mapId": 0,
+      "x": -8573.48,
+      "y": -150.506,
+      "z": 89.8691,
+      "orientation": 1.40641
+    },
+    {
+      "id": 80083,
+      "entry": 80,
+      "mapId": 0,
+      "x": -8555.47,
+      "y": -149.37,
+      "z": 88.5302,
+      "orientation": 5.12587
+    },
+    {
+      "id": 80084,
+      "entry": 80,
+      "mapId": 0,
+      "x": -8559.72,
+      "y": -210.564,
+      "z": 84.4113,
+      "orientation": 2.62464
+    },
+    {
+      "id": 80087,
+      "entry": 80,
+      "mapId": 0,
+      "x": -8561.05,
+      "y": -217.528,
+      "z": 85.5112,
+      "orientation": 4.95625
+    },
+    {
+      "id": 80088,
+      "entry": 80,
+      "mapId": 0,
+      "x": -8564.94,
+      "y": -203.695,
+      "z": 84.3839,
+      "orientation": 1.86342
+    },
+    {
+      "id": 80089,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8732.69,
+      "y": -197.638,
+      "z": 88.1356,
+      "orientation": 5.84854
+    },
+    {
+      "id": 80094,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8760.26,
+      "y": -201.47,
+      "z": 86.3046,
+      "orientation": 0.963932
+    },
+    {
+      "id": 80095,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8722.67,
+      "y": -207.828,
+      "z": 89.6581,
+      "orientation": 5.39678
+    },
+    {
+      "id": 80096,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8732.07,
+      "y": -205.732,
+      "z": 89.1581,
+      "orientation": 5.04892
+    },
+    {
+      "id": 80098,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8784.33,
+      "y": -245.049,
+      "z": 83.121,
+      "orientation": 3.66519
+    },
+    {
+      "id": 80099,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8773.21,
+      "y": -242.694,
+      "z": 83.9417,
+      "orientation": 5.63666
+    },
+    {
+      "id": 80100,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8765.42,
+      "y": -256.049,
+      "z": 80.6917,
+      "orientation": 3.86551
+    },
+    {
+      "id": 80101,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8766.04,
+      "y": -232.213,
+      "z": 85.4296,
+      "orientation": 3.70092
+    },
+    {
+      "id": 80102,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8762.35,
+      "y": -235.236,
+      "z": 85.3167,
+      "orientation": 1.36265
+    },
+    {
+      "id": 80103,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8778.08,
+      "y": -254.596,
+      "z": 82.1907,
+      "orientation": 1.81161
+    },
+    {
+      "id": 80105,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8781.39,
+      "y": -274.644,
+      "z": 78.8608,
+      "orientation": 2.40847
+    },
+    {
+      "id": 80106,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8752.87,
+      "y": -295.046,
+      "z": 79.4607,
+      "orientation": 5.62039
+    },
+    {
+      "id": 80107,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8769.02,
+      "y": -272.632,
+      "z": 78.2358,
+      "orientation": 2.58601
+    },
+    {
+      "id": 80108,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8810.02,
+      "y": -217.027,
+      "z": 83.7262,
+      "orientation": 1.46425
+    },
+    {
+      "id": 80109,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8809.45,
+      "y": -233.871,
+      "z": 82.5042,
+      "orientation": 4.57276
+    },
+    {
+      "id": 80110,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8805.95,
+      "y": -244.942,
+      "z": 82.4202,
+      "orientation": 1.95947
+    },
+    {
+      "id": 80111,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8813.27,
+      "y": -244.145,
+      "z": 82.2872,
+      "orientation": 0
+    },
+    {
+      "id": 80112,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8817.24,
+      "y": -228.768,
+      "z": 82.9962,
+      "orientation": 6.24274
+    },
+    {
+      "id": 80113,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8805.37,
+      "y": -205.46,
+      "z": 82.6964,
+      "orientation": 6.05053
+    },
+    {
+      "id": 80114,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8806.91,
+      "y": -226.327,
+      "z": 82.8712,
+      "orientation": 5.20619
+    },
+    {
+      "id": 80115,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8796.38,
+      "y": -247.373,
+      "z": 82.4417,
+      "orientation": 4.31741
+    },
+    {
+      "id": 80116,
+      "entry": 6,
+      "mapId": 0,
+      "x": -8796.15,
+      "y": -258.344,
+      "z": 82.9284,
+      "orientation": 2.70763
+    },
+    {
+      "id": 80117,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8786.88,
+      "y": -252.299,
+      "z": 82.661,
+      "orientation": 2.23402
+    },
+    {
+      "id": 80118,
+      "entry": 9296,
+      "mapId": 0,
+      "x": -8850.29,
+      "y": -224.03,
+      "z": 81.7778,
+      "orientation": 4.93928
+    },
+    {
+      "id": 80119,
+      "entry": 11260,
+      "mapId": 0,
+      "x": -8840.36,
+      "y": -271.29,
+      "z": 80.9749,
+      "orientation": 1.13804
+    },
+    {
+      "id": 80120,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8823.45,
+      "y": -236.78,
+      "z": 82.4202,
+      "orientation": 4.01583
+    },
+    {
+      "id": 80121,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8819.6,
+      "y": -252.86,
+      "z": 82.5452,
+      "orientation": 0.517106
+    },
+    {
+      "id": 80122,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8811.3,
+      "y": -257.724,
+      "z": 82.7952,
+      "orientation": 3.19441
+    },
+    {
+      "id": 80127,
+      "entry": 11260,
+      "mapId": 0,
+      "x": -8856.89,
+      "y": -252.401,
+      "z": 81.195,
+      "orientation": 5.37848
+    },
+    {
+      "id": 80129,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8875.74,
+      "y": -242.938,
+      "z": 81.8754,
+      "orientation": 1.17205
+    },
+    {
+      "id": 80130,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8845.73,
+      "y": -287.021,
+      "z": 78.3529,
+      "orientation": 4.98699
+    },
+    {
+      "id": 80131,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8827.58,
+      "y": -292.02,
+      "z": 79.3608,
+      "orientation": 0.334482
+    },
+    {
+      "id": 80133,
+      "entry": 257,
+      "mapId": 0,
+      "x": -8705.78,
+      "y": -201.821,
+      "z": 90.9366,
+      "orientation": 2.87979
+    },
+    {
+      "id": 80134,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8876.64,
+      "y": -291.29,
+      "z": 78.0791,
+      "orientation": 5.03571
+    },
+    {
+      "id": 80135,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8903.4,
+      "y": -271.746,
+      "z": 78.8336,
+      "orientation": 3.69709
+    },
+    {
+      "id": 80136,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8836.19,
+      "y": -306.546,
+      "z": 76.6022,
+      "orientation": 5.82215
+    },
+    {
+      "id": 80137,
+      "entry": 11260,
+      "mapId": 0,
+      "x": -8891.61,
+      "y": -275.477,
+      "z": 80.0948,
+      "orientation": 4.86014
+    },
+    {
+      "id": 80138,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8901.44,
+      "y": -265.269,
+      "z": 79.2182,
+      "orientation": 0.22555
+    },
+    {
+      "id": 80139,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8916.07,
+      "y": -287.69,
+      "z": 77.2543,
+      "orientation": 3.59651
+    },
+    {
+      "id": 80140,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8951,
+      "y": -252.969,
+      "z": 76.0696,
+      "orientation": 3.51775
+    },
+    {
+      "id": 80141,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8961.19,
+      "y": -231.91,
+      "z": 76.9597,
+      "orientation": 1.20516
+    },
+    {
+      "id": 80142,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8966.63,
+      "y": -231.021,
+      "z": 76.2175,
+      "orientation": 4.7172
+    },
+    {
+      "id": 80143,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8968.29,
+      "y": -229.972,
+      "z": 75.8943,
+      "orientation": 1.04737
+    },
+    {
+      "id": 80144,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8937.8,
+      "y": -259.455,
+      "z": 77.0463,
+      "orientation": 0.676014
+    },
+    {
+      "id": 80145,
+      "entry": 11260,
+      "mapId": 0,
+      "x": -8932.22,
+      "y": -240.487,
+      "z": 79.4929,
+      "orientation": 2.99685
+    },
+    {
+      "id": 80146,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8920.5,
+      "y": -255.801,
+      "z": 79.6554,
+      "orientation": 3.6542
+    },
+    {
+      "id": 80147,
+      "entry": 38,
+      "mapId": 0,
+      "x": -8994.59,
+      "y": -312.364,
+      "z": 71.9033,
+      "orientation": 1.76278
+    },
+    {
+      "id": 80149,
+      "entry": 38,
+      "mapId": 0,
+      "x": -8964.3,
+      "y": -334.248,
+      "z": 71.6651,
+      "orientation": 2.91509
+    },
+    {
+      "id": 80151,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9031.57,
+      "y": -304.335,
+      "z": 74.4903,
+      "orientation": 1.78024
+    },
+    {
+      "id": 80152,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9033.82,
+      "y": -301.611,
+      "z": 74.7497,
+      "orientation": 5.89921
+    },
+    {
+      "id": 80153,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9030.79,
+      "y": -285.642,
+      "z": 75.5096,
+      "orientation": 6.25018
+    },
+    {
+      "id": 80154,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9062.89,
+      "y": -267.752,
+      "z": 73.9798,
+      "orientation": 3.1138
+    },
+    {
+      "id": 80155,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9028.07,
+      "y": -297.134,
+      "z": 75.3265,
+      "orientation": 5.46843
+    },
+    {
+      "id": 80156,
+      "entry": 69,
+      "mapId": 0,
+      "x": -9017.96,
+      "y": -196.56,
+      "z": 75.0036,
+      "orientation": 3.10197
+    },
+    {
+      "id": 80157,
+      "entry": 299,
+      "mapId": 0,
+      "x": -8987.25,
+      "y": -179,
+      "z": 76.9624,
+      "orientation": 1.85569
+    },
+    {
+      "id": 80158,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9039.49,
+      "y": -264.737,
+      "z": 73.6806,
+      "orientation": 4.56933
+    },
+    {
+      "id": 80161,
+      "entry": 69,
+      "mapId": 0,
+      "x": -9079.85,
+      "y": -182.028,
+      "z": 74.6405,
+      "orientation": 6.06449
+    },
+    {
+      "id": 80162,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9079.48,
+      "y": -236.698,
+      "z": 73.5753,
+      "orientation": 5.91654
+    },
+    {
+      "id": 80164,
+      "entry": 69,
+      "mapId": 0,
+      "x": -9038.11,
+      "y": -177.288,
+      "z": 76.8733,
+      "orientation": 2.59264
+    },
+    {
+      "id": 80165,
+      "entry": 69,
+      "mapId": 0,
+      "x": -9028.41,
+      "y": -164.729,
+      "z": 79.2117,
+      "orientation": 5.30062
+    },
+    {
+      "id": 80168,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9084.74,
+      "y": -279.007,
+      "z": 73.74,
+      "orientation": 5.68111
+    },
+    {
+      "id": 80169,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9068.32,
+      "y": -288.58,
+      "z": 73.7368,
+      "orientation": 0.793078
+    },
+    {
+      "id": 80170,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9099.05,
+      "y": -277.979,
+      "z": 73.2813,
+      "orientation": 2.38933
+    },
+    {
+      "id": 80171,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9120.29,
+      "y": -269.848,
+      "z": 73.6024,
+      "orientation": 4.02247
+    },
+    {
+      "id": 80174,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9079.81,
+      "y": -247.925,
+      "z": 73.8253,
+      "orientation": 0.698361
+    },
+    {
+      "id": 80175,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9112.45,
+      "y": -244.769,
+      "z": 75.5258,
+      "orientation": 1.77427
+    },
+    {
+      "id": 80176,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8994.55,
+      "y": -250.291,
+      "z": 72.0086,
+      "orientation": 3.53139
+    },
+    {
+      "id": 80180,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9110.05,
+      "y": -311.655,
+      "z": 73.5303,
+      "orientation": 1.26827
+    },
+    {
+      "id": 80181,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9131.1,
+      "y": -323.678,
+      "z": 73.0066,
+      "orientation": 1.20518
+    },
+    {
+      "id": 80182,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9135.2,
+      "y": -282.032,
+      "z": 72.1678,
+      "orientation": 5.44543
+    },
+    {
+      "id": 80183,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9141.53,
+      "y": -290.903,
+      "z": 72.5665,
+      "orientation": 3.26377
+    },
+    {
+      "id": 80184,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9083.31,
+      "y": -301.332,
+      "z": 73.4003,
+      "orientation": 0.05236
+    },
+    {
+      "id": 80185,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9081.54,
+      "y": -299.698,
+      "z": 73.5213,
+      "orientation": 4.59022
+    },
+    {
+      "id": 80186,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9086.48,
+      "y": -314.165,
+      "z": 73.4716,
+      "orientation": 5.60884
+    },
+    {
+      "id": 80187,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9090.72,
+      "y": -331.023,
+      "z": 73.4716,
+      "orientation": 0.848541
+    },
+    {
+      "id": 80188,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9077.56,
+      "y": -334.076,
+      "z": 73.5351,
+      "orientation": 1.29154
+    },
+    {
+      "id": 80189,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9075.33,
+      "y": -332.12,
+      "z": 73.5351,
+      "orientation": 3.66519
+    },
+    {
+      "id": 80190,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9078.17,
+      "y": -331.132,
+      "z": 73.4716,
+      "orientation": 5.25754
+    },
+    {
+      "id": 80191,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9110.34,
+      "y": -338.593,
+      "z": 73.4938,
+      "orientation": 2.70326
+    },
+    {
+      "id": 80193,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9054.5,
+      "y": -311.645,
+      "z": 73.5767,
+      "orientation": 5.60214
+    },
+    {
+      "id": 80194,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9058.18,
+      "y": -325.627,
+      "z": 73.5767,
+      "orientation": 4.24052
+    },
+    {
+      "id": 80195,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9045.05,
+      "y": -324.702,
+      "z": 73.5767,
+      "orientation": 4.84956
+    },
+    {
+      "id": 80196,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9130.17,
+      "y": -263.614,
+      "z": 72.5258,
+      "orientation": 4.62631
+    },
+    {
+      "id": 80199,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9128.11,
+      "y": -355.049,
+      "z": 73.4938,
+      "orientation": 5.71384
+    },
+    {
+      "id": 80200,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9077.32,
+      "y": -377.228,
+      "z": 73.5343,
+      "orientation": 1.32645
+    },
+    {
+      "id": 80201,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9073.82,
+      "y": -376.869,
+      "z": 73.5351,
+      "orientation": 2.44346
+    },
+    {
+      "id": 80202,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9147.74,
+      "y": -341.34,
+      "z": 72.786,
+      "orientation": 4.69789
+    },
+    {
+      "id": 80203,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9144.97,
+      "y": -368.707,
+      "z": 72.0304,
+      "orientation": 2.68893
+    },
+    {
+      "id": 80204,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9124.93,
+      "y": -389.333,
+      "z": 72.7234,
+      "orientation": 5.29585
+    },
+    {
+      "id": 80205,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9090.67,
+      "y": -397.58,
+      "z": 73.1227,
+      "orientation": 2.95765
+    },
+    {
+      "id": 80206,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9071.87,
+      "y": -355.235,
+      "z": 73.5757,
+      "orientation": 0.881842
+    },
+    {
+      "id": 80207,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9093.8,
+      "y": -355.778,
+      "z": 73.5757,
+      "orientation": 4.01018
+    },
+    {
+      "id": 80208,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9102.6,
+      "y": -357.989,
+      "z": 73.5504,
+      "orientation": 5.51633
+    },
+    {
+      "id": 80209,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9046.82,
+      "y": -375.002,
+      "z": 74.1866,
+      "orientation": 1.25406
+    },
+    {
+      "id": 80210,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9028.01,
+      "y": -359.972,
+      "z": 75.5033,
+      "orientation": 1.19357
+    },
+    {
+      "id": 80211,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9025.5,
+      "y": -340.637,
+      "z": 74.5033,
+      "orientation": 4.86725
+    },
+    {
+      "id": 80213,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9061.12,
+      "y": -369.522,
+      "z": 73.5131,
+      "orientation": 3.81119
+    },
+    {
+      "id": 80214,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9046.85,
+      "y": -343.534,
+      "z": 73.5767,
+      "orientation": 0.92428
+    },
+    {
+      "id": 80216,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9091.08,
+      "y": -421.406,
+      "z": 73.9978,
+      "orientation": 4.09253
+    },
+    {
+      "id": 80218,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9053.63,
+      "y": -410.669,
+      "z": 72.089,
+      "orientation": 4.16758
+    },
+    {
+      "id": 80222,
+      "entry": 38,
+      "mapId": 0,
+      "x": -8998.78,
+      "y": -390.347,
+      "z": 71.8185,
+      "orientation": 4.87939
+    },
+    {
+      "id": 80223,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9003.3,
+      "y": -363.304,
+      "z": 75.0033,
+      "orientation": 3.74668
+    },
+    {
+      "id": 80224,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9034.19,
+      "y": -397.809,
+      "z": 72.6381,
+      "orientation": 1.83317
+    },
+    {
+      "id": 80226,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9027.98,
+      "y": -383.922,
+      "z": 75.0318,
+      "orientation": 1.25572
+    },
+    {
+      "id": 80228,
+      "entry": 38,
+      "mapId": 0,
+      "x": -8980.84,
+      "y": -411.607,
+      "z": 69.5317,
+      "orientation": 6.01341
+    },
+    {
+      "id": 80229,
+      "entry": 38,
+      "mapId": 0,
+      "x": -8951.47,
+      "y": -429.956,
+      "z": 65.1523,
+      "orientation": 1.95477
+    },
+    {
+      "id": 80230,
+      "entry": 38,
+      "mapId": 0,
+      "x": -8956.23,
+      "y": -422.418,
+      "z": 65.3401,
+      "orientation": 4.5204
+    },
+    {
+      "id": 80231,
+      "entry": 38,
+      "mapId": 0,
+      "x": -8958.37,
+      "y": -431.305,
+      "z": 64.7884,
+      "orientation": 1.25664
+    },
+    {
+      "id": 80236,
+      "entry": 38,
+      "mapId": 0,
+      "x": -8956.91,
+      "y": -389.864,
+      "z": 70.298,
+      "orientation": 2.37787
+    },
+    {
+      "id": 80237,
+      "entry": 38,
+      "mapId": 0,
+      "x": -8917.87,
+      "y": -381.132,
+      "z": 70.7183,
+      "orientation": 1.76861
+    },
+    {
+      "id": 80238,
+      "entry": 38,
+      "mapId": 0,
+      "x": -8963.1,
+      "y": -370.271,
+      "z": 73.0808,
+      "orientation": 1.16937
+    },
+    {
+      "id": 80241,
+      "entry": 38,
+      "mapId": 0,
+      "x": -8869.45,
+      "y": -373.783,
+      "z": 71.6896,
+      "orientation": 2.31791
+    },
+    {
+      "id": 80246,
+      "entry": 38,
+      "mapId": 0,
+      "x": -8886.68,
+      "y": -392.438,
+      "z": 67.5338,
+      "orientation": 0.217492
+    },
+    {
+      "id": 80247,
+      "entry": 103,
+      "mapId": 0,
+      "x": -9056.48,
+      "y": -460.903,
+      "z": 72.8318,
+      "orientation": 1.76278
+    },
+    {
+      "id": 80248,
+      "entry": 38,
+      "mapId": 0,
+      "x": -8886.35,
+      "y": -445.452,
+      "z": 65.1291,
+      "orientation": 3.39385
+    },
+    {
+      "id": 80250,
+      "entry": 38,
+      "mapId": 0,
+      "x": -8924.11,
+      "y": -445.315,
+      "z": 68.1632,
+      "orientation": 0
+    },
+    {
+      "id": 80251,
+      "entry": 38,
+      "mapId": 0,
+      "x": -8878.29,
+      "y": -410.994,
+      "z": 65.7157,
+      "orientation": 4.53505
+    },
+    {
+      "id": 80253,
+      "entry": 38,
+      "mapId": 0,
+      "x": -8869.74,
+      "y": -371.571,
+      "z": 72.0051,
+      "orientation": 0.592264
+    },
+    {
+      "id": 80254,
+      "entry": 38,
+      "mapId": 0,
+      "x": -8916.79,
+      "y": -403.277,
+      "z": 67.5052,
+      "orientation": 0.827004
+    },
+    {
+      "id": 80255,
+      "entry": 38,
+      "mapId": 0,
+      "x": -8938.17,
+      "y": -372.883,
+      "z": 71.923,
+      "orientation": 6.04404
+    },
+    {
+      "id": 80256,
+      "entry": 38,
+      "mapId": 0,
+      "x": -8912.98,
+      "y": -361.353,
+      "z": 73.4038,
+      "orientation": 0.848243
+    },
+    {
+      "id": 80257,
+      "entry": 38,
+      "mapId": 0,
+      "x": -8929.8,
+      "y": -356.501,
+      "z": 72.2315,
+      "orientation": 1.04143
+    },
+    {
+      "id": 80259,
+      "entry": 38,
+      "mapId": 0,
+      "x": -8975.7,
+      "y": -338.156,
+      "z": 73.2266,
+      "orientation": 0.510007
+    },
+    {
+      "id": 80261,
+      "entry": 69,
+      "mapId": 0,
+      "x": -8979.83,
+      "y": -213.14,
+      "z": 73.952,
+      "orientation": 4.21105
+    },
+    {
+      "id": 80262,
+      "entry": 11260,
+      "mapId": 0,
+      "x": -8967.41,
+      "y": -203.362,
+      "z": 75.5193,
+      "orientation": 2.50597
+    },
+    {
+      "id": 80263,
+      "entry": 1423,
+      "mapId": 0,
+      "x": -9438.46,
+      "y": 54.5786,
+      "z": 56.02,
+      "orientation": 0.270454
+    },
+    {
+      "id": 80264,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9116.32,
+      "y": 16.1908,
+      "z": 86.1412,
+      "orientation": 0
+    },
+    {
+      "id": 80265,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9123.28,
+      "y": 45.5078,
+      "z": 81.5248,
+      "orientation": 0
+    },
+    {
+      "id": 80267,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9216.37,
+      "y": 19.9618,
+      "z": 76.9682,
+      "orientation": 0.825487
+    },
+    {
+      "id": 80268,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9175.16,
+      "y": 78.2666,
+      "z": 77.6793,
+      "orientation": 2.67358
+    },
+    {
+      "id": 80269,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9144.37,
+      "y": 53.7751,
+      "z": 77.7479,
+      "orientation": 4.62874
+    },
+    {
+      "id": 80270,
+      "entry": 299,
+      "mapId": 0,
+      "x": -9271.63,
+      "y": -20.4582,
+      "z": 72.0286,
+      "orientation": 6.22852
+    },
+    {
+      "id": 80271,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9263.42,
+      "y": -24.1155,
+      "z": 73.1425,
+      "orientation": 4.06441
+    },
+    {
+      "id": 80275,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9189.05,
+      "y": 110.796,
+      "z": 75.854,
+      "orientation": 3.7875
+    },
+    {
+      "id": 80276,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9243.78,
+      "y": 122.246,
+      "z": 72.485,
+      "orientation": 0.481233
+    },
+    {
+      "id": 80277,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9216.17,
+      "y": 147.554,
+      "z": 72.3877,
+      "orientation": 3.05173
+    },
+    {
+      "id": 80279,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9195.6,
+      "y": 185.983,
+      "z": 73.865,
+      "orientation": 3.34746
+    },
+    {
+      "id": 80281,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9278.95,
+      "y": 203.298,
+      "z": 67.636,
+      "orientation": 4.66906
+    },
+    {
+      "id": 80282,
+      "entry": 94,
+      "mapId": 0,
+      "x": -9218.33,
+      "y": 241.176,
+      "z": 73.3824,
+      "orientation": 5.081
+    },
+    {
+      "id": 80311,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9416.54,
+      "y": 200.779,
+      "z": 60.2635,
+      "orientation": 0.633863
+    },
+    {
+      "id": 80312,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9379.01,
+      "y": 205.933,
+      "z": 61.7403,
+      "orientation": 4.94317
+    },
+    {
+      "id": 80314,
+      "entry": 30,
+      "mapId": 0,
+      "x": -9383.82,
+      "y": 200.188,
+      "z": 61.4398,
+      "orientation": 0.546416
+    },
+    {
+      "id": 80317,
+      "entry": 795,
+      "mapId": 0,
+      "x": -9424.88,
+      "y": 128.852,
+      "z": 59.6881,
+      "orientation": 2.28574
+    },
+    {
+      "id": 80320,
+      "entry": 797,
+      "mapId": 0,
+      "x": -9426.15,
+      "y": 129.829,
+      "z": 59.5506,
+      "orientation": 3.12876
+    },
+    {
+      "id": 80321,
+      "entry": 796,
+      "mapId": 0,
+      "x": -9422.29,
+      "y": 129.096,
+      "z": 59.7126,
+      "orientation": 2.22594
+    },
+    {
+      "id": 80323,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9441.37,
+      "y": 233.004,
+      "z": 59.9603,
+      "orientation": 0.430757
+    },
+    {
+      "id": 80325,
+      "entry": 927,
+      "mapId": 0,
+      "x": -9468.14,
+      "y": 108.976,
+      "z": 57.6606,
+      "orientation": 1.79769
+    },
+    {
+      "id": 80326,
+      "entry": 241,
+      "mapId": 0,
+      "x": -9496.32,
+      "y": 72.8264,
+      "z": 56.598,
+      "orientation": 6.23082
+    },
+    {
+      "id": 80327,
+      "entry": 66,
+      "mapId": 0,
+      "x": -9494.13,
+      "y": 83.9096,
+      "z": 56.6586,
+      "orientation": 5.96903
+    },
+    {
+      "id": 80328,
+      "entry": 5403,
+      "mapId": 0,
+      "x": -9468.9,
+      "y": 46.1174,
+      "z": 56.909,
+      "orientation": 4.43314
+    },
+    {
+      "id": 80329,
+      "entry": 5406,
+      "mapId": 0,
+      "x": -9472.91,
+      "y": 46.977,
+      "z": 56.887,
+      "orientation": 4.83456
+    },
+    {
+      "id": 80330,
+      "entry": 1423,
+      "mapId": 0,
+      "x": -9481.31,
+      "y": 74.4224,
+      "z": 56.5493,
+      "orientation": 3.06882
+    },
+    {
+      "id": 80333,
+      "entry": 913,
+      "mapId": 0,
+      "x": -9461.85,
+      "y": 109.353,
+      "z": 57.8784,
+      "orientation": 2.6529
+    },
+    {
+      "id": 80334,
+      "entry": 240,
+      "mapId": 0,
+      "x": -9465.52,
+      "y": 74.0069,
+      "z": 56.7785,
+      "orientation": 4.59022
+    },
+    {
+      "id": 80335,
+      "entry": 1423,
+      "mapId": 0,
+      "x": -9454.15,
+      "y": 73.0675,
+      "z": 56.7219,
+      "orientation": 3.27538
+    },
+    {
+      "id": 80336,
+      "entry": 514,
+      "mapId": 0,
+      "x": -9456.65,
+      "y": 87.8553,
+      "z": 58.4271,
+      "orientation": 2.40855
+    },
+    {
+      "id": 80337,
+      "entry": 74,
+      "mapId": 0,
+      "x": -9457.64,
+      "y": 99.6884,
+      "z": 58.4271,
+      "orientation": 4.11898
+    },
+    {
+      "id": 80338,
+      "entry": 54,
+      "mapId": 0,
+      "x": -9464.87,
+      "y": 93.9896,
+      "z": 58.5271,
+      "orientation": 0
+    },
+    {
+      "id": 80339,
+      "entry": 2046,
+      "mapId": 0,
+      "x": -9462.29,
+      "y": 87.8151,
+      "z": 58.4211,
+      "orientation": 0.733038
+    },
+    {
+      "id": 80340,
+      "entry": 6749,
+      "mapId": 0,
+      "x": -9465.95,
+      "y": 48.1419,
+      "z": 56.9676,
+      "orientation": 1.46608
+    },
+    {
+      "id": 80341,
+      "entry": 299,
+      "mapId": 0,
+      "x": -9380.72,
+      "y": 49.6599,
+      "z": 60.4848,
+      "orientation": 4.10521
+    },
+    {
+      "id": 80342,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9386.41,
+      "y": 59.6187,
+      "z": 60.128,
+      "orientation": 2.74345
+    },
+    {
+      "id": 80343,
+      "entry": 299,
+      "mapId": 0,
+      "x": -9351.23,
+      "y": 56.4407,
+      "z": 61.0556,
+      "orientation": 2.97341
+    },
+    {
+      "id": 80344,
+      "entry": 328,
+      "mapId": 0,
+      "x": -9471.67,
+      "y": 34.451,
+      "z": 63.9038,
+      "orientation": 4.62512
+    },
+    {
+      "id": 80345,
+      "entry": 6778,
+      "mapId": 0,
+      "x": -9471.94,
+      "y": 27.4077,
+      "z": 56.4228,
+      "orientation": 5.58505
+    },
+    {
+      "id": 80346,
+      "entry": 295,
+      "mapId": 0,
+      "x": -9462.66,
+      "y": 16.1915,
+      "z": 57.0459,
+      "orientation": 3.03687
+    },
+    {
+      "id": 80347,
+      "entry": 377,
+      "mapId": 0,
+      "x": -9460.75,
+      "y": 33.1338,
+      "z": 63.9038,
+      "orientation": 4.36332
+    },
+    {
+      "id": 80348,
+      "entry": 151,
+      "mapId": 0,
+      "x": -9465.29,
+      "y": 9.63314,
+      "z": 57.1459,
+      "orientation": 1.44862
+    },
+    {
+      "id": 80349,
+      "entry": 3935,
+      "mapId": 0,
+      "x": -9466.42,
+      "y": 0.061252,
+      "z": 57.0335,
+      "orientation": 6.12611
+    },
+    {
+      "id": 80350,
+      "entry": 253,
+      "mapId": 0,
+      "x": -9460.3,
+      "y": 31.9389,
+      "z": 57.0494,
+      "orientation": 2.98451
+    },
+    {
+      "id": 80351,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9352.68,
+      "y": 39.7086,
+      "z": 61.6442,
+      "orientation": 4.33008
+    },
+    {
+      "id": 80352,
+      "entry": 6374,
+      "mapId": 0,
+      "x": -9466.97,
+      "y": -5.52935,
+      "z": 49.8766,
+      "orientation": 4.57276
+    },
+    {
+      "id": 80353,
+      "entry": 906,
+      "mapId": 0,
+      "x": -9472.8,
+      "y": -5.32661,
+      "z": 49.8778,
+      "orientation": 5.55015
+    },
+    {
+      "id": 80354,
+      "entry": 6121,
+      "mapId": 0,
+      "x": -9473.43,
+      "y": -8.58822,
+      "z": 49.8779,
+      "orientation": 6.23082
+    },
+    {
+      "id": 80355,
+      "entry": 1430,
+      "mapId": 0,
+      "x": -9466.99,
+      "y": -4.53396,
+      "z": 57.033,
+      "orientation": 1.64061
+    },
+    {
+      "id": 80361,
+      "entry": 113,
+      "mapId": 0,
+      "x": -9545.4,
+      "y": 4.4072,
+      "z": 60.651,
+      "orientation": 5.20721
+    },
+    {
+      "id": 80362,
+      "entry": 113,
+      "mapId": 0,
+      "x": -9547.6,
+      "y": 83.9896,
+      "z": 59.5094,
+      "orientation": 5.09636
+    },
+    {
+      "id": 80364,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9526.04,
+      "y": -57.6862,
+      "z": 59.0187,
+      "orientation": 1.44787
+    },
+    {
+      "id": 80367,
+      "entry": 113,
+      "mapId": 0,
+      "x": -9548.47,
+      "y": 115.032,
+      "z": 59.1045,
+      "orientation": 3.35103
+    },
+    {
+      "id": 80369,
+      "entry": 113,
+      "mapId": 0,
+      "x": -9552.61,
+      "y": 151.449,
+      "z": 59.4064,
+      "orientation": 2.34791
+    },
+    {
+      "id": 80371,
+      "entry": 113,
+      "mapId": 0,
+      "x": -9529.79,
+      "y": 187.151,
+      "z": 57.8628,
+      "orientation": 2.56714
+    },
+    {
+      "id": 80418,
+      "entry": 30,
+      "mapId": 0,
+      "x": -9559.39,
+      "y": 217.842,
+      "z": 56.78,
+      "orientation": 2.27546
+    },
+    {
+      "id": 80422,
+      "entry": 30,
+      "mapId": 0,
+      "x": -9625.72,
+      "y": 209.416,
+      "z": 47.9853,
+      "orientation": 2.73477
+    },
+    {
+      "id": 80423,
+      "entry": 113,
+      "mapId": 0,
+      "x": -9685.17,
+      "y": 213.392,
+      "z": 51.2086,
+      "orientation": 2.69681
+    },
+    {
+      "id": 80631,
+      "entry": 475,
+      "mapId": 0,
+      "x": -9750.79,
+      "y": 109.939,
+      "z": 25.6415,
+      "orientation": 3.41538
+    },
+    {
+      "id": 80634,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9761.75,
+      "y": 106.757,
+      "z": 26.5586,
+      "orientation": 3.19397
+    },
+    {
+      "id": 80638,
+      "entry": 475,
+      "mapId": 0,
+      "x": -9752.62,
+      "y": 121.197,
+      "z": 16.1771,
+      "orientation": 1.30766
+    },
+    {
+      "id": 80639,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9737.84,
+      "y": 136.119,
+      "z": 19.2009,
+      "orientation": 5.81502
+    },
+    {
+      "id": 80640,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9748.71,
+      "y": 134.768,
+      "z": 19.3349,
+      "orientation": 5.06639
+    },
+    {
+      "id": 80644,
+      "entry": 327,
+      "mapId": 0,
+      "x": -9745.84,
+      "y": 87.567,
+      "z": 12.7743,
+      "orientation": 4.8965
+    },
+    {
+      "id": 80645,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9743.42,
+      "y": 95.6006,
+      "z": 12.5796,
+      "orientation": 1.37507
+    },
+    {
+      "id": 80647,
+      "entry": 79,
+      "mapId": 0,
+      "x": -9733.35,
+      "y": 114.784,
+      "z": 24.4159,
+      "orientation": 5.41347
+    },
+    {
+      "id": 80648,
+      "entry": 113,
+      "mapId": 0,
+      "x": -9738.29,
+      "y": 88.1389,
+      "z": 43.8449,
+      "orientation": 4.68014
+    },
+    {
+      "id": 80649,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9760.56,
+      "y": 87.6726,
+      "z": 12.544,
+      "orientation": 2.89838
+    },
+    {
+      "id": 80650,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9732.38,
+      "y": 117.863,
+      "z": 24.6974,
+      "orientation": 3.69457
+    },
+    {
+      "id": 80652,
+      "entry": 475,
+      "mapId": 0,
+      "x": -9734.4,
+      "y": 138.944,
+      "z": 49.0226,
+      "orientation": 0.433051
+    },
+    {
+      "id": 80653,
+      "entry": 113,
+      "mapId": 0,
+      "x": -9717.21,
+      "y": 180.171,
+      "z": 50.5346,
+      "orientation": 3.73231
+    },
+    {
+      "id": 80655,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9775,
+      "y": 4.94017,
+      "z": 31.6528,
+      "orientation": 4.71239
+    },
+    {
+      "id": 80656,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9741.9,
+      "y": 31.8874,
+      "z": 38.2523,
+      "orientation": 3.73848
+    },
+    {
+      "id": 80657,
+      "entry": 113,
+      "mapId": 0,
+      "x": -9681.88,
+      "y": 85.5572,
+      "z": 45.7138,
+      "orientation": 4.74363
+    },
+    {
+      "id": 80658,
+      "entry": 30,
+      "mapId": 0,
+      "x": -9714.55,
+      "y": 12.6503,
+      "z": 40.6567,
+      "orientation": 5.48121
+    },
+    {
+      "id": 80659,
+      "entry": 30,
+      "mapId": 0,
+      "x": -9678.46,
+      "y": 120.61,
+      "z": 47.3351,
+      "orientation": 0.613775
+    },
+    {
+      "id": 80689,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9773.41,
+      "y": -8.62885,
+      "z": 30.0164,
+      "orientation": 2.9482
+    },
+    {
+      "id": 80690,
+      "entry": 116,
+      "mapId": 0,
+      "x": -9673.89,
+      "y": -4.60323,
+      "z": 44.8655,
+      "orientation": 5.85446
+    },
+    {
+      "id": 80691,
+      "entry": 113,
+      "mapId": 0,
+      "x": -9634.27,
+      "y": 58.2623,
+      "z": 60.2921,
+      "orientation": 1.57599
+    },
+    {
+      "id": 80692,
+      "entry": 113,
+      "mapId": 0,
+      "x": -9682.43,
+      "y": 113.513,
+      "z": 47.1978,
+      "orientation": 3.2208
+    },
+    {
+      "id": 80693,
+      "entry": 113,
+      "mapId": 0,
+      "x": -9612.56,
+      "y": 17.916,
+      "z": 61.6279,
+      "orientation": 3.92441
+    },
+    {
+      "id": 80694,
+      "entry": 30,
+      "mapId": 0,
+      "x": -9609.84,
+      "y": 82.4616,
+      "z": 61.3577,
+      "orientation": 2.50789
+    },
+    {
+      "id": 80695,
+      "entry": 113,
+      "mapId": 0,
+      "x": -9593.61,
+      "y": 54.719,
+      "z": 60.9167,
+      "orientation": 2.22424
+    },
+    {
+      "id": 80696,
+      "entry": 113,
+      "mapId": 0,
+      "x": -9577.1,
+      "y": 124.616,
+      "z": 59.3955,
+      "orientation": 0.671218
+    },
+    {
+      "id": 80697,
+      "entry": 30,
+      "mapId": 0,
+      "x": -9636.07,
+      "y": 188.916,
+      "z": 47.5386,
+      "orientation": 0.407667
+    },
+    {
+      "id": 80700,
+      "entry": 30,
+      "mapId": 0,
+      "x": -9588.36,
+      "y": -12.2227,
+      "z": 61.6865,
+      "orientation": 5.53788
+    },
+    {
+      "id": 80701,
+      "entry": 116,
+      "mapId": 0,
+      "x": -9647.7,
+      "y": -59.3975,
+      "z": 43.4704,
+      "orientation": 3.02813
+    },
+    {
+      "id": 80702,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9758.45,
+      "y": -81.6962,
+      "z": 30.8459,
+      "orientation": 5.63773
+    },
+    {
+      "id": 80704,
+      "entry": 822,
+      "mapId": 0,
+      "x": -9748.02,
+      "y": -25.2635,
+      "z": 35.4068,
+      "orientation": 3.96682
+    },
+    {
+      "id": 80705,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9693.33,
+      "y": -105.208,
+      "z": 38.7951,
+      "orientation": 0
+    },
+    {
+      "id": 80706,
+      "entry": 116,
+      "mapId": 0,
+      "x": -9685.02,
+      "y": -73.2844,
+      "z": 40.1185,
+      "orientation": 1.51476
+    },
+    {
+      "id": 80708,
+      "entry": 822,
+      "mapId": 0,
+      "x": -9694.79,
+      "y": -72.2588,
+      "z": 39.408,
+      "orientation": 4.71239
+    },
+    {
+      "id": 80709,
+      "entry": 116,
+      "mapId": 0,
+      "x": -9704.33,
+      "y": -45.9833,
+      "z": 39.1445,
+      "orientation": 0.942847
+    },
+    {
+      "id": 80710,
+      "entry": 116,
+      "mapId": 0,
+      "x": -9655.4,
+      "y": -112.452,
+      "z": 44.5232,
+      "orientation": 0.912916
+    },
+    {
+      "id": 80711,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9698.37,
+      "y": -129.936,
+      "z": 39.625,
+      "orientation": 3.47384
+    },
+    {
+      "id": 80712,
+      "entry": 822,
+      "mapId": 0,
+      "x": -9716.07,
+      "y": -140.246,
+      "z": 37.9383,
+      "orientation": 4.098
+    },
+    {
+      "id": 80713,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9778.16,
+      "y": -102.621,
+      "z": 29.8269,
+      "orientation": 4.64206
+    },
+    {
+      "id": 80714,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9796.32,
+      "y": -75.3252,
+      "z": 25.9161,
+      "orientation": 1.87681
+    },
+    {
+      "id": 80715,
+      "entry": 822,
+      "mapId": 0,
+      "x": -9783.68,
+      "y": -96.5355,
+      "z": 28.4609,
+      "orientation": 2.6762
+    },
+    {
+      "id": 80716,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9759.19,
+      "y": -125.479,
+      "z": 32.7509,
+      "orientation": 0.629034
+    },
+    {
+      "id": 80745,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9783.79,
+      "y": -204.969,
+      "z": 39.7677,
+      "orientation": 2.99666
+    },
+    {
+      "id": 80749,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9762.34,
+      "y": -203.066,
+      "z": 40.2936,
+      "orientation": 4.59253
+    },
+    {
+      "id": 80751,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9744.79,
+      "y": -274.096,
+      "z": 48.2849,
+      "orientation": 3.6357
+    },
+    {
+      "id": 80752,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9693.81,
+      "y": -287.447,
+      "z": 59.1046,
+      "orientation": 6.06152
+    },
+    {
+      "id": 80753,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9691.26,
+      "y": -182.507,
+      "z": 45.7818,
+      "orientation": 2.48415
+    },
+    {
+      "id": 80754,
+      "entry": 822,
+      "mapId": 0,
+      "x": -9696.73,
+      "y": -173.051,
+      "z": 43.8265,
+      "orientation": 3.51835
+    },
+    {
+      "id": 80756,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9700.23,
+      "y": -164.423,
+      "z": 42.6536,
+      "orientation": 5.6811
+    },
+    {
+      "id": 80757,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9668.36,
+      "y": -264.583,
+      "z": 63.7393,
+      "orientation": 0
+    },
+    {
+      "id": 80758,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9584.75,
+      "y": -279.387,
+      "z": 62.211,
+      "orientation": 5.06255
+    },
+    {
+      "id": 80759,
+      "entry": 735,
+      "mapId": 0,
+      "x": -9547.12,
+      "y": -250.417,
+      "z": 61.5035,
+      "orientation": 2.42862
+    },
+    {
+      "id": 80760,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9552.61,
+      "y": -247.975,
+      "z": 61.863,
+      "orientation": 1.5682
+    },
+    {
+      "id": 80763,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9652.08,
+      "y": -306.25,
+      "z": 58.7088,
+      "orientation": 1.55131
+    },
+    {
+      "id": 80765,
+      "entry": 735,
+      "mapId": 0,
+      "x": -9560.81,
+      "y": -309.06,
+      "z": 62.9801,
+      "orientation": 3.00175
+    },
+    {
+      "id": 80766,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9552.97,
+      "y": -308.507,
+      "z": 62.2519,
+      "orientation": 1.46203
+    },
+    {
+      "id": 80768,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9743.46,
+      "y": -345.229,
+      "z": 54.3924,
+      "orientation": 0.904061
+    },
+    {
+      "id": 80770,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9681.23,
+      "y": -358.883,
+      "z": 56.0801,
+      "orientation": 4.69881
+    },
+    {
+      "id": 80771,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9709.11,
+      "y": -318.376,
+      "z": 54.2561,
+      "orientation": 3.54495
+    },
+    {
+      "id": 80772,
+      "entry": 822,
+      "mapId": 0,
+      "x": -9688.07,
+      "y": -337.024,
+      "z": 57.7277,
+      "orientation": 4.71044
+    },
+    {
+      "id": 80782,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9713.58,
+      "y": -391.615,
+      "z": 51.1133,
+      "orientation": 2.21899
+    },
+    {
+      "id": 80795,
+      "entry": 822,
+      "mapId": 0,
+      "x": -9696.79,
+      "y": -439.03,
+      "z": 51.6461,
+      "orientation": 0.824053
+    },
+    {
+      "id": 80796,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9707.42,
+      "y": -448.762,
+      "z": 51.6561,
+      "orientation": 2.7737
+    },
+    {
+      "id": 80797,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9681.01,
+      "y": -423.161,
+      "z": 54.1289,
+      "orientation": 3.22999
+    },
+    {
+      "id": 80802,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9647.33,
+      "y": -393.739,
+      "z": 59.6299,
+      "orientation": 2.92458
+    },
+    {
+      "id": 80804,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9668.72,
+      "y": -495.71,
+      "z": 52.1218,
+      "orientation": 6.12963
+    },
+    {
+      "id": 80806,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9659.86,
+      "y": -516.509,
+      "z": 51.7834,
+      "orientation": 0.264838
+    },
+    {
+      "id": 80807,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9616.5,
+      "y": -489.437,
+      "z": 59.2103,
+      "orientation": 6.28123
+    },
+    {
+      "id": 80808,
+      "entry": 524,
+      "mapId": 0,
+      "x": -9646.89,
+      "y": -447.798,
+      "z": 56.8402,
+      "orientation": 3.78507
+    },
+    {
+      "id": 80810,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9585.82,
+      "y": -411.112,
+      "z": 63.8551,
+      "orientation": 2.12572
+    },
+    {
+      "id": 80907,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9268.46,
+      "y": -859.773,
+      "z": 71.7079,
+      "orientation": 3.57586
+    },
+    {
+      "id": 80908,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9279.35,
+      "y": -829.813,
+      "z": 70.0151,
+      "orientation": 1.19653
+    },
+    {
+      "id": 80909,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9317.01,
+      "y": -838.293,
+      "z": 66.1899,
+      "orientation": 3.22376
+    },
+    {
+      "id": 80912,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9380.21,
+      "y": -810.626,
+      "z": 65.9781,
+      "orientation": 1.48467
+    },
+    {
+      "id": 80914,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9423.11,
+      "y": -809.347,
+      "z": 64.1416,
+      "orientation": 4.43758
+    },
+    {
+      "id": 80917,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9393.35,
+      "y": -785.39,
+      "z": 63.6593,
+      "orientation": 1.36046
+    },
+    {
+      "id": 80919,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9508.27,
+      "y": -762.008,
+      "z": 60.2988,
+      "orientation": 1.54541
+    },
+    {
+      "id": 80921,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9459.06,
+      "y": -760.647,
+      "z": 61.6535,
+      "orientation": 1.05161
+    },
+    {
+      "id": 80927,
+      "entry": 1949,
+      "mapId": 0,
+      "x": -9554.81,
+      "y": -706.766,
+      "z": 90.5168,
+      "orientation": 2.72909
+    },
+    {
+      "id": 80928,
+      "entry": 1949,
+      "mapId": 0,
+      "x": -9550.88,
+      "y": -685.652,
+      "z": 63.183,
+      "orientation": 2.14719
+    },
+    {
+      "id": 80929,
+      "entry": 1949,
+      "mapId": 0,
+      "x": -9558.13,
+      "y": -712.885,
+      "z": 64.7386,
+      "orientation": 6.22928
+    },
+    {
+      "id": 80930,
+      "entry": 1949,
+      "mapId": 0,
+      "x": -9558.59,
+      "y": -700.421,
+      "z": 99.3119,
+      "orientation": 4.4751
+    },
+    {
+      "id": 80931,
+      "entry": 1949,
+      "mapId": 0,
+      "x": -9549,
+      "y": -724.052,
+      "z": 99.2637,
+      "orientation": 2.63064
+    },
+    {
+      "id": 80932,
+      "entry": 1949,
+      "mapId": 0,
+      "x": -9550.68,
+      "y": -711.69,
+      "z": 75.1554,
+      "orientation": 3.24567
+    },
+    {
+      "id": 80934,
+      "entry": 313,
+      "mapId": 0,
+      "x": -9553.08,
+      "y": -728.152,
+      "z": 99.2522,
+      "orientation": 2.16421
+    },
+    {
+      "id": 80935,
+      "entry": 959,
+      "mapId": 0,
+      "x": -9548.45,
+      "y": -709.983,
+      "z": 90.5103,
+      "orientation": 3.63029
+    },
+    {
+      "id": 80936,
+      "entry": 1949,
+      "mapId": 0,
+      "x": -9522.95,
+      "y": -700.829,
+      "z": 61.6524,
+      "orientation": 1.62088
+    },
+    {
+      "id": 80937,
+      "entry": 958,
+      "mapId": 0,
+      "x": -9541.13,
+      "y": -716.466,
+      "z": 99.2953,
+      "orientation": 3.03687
+    },
+    {
+      "id": 80938,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9581.52,
+      "y": -624.553,
+      "z": 57.3027,
+      "orientation": 4.73192
+    },
+    {
+      "id": 80939,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9535.82,
+      "y": -655.504,
+      "z": 62.6305,
+      "orientation": 3.01821
+    },
+    {
+      "id": 80940,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9475.7,
+      "y": -594.477,
+      "z": 66.4951,
+      "orientation": 1.05676
+    },
+    {
+      "id": 80942,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9485.93,
+      "y": -592.312,
+      "z": 66.0216,
+      "orientation": 2.71189
+    },
+    {
+      "id": 80944,
+      "entry": 822,
+      "mapId": 0,
+      "x": -9464.4,
+      "y": -648.277,
+      "z": 65.3682,
+      "orientation": 3.18592
+    },
+    {
+      "id": 80945,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9429.22,
+      "y": -724.465,
+      "z": 65.953,
+      "orientation": 6.08464
+    },
+    {
+      "id": 80946,
+      "entry": 822,
+      "mapId": 0,
+      "x": -9398.71,
+      "y": -710.605,
+      "z": 67.8667,
+      "orientation": 2.39209
+    },
+    {
+      "id": 80947,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9412.17,
+      "y": -739.773,
+      "z": 66.6773,
+      "orientation": 1.42181
+    },
+    {
+      "id": 80948,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9413.65,
+      "y": -657.926,
+      "z": 66.6763,
+      "orientation": 0.009765
+    },
+    {
+      "id": 80949,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9335.42,
+      "y": -706.25,
+      "z": 68.0009,
+      "orientation": 1.54871
+    },
+    {
+      "id": 80950,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9326.82,
+      "y": -713.03,
+      "z": 67.5269,
+      "orientation": 2.95107
+    },
+    {
+      "id": 80951,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9354.6,
+      "y": -675.024,
+      "z": 67.3725,
+      "orientation": 5.00572
+    },
+    {
+      "id": 80952,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9268.7,
+      "y": -703.31,
+      "z": 63.1625,
+      "orientation": 1.7926
+    },
+    {
+      "id": 80953,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9287.73,
+      "y": -768.92,
+      "z": 67.9476,
+      "orientation": 0.252554
+    },
+    {
+      "id": 80954,
+      "entry": 476,
+      "mapId": 0,
+      "x": -9256.46,
+      "y": -711.838,
+      "z": 62.856,
+      "orientation": 4.05948
+    },
+    {
+      "id": 80955,
+      "entry": 476,
+      "mapId": 0,
+      "x": -9289.54,
+      "y": -669.512,
+      "z": 65.2942,
+      "orientation": 5.97583
+    },
+    {
+      "id": 80956,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9254.85,
+      "y": -696.338,
+      "z": 64.015,
+      "orientation": 3.07881
+    },
+    {
+      "id": 80957,
+      "entry": 476,
+      "mapId": 0,
+      "x": -9248.51,
+      "y": -702.869,
+      "z": 63.4745,
+      "orientation": 3.59538
+    },
+    {
+      "id": 80958,
+      "entry": 476,
+      "mapId": 0,
+      "x": -9252.35,
+      "y": -703.304,
+      "z": 63.5593,
+      "orientation": 6.05629
+    },
+    {
+      "id": 80959,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9245.29,
+      "y": -713.372,
+      "z": 63.0387,
+      "orientation": 1.91986
+    },
+    {
+      "id": 80960,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9256.03,
+      "y": -707.889,
+      "z": 63.1122,
+      "orientation": 0.942478
+    },
+    {
+      "id": 80961,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9220.8,
+      "y": -671.27,
+      "z": 62.89,
+      "orientation": 1.65247
+    },
+    {
+      "id": 80962,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9285.9,
+      "y": -679.103,
+      "z": 64.3406,
+      "orientation": 3.5812
+    },
+    {
+      "id": 80963,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9248.69,
+      "y": -655.311,
+      "z": 64.3173,
+      "orientation": 5.22255
+    },
+    {
+      "id": 80964,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9327.75,
+      "y": -647.848,
+      "z": 69.3101,
+      "orientation": 2.62899
+    },
+    {
+      "id": 80965,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9289.51,
+      "y": -615.627,
+      "z": 66.1828,
+      "orientation": 5.91573
+    },
+    {
+      "id": 80966,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9219.69,
+      "y": -617.962,
+      "z": 61.277,
+      "orientation": 3.19243
+    },
+    {
+      "id": 80967,
+      "entry": 476,
+      "mapId": 0,
+      "x": -9229.65,
+      "y": -623.414,
+      "z": 61.8933,
+      "orientation": 1.29756
+    },
+    {
+      "id": 80968,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9185.28,
+      "y": -645.08,
+      "z": 65.715,
+      "orientation": 2.60017
+    },
+    {
+      "id": 80969,
+      "entry": 476,
+      "mapId": 0,
+      "x": -9247.6,
+      "y": -580.757,
+      "z": 65.7305,
+      "orientation": 1.95928
+    },
+    {
+      "id": 80970,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9268.04,
+      "y": -549.461,
+      "z": 66.9,
+      "orientation": 0.174785
+    },
+    {
+      "id": 80972,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9244.14,
+      "y": -586.069,
+      "z": 65.7298,
+      "orientation": 5.65726
+    },
+    {
+      "id": 80973,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9161.78,
+      "y": -571.596,
+      "z": 58.1243,
+      "orientation": 0.712466
+    },
+    {
+      "id": 80974,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9141.22,
+      "y": -599.18,
+      "z": 57.8545,
+      "orientation": 5.51055
+    },
+    {
+      "id": 80975,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9131.9,
+      "y": -596.161,
+      "z": 57.4463,
+      "orientation": 0
+    },
+    {
+      "id": 80976,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9172.25,
+      "y": -599.412,
+      "z": 63.02,
+      "orientation": 4.2237
+    },
+    {
+      "id": 80977,
+      "entry": 476,
+      "mapId": 0,
+      "x": -9136.17,
+      "y": -596.723,
+      "z": 57.5405,
+      "orientation": 1.8477
+    },
+    {
+      "id": 80978,
+      "entry": 476,
+      "mapId": 0,
+      "x": -9088.73,
+      "y": -573.684,
+      "z": 62.5813,
+      "orientation": 5.08187
+    },
+    {
+      "id": 80979,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9078.95,
+      "y": -582.27,
+      "z": 62.3445,
+      "orientation": 2.29443
+    },
+    {
+      "id": 80980,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9117.78,
+      "y": -585.782,
+      "z": 57.6593,
+      "orientation": 2.84701
+    },
+    {
+      "id": 80981,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9085.36,
+      "y": -576.067,
+      "z": 61.9363,
+      "orientation": 1.58841
+    },
+    {
+      "id": 80982,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9086.56,
+      "y": -556.355,
+      "z": 60.7947,
+      "orientation": 0.215381
+    },
+    {
+      "id": 80983,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9087.93,
+      "y": -589.59,
+      "z": 58.4971,
+      "orientation": 0.773561
+    },
+    {
+      "id": 80984,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9101.44,
+      "y": -598.58,
+      "z": 57.0622,
+      "orientation": 2.50615
+    },
+    {
+      "id": 80985,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9116.58,
+      "y": -568.454,
+      "z": 59.1573,
+      "orientation": 3.95177
+    },
+    {
+      "id": 80986,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9094.39,
+      "y": -586.519,
+      "z": 58.1082,
+      "orientation": 5.16445
+    },
+    {
+      "id": 80987,
+      "entry": 43,
+      "mapId": 0,
+      "x": -9048.82,
+      "y": -616.729,
+      "z": 53.0161,
+      "orientation": 3.73272
+    },
+    {
+      "id": 80988,
+      "entry": 43,
+      "mapId": 0,
+      "x": -9066.4,
+      "y": -548.124,
+      "z": 58.4333,
+      "orientation": 4.03298
+    },
+    {
+      "id": 80989,
+      "entry": 471,
+      "mapId": 0,
+      "x": -9051.83,
+      "y": -621.321,
+      "z": 53.5771,
+      "orientation": 4.24115
+    },
+    {
+      "id": 80990,
+      "entry": 43,
+      "mapId": 0,
+      "x": -9033.98,
+      "y": -585.441,
+      "z": 56.337,
+      "orientation": 0
+    },
+    {
+      "id": 80991,
+      "entry": 43,
+      "mapId": 0,
+      "x": -9037.76,
+      "y": -607.992,
+      "z": 53.5171,
+      "orientation": 5.62913
+    },
+    {
+      "id": 80992,
+      "entry": 43,
+      "mapId": 0,
+      "x": -9040.33,
+      "y": -554.065,
+      "z": 55.6714,
+      "orientation": 1.09758
+    },
+    {
+      "id": 80993,
+      "entry": 43,
+      "mapId": 0,
+      "x": -9030.17,
+      "y": -613.531,
+      "z": 56.6102,
+      "orientation": 1.00271
+    },
+    {
+      "id": 80994,
+      "entry": 43,
+      "mapId": 0,
+      "x": -9025.17,
+      "y": -602.782,
+      "z": 56.2169,
+      "orientation": 4.73095
+    },
+    {
+      "id": 80995,
+      "entry": 43,
+      "mapId": 0,
+      "x": -9025.12,
+      "y": -565.593,
+      "z": 54.976,
+      "orientation": 0
+    },
+    {
+      "id": 80996,
+      "entry": 38,
+      "mapId": 0,
+      "x": -9052.24,
+      "y": -458.063,
+      "z": 72.6514,
+      "orientation": 2.07694
+    },
+    {
+      "id": 80999,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9354.5,
+      "y": -610.635,
+      "z": 71.1764,
+      "orientation": 2.50558
+    },
+    {
+      "id": 81000,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9321.64,
+      "y": -578.605,
+      "z": 69.968,
+      "orientation": 5.69867
+    },
+    {
+      "id": 81001,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9321.47,
+      "y": -561.326,
+      "z": 69.6776,
+      "orientation": 2.98154
+    },
+    {
+      "id": 81002,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9427.88,
+      "y": -578.534,
+      "z": 67.3996,
+      "orientation": 4.98397
+    },
+    {
+      "id": 81003,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9410.76,
+      "y": -576.973,
+      "z": 68.2066,
+      "orientation": 1.19464
+    },
+    {
+      "id": 81004,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9414.01,
+      "y": -567.364,
+      "z": 67.5163,
+      "orientation": 4.2237
+    },
+    {
+      "id": 81005,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9406.43,
+      "y": -582.849,
+      "z": 67.3996,
+      "orientation": 5.70977
+    },
+    {
+      "id": 81006,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9420.7,
+      "y": -566.195,
+      "z": 67.6868,
+      "orientation": 4.62512
+    },
+    {
+      "id": 81007,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9363,
+      "y": -577.39,
+      "z": 68.7027,
+      "orientation": 4.37223
+    },
+    {
+      "id": 81008,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9484.16,
+      "y": -554.031,
+      "z": 65.3075,
+      "orientation": 5.2996
+    },
+    {
+      "id": 81009,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9427.82,
+      "y": -549.583,
+      "z": 73.708,
+      "orientation": 3.9941
+    },
+    {
+      "id": 81010,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9453.58,
+      "y": -536.602,
+      "z": 65.5304,
+      "orientation": 5.25618
+    },
+    {
+      "id": 81011,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9464.34,
+      "y": -539.105,
+      "z": 65.7762,
+      "orientation": 4.6756
+    },
+    {
+      "id": 81012,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9462.55,
+      "y": -551.576,
+      "z": 67.4054,
+      "orientation": 3.94274
+    },
+    {
+      "id": 81013,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9377.71,
+      "y": -493.036,
+      "z": 69.3664,
+      "orientation": 0.462262
+    },
+    {
+      "id": 81014,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9419.58,
+      "y": -501.338,
+      "z": 68.4843,
+      "orientation": 2.47393
+    },
+    {
+      "id": 81015,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9438.05,
+      "y": -514.727,
+      "z": 67.7627,
+      "orientation": 6.16174
+    },
+    {
+      "id": 81017,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9527.24,
+      "y": -542.705,
+      "z": 62.2918,
+      "orientation": 3.57468
+    },
+    {
+      "id": 81019,
+      "entry": 735,
+      "mapId": 0,
+      "x": -9511.55,
+      "y": -487.074,
+      "z": 61.595,
+      "orientation": 5.30582
+    },
+    {
+      "id": 81020,
+      "entry": 822,
+      "mapId": 0,
+      "x": -9488.22,
+      "y": -516.115,
+      "z": 63.5907,
+      "orientation": 4.41479
+    },
+    {
+      "id": 81021,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9546.68,
+      "y": -521.048,
+      "z": 63.2861,
+      "orientation": 4.74948
+    },
+    {
+      "id": 81022,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9486.97,
+      "y": -525.281,
+      "z": 63.8618,
+      "orientation": 4.5196
+    },
+    {
+      "id": 81023,
+      "entry": 735,
+      "mapId": 0,
+      "x": -9449.82,
+      "y": -488.69,
+      "z": 62.6602,
+      "orientation": 4.30263
+    },
+    {
+      "id": 81024,
+      "entry": 1922,
+      "mapId": 0,
+      "x": -9590.8,
+      "y": -562.219,
+      "z": 57.57,
+      "orientation": 4.01109
+    },
+    {
+      "id": 81026,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9496.23,
+      "y": -442,
+      "z": 57.2409,
+      "orientation": 2.80133
+    },
+    {
+      "id": 81030,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9483.94,
+      "y": -421.038,
+      "z": 60.0809,
+      "orientation": 4.84347
+    },
+    {
+      "id": 81031,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9555.39,
+      "y": -452.731,
+      "z": 62.1993,
+      "orientation": 4.42545
+    },
+    {
+      "id": 81033,
+      "entry": 735,
+      "mapId": 0,
+      "x": -9472.89,
+      "y": -268.673,
+      "z": 58.3486,
+      "orientation": 5.62523
+    },
+    {
+      "id": 81034,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9465.14,
+      "y": -432.218,
+      "z": 56.7279,
+      "orientation": 5.98711
+    },
+    {
+      "id": 81035,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9505.26,
+      "y": -403.165,
+      "z": 56.6804,
+      "orientation": 0.591016
+    },
+    {
+      "id": 81036,
+      "entry": 735,
+      "mapId": 0,
+      "x": -9545.65,
+      "y": -381.259,
+      "z": 61.4751,
+      "orientation": 3.19474
+    },
+    {
+      "id": 81037,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9559.39,
+      "y": -382.375,
+      "z": 63.1188,
+      "orientation": 3.81577
+    },
+    {
+      "id": 81038,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9471,
+      "y": -384.036,
+      "z": 58.2299,
+      "orientation": 2.87979
+    },
+    {
+      "id": 81039,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9484.07,
+      "y": -395.844,
+      "z": 58.4774,
+      "orientation": 0
+    },
+    {
+      "id": 81040,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9485.84,
+      "y": -388.377,
+      "z": 57.046,
+      "orientation": 2.14675
+    },
+    {
+      "id": 81041,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9484.46,
+      "y": -370.071,
+      "z": 55.9428,
+      "orientation": 1.74583
+    },
+    {
+      "id": 81042,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9587.04,
+      "y": -347.399,
+      "z": 61.7206,
+      "orientation": 0.364979
+    },
+    {
+      "id": 81043,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9474.87,
+      "y": -386.517,
+      "z": 56.5797,
+      "orientation": 0.98265
+    },
+    {
+      "id": 81044,
+      "entry": 735,
+      "mapId": 0,
+      "x": -9413.71,
+      "y": -452.006,
+      "z": 60.3769,
+      "orientation": 2.96314
+    },
+    {
+      "id": 81045,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9477.31,
+      "y": -371.876,
+      "z": 56.59,
+      "orientation": 3.09892
+    },
+    {
+      "id": 81046,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9470.46,
+      "y": -379.389,
+      "z": 59.0321,
+      "orientation": 4.24115
+    },
+    {
+      "id": 81047,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9482.6,
+      "y": -357.314,
+      "z": 59.9421,
+      "orientation": 6.10036
+    },
+    {
+      "id": 81048,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9487.4,
+      "y": -358.883,
+      "z": 57.6885,
+      "orientation": 2.96706
+    },
+    {
+      "id": 81049,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9485.4,
+      "y": -354.08,
+      "z": 59.9508,
+      "orientation": 3.56047
+    },
+    {
+      "id": 81050,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9485.98,
+      "y": -350.2,
+      "z": 59.7253,
+      "orientation": 1.39626
+    },
+    {
+      "id": 81051,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9474.9,
+      "y": -353.104,
+      "z": 60.6382,
+      "orientation": 0.202683
+    },
+    {
+      "id": 81052,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9451.13,
+      "y": -367.227,
+      "z": 55.7305,
+      "orientation": 2.34409
+    },
+    {
+      "id": 81053,
+      "entry": 735,
+      "mapId": 0,
+      "x": -9381.37,
+      "y": -447.646,
+      "z": 63.3056,
+      "orientation": 2.91583
+    },
+    {
+      "id": 81054,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9362.31,
+      "y": -425.369,
+      "z": 64.1048,
+      "orientation": 5.87368
+    },
+    {
+      "id": 81055,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9336.76,
+      "y": -436.052,
+      "z": 67.8668,
+      "orientation": 0.236456
+    },
+    {
+      "id": 81056,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9341.48,
+      "y": -490.621,
+      "z": 69.2226,
+      "orientation": 5.61361
+    },
+    {
+      "id": 81057,
+      "entry": 735,
+      "mapId": 0,
+      "x": -9403.51,
+      "y": -390.75,
+      "z": 60.6673,
+      "orientation": 0.677486
+    },
+    {
+      "id": 81058,
+      "entry": 40,
+      "mapId": 0,
+      "x": -9324.34,
+      "y": -478.439,
+      "z": 72.396,
+      "orientation": 5.24075
+    },
+    {
+      "id": 81059,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9304.71,
+      "y": -423.768,
+      "z": 69.6146,
+      "orientation": 3.451
+    },
+    {
+      "id": 81060,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9323.21,
+      "y": -447.944,
+      "z": 68.0573,
+      "orientation": 2.38608
+    },
+    {
+      "id": 81061,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9362.87,
+      "y": -381.743,
+      "z": 63.8044,
+      "orientation": 4.55324
+    },
+    {
+      "id": 81062,
+      "entry": 116,
+      "mapId": 0,
+      "x": -9326.92,
+      "y": -382.97,
+      "z": 66.8942,
+      "orientation": 1.93636
+    },
+    {
+      "id": 81063,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9313.87,
+      "y": -374.865,
+      "z": 68.3875,
+      "orientation": 6.09652
+    },
+    {
+      "id": 81065,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9475.54,
+      "y": -337.636,
+      "z": 58.5555,
+      "orientation": 2.18166
+    },
+    {
+      "id": 81066,
+      "entry": 735,
+      "mapId": 0,
+      "x": -9511.85,
+      "y": -302.882,
+      "z": 55.0908,
+      "orientation": 5.76622
+    },
+    {
+      "id": 81067,
+      "entry": 735,
+      "mapId": 0,
+      "x": -9410.08,
+      "y": -313.216,
+      "z": 60.8708,
+      "orientation": 1.47159
+    },
+    {
+      "id": 81068,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9449.18,
+      "y": -294.843,
+      "z": 56.8474,
+      "orientation": 2.59314
+    },
+    {
+      "id": 81069,
+      "entry": 735,
+      "mapId": 0,
+      "x": -9448.45,
+      "y": -297.242,
+      "z": 56.6352,
+      "orientation": 2.59307
+    },
+    {
+      "id": 81070,
+      "entry": 735,
+      "mapId": 0,
+      "x": -9391.53,
+      "y": -345.167,
+      "z": 59.0443,
+      "orientation": 5.62124
+    },
+    {
+      "id": 81071,
+      "entry": 735,
+      "mapId": 0,
+      "x": -9511.85,
+      "y": -302.882,
+      "z": 55.0908,
+      "orientation": 5.39536
+    },
+    {
+      "id": 81072,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9415.42,
+      "y": -271.11,
+      "z": 65.9614,
+      "orientation": 2.76785
+    },
+    {
+      "id": 81073,
+      "entry": 735,
+      "mapId": 0,
+      "x": -9431.38,
+      "y": -268.329,
+      "z": 61.7787,
+      "orientation": 0.864894
+    },
+    {
+      "id": 81074,
+      "entry": 735,
+      "mapId": 0,
+      "x": -9446.52,
+      "y": -253.93,
+      "z": 62.261,
+      "orientation": 0.805059
+    },
+    {
+      "id": 81075,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9530.46,
+      "y": -269.478,
+      "z": 59.5826,
+      "orientation": 4.93312
+    },
+    {
+      "id": 81076,
+      "entry": 735,
+      "mapId": 0,
+      "x": -9528.95,
+      "y": -268.761,
+      "z": 59.1591,
+      "orientation": 4.95118
+    },
+    {
+      "id": 81077,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9492.42,
+      "y": -240.271,
+      "z": 56.297,
+      "orientation": 3.08221
+    },
+    {
+      "id": 81078,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9493.42,
+      "y": -224.326,
+      "z": 58.5665,
+      "orientation": 2.74017
+    },
+    {
+      "id": 81079,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9572.4,
+      "y": -230.681,
+      "z": 60.6784,
+      "orientation": 2.19925
+    },
+    {
+      "id": 81081,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9505,
+      "y": -209.918,
+      "z": 52.3005,
+      "orientation": 2.38488
+    },
+    {
+      "id": 81082,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9471.86,
+      "y": -213.085,
+      "z": 56.1049,
+      "orientation": 1.75852
+    },
+    {
+      "id": 81083,
+      "entry": 285,
+      "mapId": 0,
+      "x": -9486.42,
+      "y": -206.092,
+      "z": 57.9227,
+      "orientation": 2.83248
+    },
+    {
+      "id": 81084,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9544.9,
+      "y": -189.886,
+      "z": 61.6624,
+      "orientation": 0.94658
+    },
+    {
+      "id": 81085,
+      "entry": 12423,
+      "mapId": 0,
+      "x": -9514.61,
+      "y": -135.652,
+      "z": 60.4096,
+      "orientation": 5.39307
+    },
+    {
+      "id": 81086,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9586.77,
+      "y": -282.395,
+      "z": 62.0079,
+      "orientation": 0
+    },
+    {
+      "id": 81087,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9513.96,
+      "y": -115.443,
+      "z": 60.4964,
+      "orientation": 5.92116
+    },
+    {
+      "id": 81088,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9519.17,
+      "y": -113.974,
+      "z": 60.8714,
+      "orientation": 2.97458
+    },
+    {
+      "id": 81089,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9525.91,
+      "y": -60.7891,
+      "z": 59.2813,
+      "orientation": 6.07277
+    },
+    {
+      "id": 81092,
+      "entry": 383,
+      "mapId": 0,
+      "x": -9378.89,
+      "y": -111.923,
+      "z": 59.006,
+      "orientation": 3.15905
+    },
+    {
+      "id": 81093,
+      "entry": 1632,
+      "mapId": 0,
+      "x": -9375.68,
+      "y": -74.4761,
+      "z": 64.5206,
+      "orientation": 3.45575
+    },
+    {
+      "id": 81094,
+      "entry": 1651,
+      "mapId": 0,
+      "x": -9382.08,
+      "y": -117.005,
+      "z": 58.9841,
+      "orientation": 4.43314
+    },
+    {
+      "id": 81095,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9350.46,
+      "y": -186.499,
+      "z": 65.0208,
+      "orientation": 4.24482
+    },
+    {
+      "id": 81096,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9367.93,
+      "y": -214.926,
+      "z": 65.1561,
+      "orientation": 5.77753
+    },
+    {
+      "id": 81097,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9367.17,
+      "y": -212.041,
+      "z": 64.8336,
+      "orientation": 2.5182
+    },
+    {
+      "id": 81098,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9289.09,
+      "y": -182.752,
+      "z": 68.5669,
+      "orientation": 0.096395
+    },
+    {
+      "id": 81100,
+      "entry": 735,
+      "mapId": 0,
+      "x": -9382.02,
+      "y": -215.757,
+      "z": 63.1149,
+      "orientation": 1.3616
+    },
+    {
+      "id": 81101,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9390.15,
+      "y": -282.168,
+      "z": 62.8373,
+      "orientation": 4.84043
+    },
+    {
+      "id": 81102,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9375.08,
+      "y": -281.941,
+      "z": 65.1798,
+      "orientation": 5.55154
+    },
+    {
+      "id": 81103,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9396.85,
+      "y": -272.529,
+      "z": 61.7762,
+      "orientation": 5.46288
+    },
+    {
+      "id": 81105,
+      "entry": 474,
+      "mapId": 0,
+      "x": -9306.21,
+      "y": -294.363,
+      "z": 70.51,
+      "orientation": 1.13446
+    },
+    {
+      "id": 81106,
+      "entry": 116,
+      "mapId": 0,
+      "x": -9306.67,
+      "y": -287.224,
+      "z": 70.5972,
+      "orientation": 5.16617
+    },
+    {
+      "id": 81107,
+      "entry": 61,
+      "mapId": 0,
+      "x": -9303.19,
+      "y": -292.231,
+      "z": 70.73,
+      "orientation": 3.22
+    },
+    {
+      "id": 81108,
+      "entry": 116,
+      "mapId": 0,
+      "x": -9309.05,
+      "y": -272.284,
+      "z": 70.9471,
+      "orientation": 4.02234
+    },
+    {
+      "id": 81109,
+      "entry": 116,
+      "mapId": 0,
+      "x": -9314.27,
+      "y": -276.775,
+      "z": 70.19,
+      "orientation": 0.450548
+    },
+    {
+      "id": 81110,
+      "entry": 525,
+      "mapId": 0,
+      "x": -9337.26,
+      "y": -330.813,
+      "z": 67.8484,
+      "orientation": 4.41076
+    },
+    {
+      "id": 81111,
+      "entry": 478,
+      "mapId": 0,
+      "x": -9207.39,
+      "y": -846.818,
+      "z": 68.3637,
+      "orientation": 3.85824
+    },
+    {
+      "id": 81112,
+      "entry": 478,
+      "mapId": 0,
+      "x": -9117.19,
+      "y": -830.729,
+      "z": 70.2657,
+      "orientation": 2.40939
+    },
+    {
+      "id": 81113,
+      "entry": 478,
+      "mapId": 0,
+      "x": -9070.95,
+      "y": -831.316,
+      "z": 69.6163,
+      "orientation": 4.87625
+    },
+    {
+      "id": 81114,
+      "entry": 97,
+      "mapId": 0,
+      "x": -9014.86,
+      "y": -845.351,
+      "z": 70.516,
+      "orientation": 1.04126
+    },
+    {
+      "id": 81115,
+      "entry": 97,
+      "mapId": 0,
+      "x": -9014.58,
+      "y": -818.75,
+      "z": 69.7591,
+      "orientation": 2.45992
+    },
+    {
+      "id": 81116,
+      "entry": 478,
+      "mapId": 0,
+      "x": -8996.38,
+      "y": -817.691,
+      "z": 69.5901,
+      "orientation": 1.35894
+    },
+    {
+      "id": 81117,
+      "entry": 97,
+      "mapId": 0,
+      "x": -8989.19,
+      "y": -837.573,
+      "z": 69.6341,
+      "orientation": 0.837758
+    },
+    {
+      "id": 81118,
+      "entry": 97,
+      "mapId": 0,
+      "x": -8978.88,
+      "y": -838.899,
+      "z": 69.9902,
+      "orientation": 1.91986
+    },
+    {
+      "id": 81119,
+      "entry": 478,
+      "mapId": 0,
+      "x": -8984.14,
+      "y": -828.167,
+      "z": 70.2784,
+      "orientation": 5.60251
+    },
+    {
+      "id": 81120,
+      "entry": 478,
+      "mapId": 0,
+      "x": -8979.83,
+      "y": -818.941,
+      "z": 70.4679,
+      "orientation": 4.4855
+    },
+    {
+      "id": 81121,
+      "entry": 478,
+      "mapId": 0,
+      "x": -8985.59,
+      "y": -854.958,
+      "z": 69.1153,
+      "orientation": 0.047932
+    },
+    {
+      "id": 81122,
+      "entry": 472,
+      "mapId": 0,
+      "x": -8978.21,
+      "y": -829.324,
+      "z": 70.1883,
+      "orientation": 3.29867
+    },
+    {
+      "id": 81123,
+      "entry": 118,
+      "mapId": 0,
+      "x": -8985.36,
+      "y": -777.824,
+      "z": 72.2418,
+      "orientation": 5.45966
+    },
+    {
+      "id": 81124,
+      "entry": 478,
+      "mapId": 0,
+      "x": -8939.99,
+      "y": -853.295,
+      "z": 68.6805,
+      "orientation": 4.01473
+    },
+    {
+      "id": 81125,
+      "entry": 478,
+      "mapId": 0,
+      "x": -8918.61,
+      "y": -814.389,
+      "z": 68.927,
+      "orientation": 0.370001
+    },
+    {
+      "id": 81126,
+      "entry": 478,
+      "mapId": 0,
+      "x": -8953.07,
+      "y": -780.752,
+      "z": 69.0888,
+      "orientation": 1.12163
+    },
+    {
+      "id": 81128,
+      "entry": 478,
+      "mapId": 0,
+      "x": -8874.23,
+      "y": -862.047,
+      "z": 74.7382,
+      "orientation": 1.85187
+    },
+    {
+      "id": 81129,
+      "entry": 478,
+      "mapId": 0,
+      "x": -8869.74,
+      "y": -819.372,
+      "z": 71.8887,
+      "orientation": 0.88304
+    },
+    {
+      "id": 81130,
+      "entry": 478,
+      "mapId": 0,
+      "x": -8836.41,
+      "y": -831.326,
+      "z": 73.7589,
+      "orientation": 6.20071
+    },
+    {
+      "id": 81131,
+      "entry": 97,
+      "mapId": 0,
+      "x": -8851.85,
+      "y": -827.879,
+      "z": 72.9202,
+      "orientation": 1.93731
+    },
+    {
+      "id": 81132,
+      "entry": 478,
+      "mapId": 0,
+      "x": -8847.86,
+      "y": -811.561,
+      "z": 70.7121,
+      "orientation": 4.20624
+    },
+    {
+      "id": 81133,
+      "entry": 478,
+      "mapId": 0,
+      "x": -8859.67,
+      "y": -824.284,
+      "z": 71.8228,
+      "orientation": 5.84685
+    },
+    {
+      "id": 81134,
+      "entry": 97,
+      "mapId": 0,
+      "x": -8854.58,
+      "y": -853.312,
+      "z": 74.2394,
+      "orientation": 6.11634
+    },
+    {
+      "id": 81135,
+      "entry": 118,
+      "mapId": 0,
+      "x": -8941.04,
+      "y": -734.319,
+      "z": 70.4347,
+      "orientation": 3.03639
+    },
+    {
+      "id": 81136,
+      "entry": 97,
+      "mapId": 0,
+      "x": -8849.2,
+      "y": -753.343,
+      "z": 70.3534,
+      "orientation": 2.08604
+    },
+    {
+      "id": 81137,
+      "entry": 478,
+      "mapId": 0,
+      "x": -8888.63,
+      "y": -756.145,
+      "z": 69.4341,
+      "orientation": 3.1422
+    },
+    {
+      "id": 81138,
+      "entry": 478,
+      "mapId": 0,
+      "x": -8914.71,
+      "y": -745.936,
+      "z": 70.4106,
+      "orientation": 4.47358
+    },
+    {
+      "id": 81139,
+      "entry": 97,
+      "mapId": 0,
+      "x": -8852.59,
+      "y": -777.225,
+      "z": 70.6529,
+      "orientation": 6.17223
+    },
+    {
+      "id": 81140,
+      "entry": 478,
+      "mapId": 0,
+      "x": -8879.58,
+      "y": -786.566,
+      "z": 70.0006,
+      "orientation": 2.84998
+    },
+    {
+      "id": 81141,
+      "entry": 97,
+      "mapId": 0,
+      "x": -8895.92,
+      "y": -769.232,
+      "z": 69.5663,
+      "orientation": 5.63741
+    },
+    {
+      "id": 81142,
+      "entry": 97,
+      "mapId": 0,
+      "x": -8879.83,
+      "y": -766.896,
+      "z": 68.7156,
+      "orientation": 4.17134
+    },
+    {
+      "id": 81143,
+      "entry": 478,
+      "mapId": 0,
+      "x": -8873.52,
+      "y": -776.396,
+      "z": 69.3139,
+      "orientation": 3.1765
+    },
+    {
+      "id": 81144,
+      "entry": 478,
+      "mapId": 0,
+      "x": -8887.32,
+      "y": -778.651,
+      "z": 69.7129,
+      "orientation": 0.855211
+    },
+    {
+      "id": 81145,
+      "entry": 478,
+      "mapId": 0,
+      "x": -8895.99,
+      "y": -778.248,
+      "z": 69.3756,
+      "orientation": 0.380141
+    },
+    {
+      "id": 81146,
+      "entry": 97,
+      "mapId": 0,
+      "x": -8846.81,
+      "y": -922.26,
+      "z": 75.6918,
+      "orientation": 3.07364
+    },
+    {
+      "id": 81148,
+      "entry": 478,
+      "mapId": 0,
+      "x": -8838.21,
+      "y": -854.256,
+      "z": 74.6843,
+      "orientation": 2.74352
+    },
+    {
+      "id": 81149,
+      "entry": 478,
+      "mapId": 0,
+      "x": -8848.67,
+      "y": -882.444,
+      "z": 74.6828,
+      "orientation": 4.37717
+    },
+    {
+      "id": 81150,
+      "entry": 118,
+      "mapId": 0,
+      "x": -8885.08,
+      "y": -890.691,
+      "z": 74.929,
+      "orientation": 0.056939
+    },
+    {
+      "id": 81151,
+      "entry": 97,
+      "mapId": 0,
+      "x": -8841.8,
+      "y": -867.743,
+      "z": 75.9984,
+      "orientation": 5.70723
+    },
+    {
+      "id": 81152,
+      "entry": 478,
+      "mapId": 0,
+      "x": -8834.45,
+      "y": -880.661,
+      "z": 74.4284,
+      "orientation": 2.02458
+    },
+    {
+      "id": 81153,
+      "entry": 478,
+      "mapId": 0,
+      "x": -8827.74,
+      "y": -867.454,
+      "z": 74.5929,
+      "orientation": 3.22886
+    },
+    {
+      "id": 81154,
+      "entry": 97,
+      "mapId": 0,
+      "x": -8824.66,
+      "y": -848.258,
+      "z": 74.3457,
+      "orientation": 1.75243
+    },
+    {
+      "id": 81155,
+      "entry": 118,
+      "mapId": 0,
+      "x": -8908.56,
+      "y": -912.445,
+      "z": 73.5995,
+      "orientation": 1.93643
+    },
+    {
+      "id": 81156,
+      "entry": 118,
+      "mapId": 0,
+      "x": -8847.9,
+      "y": -918.84,
+      "z": 75.8897,
+      "orientation": 0.086536
+    },
+    {
+      "id": 81157,
+      "entry": 118,
+      "mapId": 0,
+      "x": -8806.5,
+      "y": -943.751,
+      "z": 73.8439,
+      "orientation": 0.475011
+    },
+    {
+      "id": 81158,
+      "entry": 118,
+      "mapId": 0,
+      "x": -8889.98,
+      "y": -968.151,
+      "z": 73.2223,
+      "orientation": 4.39878
+    },
+    {
+      "id": 81160,
+      "entry": 474,
+      "mapId": 0,
+      "x": -9090.89,
+      "y": -951.887,
+      "z": 68.852,
+      "orientation": 1.86837
+    },
+    {
+      "id": 81164,
+      "entry": 474,
+      "mapId": 0,
+      "x": -9143.81,
+      "y": -954.4,
+      "z": 70.6154,
+      "orientation": 0.325079
+    },
+    {
+      "id": 86164,
+      "entry": 60,
+      "mapId": 0,
+      "x": -9250.89,
+      "y": -708.187,
+      "z": 62.9,
+      "orientation": 1.5507
+    },
+    {
+      "id": 87047,
+      "entry": 6491,
+      "mapId": 0,
+      "x": -8924,
+      "y": -189,
+      "z": 80.6554,
+      "orientation": 2.77
+    },
+    {
+      "id": 100156,
+      "entry": 6491,
+      "mapId": 0,
+      "x": -9562.73,
+      "y": -603.599,
+      "z": 58.3876,
+      "orientation": 3.85078
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+// Minimal std::source_location for libc++ 11 (OpenOrbis). See README.md.
+#pragma once
+#if __has_include_next(<source_location>) && !defined(WOWEE_FORCE_CXX20_SHIMS)
+#include_next <source_location>
+#else
+#include <cstdint>
+namespace std {
+struct source_location {
+    static constexpr source_location current(const char* file = __builtin_FILE(),
+                                             const char* func = __builtin_FUNCTION(),
+                                             unsigned line = __builtin_LINE(),
+                                             unsigned column = __builtin_COLUMN()) noexcept {
+        source_location l;
+        l.file_ = file; l.func_ = func; l.line_ = line; l.column_ = column;
+        return l;
+    }
+    constexpr source_location() noexcept = default;
+    constexpr const char* file_name() const noexcept { return file_; }
+    constexpr const char* function_name() const noexcept { return func_; }
+    constexpr uint_least32_t line() const noexcept { return line_; }
+    constexpr uint_least32_t column() const noexcept { return column_; }
+private:
+    const char* file_ = "";
+    const char* func_ = "";
+    uint_least32_t line_ = 0;
+    uint_least32_t column_ = 0;
+};
+}
+#endif

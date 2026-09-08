@@ -1,0 +1,25 @@
+{
+  "format": 1,
+  "shaders": {
+    "terrain.frag": {
+      "source_sha256": "a7e285f4e005f6006a7b2be343042aede2fba277a30a9c52e7789355839c8b35",
+      "spirv_sha256": "a444dd04989f121d26f3502850b460dbaff80015151551008e91a2ccaba11df5"
+    },
+    "character.frag": {
+      "source_sha256": "dac7cc23b3d80c48a08216fd3c7b7cb7f67572c95be386d9923b0ee8435ada35",
+      "spirv_sha256": "e76d0f06728e46167da2eb4a3ae849d3cccc7c55c6adebae4822776c089c8b28"
+    },
+    "wmo.frag": {
+      "source_sha256": "898332504e015fd1e563dbbf8dccc1e4e274ce96d8b08cb1d3fa53c3f53c7243",
+      "spirv_sha256": "880ab8e157443ff337d703f970390cbc12f9c841ecd42e84dfa5b2921c3bb61c"
+    },
+    "m2.frag": {
+      "source_sha256": "899dea76489398e9a2378cb8bef7a86a85ddbb35f2262d61a806538990919411",
+      "spirv_sha256": "69028821d0d85e7749e341781ff343fe7099d2bdaf42f01ec9f773ada6f06b20"
+    },
+    "shadow_instanced.vert": {
+      "source_sha256": "ad069cb94eb70b29f3b06078e82296fbab36b96f2d38af4c90417699d6ab1975",
+      "spirv_sha256": "8dc4cdbebaab291ec73604acde9d6eceb9b8415a696c1c5131d4ac17847d292e"
+    }
+  }
+}

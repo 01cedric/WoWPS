@@ -1,0 +1,4139 @@
+{
+  "schemaVersion": 1,
+  "cellSize": 256,
+  "sourceCommit": "4e80596cdaa21fa31830522f6f2d7ed8750bfffd",
+  "repository": "https://github.com/azerothcore/azerothcore-wotlk",
+  "maps": [
+    {
+      "id": 0,
+      "spawnCount": 22269,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 1,
+      "spawnCount": 24487,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 30,
+      "spawnCount": 0,
+      "instanceMap": true,
+      "upstreamScript": ""
+    },
+    {
+      "id": 33,
+      "spawnCount": 174,
+      "instanceMap": true,
+      "upstreamScript": "instance_shadowfang_keep"
+    },
+    {
+      "id": 34,
+      "spawnCount": 93,
+      "instanceMap": true,
+      "upstreamScript": "instance_the_stockade"
+    },
+    {
+      "id": 35,
+      "spawnCount": 0,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 36,
+      "spawnCount": 202,
+      "instanceMap": true,
+      "upstreamScript": "instance_deadmines"
+    },
+    {
+      "id": 43,
+      "spawnCount": 249,
+      "instanceMap": true,
+      "upstreamScript": "instance_wailing_caverns"
+    },
+    {
+      "id": 44,
+      "spawnCount": 0,
+      "instanceMap": true,
+      "upstreamScript": ""
+    },
+    {
+      "id": 47,
+      "spawnCount": 187,
+      "instanceMap": true,
+      "upstreamScript": "instance_razorfen_kraul"
+    },
+    {
+      "id": 48,
+      "spawnCount": 211,
+      "instanceMap": true,
+      "upstreamScript": "instance_blackfathom_deeps"
+    },
+    {
+      "id": 70,
+      "spawnCount": 315,
+      "instanceMap": true,
+      "upstreamScript": "instance_uldaman"
+    },
+    {
+      "id": 90,
+      "spawnCount": 390,
+      "instanceMap": true,
+      "upstreamScript": "instance_gnomeregan"
+    },
+    {
+      "id": 109,
+      "spawnCount": 300,
+      "instanceMap": true,
+      "upstreamScript": "instance_sunken_temple"
+    },
+    {
+      "id": 129,
+      "spawnCount": 207,
+      "instanceMap": true,
+      "upstreamScript": "instance_razorfen_downs"
+    },
+    {
+      "id": 169,
+      "spawnCount": 0,
+      "instanceMap": true,
+      "upstreamScript": ""
+    },
+    {
+      "id": 189,
+      "spawnCount": 326,
+      "instanceMap": true,
+      "upstreamScript": "instance_scarlet_monastery"
+    },
+    {
+      "id": 209,
+      "spawnCount": 265,
+      "instanceMap": true,
+      "upstreamScript": "instance_zulfarrak"
+    },
+    {
+      "id": 229,
+      "spawnCount": 589,
+      "instanceMap": true,
+      "upstreamScript": "instance_blackrock_spire"
+    },
+    {
+      "id": 230,
+      "spawnCount": 1082,
+      "instanceMap": true,
+      "upstreamScript": "instance_blackrock_depths"
+    },
+    {
+      "id": 249,
+      "spawnCount": 5,
+      "instanceMap": true,
+      "upstreamScript": "instance_onyxias_lair"
+    },
+    {
+      "id": 269,
+      "spawnCount": 138,
+      "instanceMap": true,
+      "upstreamScript": "instance_the_black_morass"
+    },
+    {
+      "id": 289,
+      "spawnCount": 341,
+      "instanceMap": true,
+      "upstreamScript": "instance_scholomance"
+    },
+    {
+      "id": 309,
+      "spawnCount": 695,
+      "instanceMap": true,
+      "upstreamScript": "instance_zulgurub"
+    },
+    {
+      "id": 329,
+      "spawnCount": 459,
+      "instanceMap": true,
+      "upstreamScript": "instance_stratholme"
+    },
+    {
+      "id": 349,
+      "spawnCount": 485,
+      "instanceMap": true,
+      "upstreamScript": "instance_maraudon"
+    },
+    {
+      "id": 369,
+      "spawnCount": 12,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 389,
+      "spawnCount": 132,
+      "instanceMap": true,
+      "upstreamScript": "instance_ragefire_chasm"
+    },
+    {
+      "id": 409,
+      "spawnCount": 233,
+      "instanceMap": true,
+      "upstreamScript": "instance_molten_core"
+    },
+    {
+      "id": 429,
+      "spawnCount": 786,
+      "instanceMap": true,
+      "upstreamScript": "instance_dire_maul"
+    },
+    {
+      "id": 451,
+      "spawnCount": 1,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 469,
+      "spawnCount": 312,
+      "instanceMap": true,
+      "upstreamScript": "instance_blackwing_lair"
+    },
+    {
+      "id": 489,
+      "spawnCount": 0,
+      "instanceMap": true,
+      "upstreamScript": ""
+    },
+    {
+      "id": 509,
+      "spawnCount": 98,
+      "instanceMap": true,
+      "upstreamScript": "instance_ruins_of_ahnqiraj"
+    },
+    {
+      "id": 529,
+      "spawnCount": 0,
+      "instanceMap": true,
+      "upstreamScript": ""
+    },
+    {
+      "id": 530,
+      "spawnCount": 23671,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 531,
+      "spawnCount": 47,
+      "instanceMap": true,
+      "upstreamScript": "instance_temple_of_ahnqiraj"
+    },
+    {
+      "id": 532,
+      "spawnCount": 609,
+      "instanceMap": true,
+      "upstreamScript": "instance_karazhan"
+    },
+    {
+      "id": 533,
+      "spawnCount": 576,
+      "instanceMap": true,
+      "upstreamScript": "instance_naxxramas"
+    },
+    {
+      "id": 534,
+      "spawnCount": 178,
+      "instanceMap": true,
+      "upstreamScript": "instance_hyjal"
+    },
+    {
+      "id": 540,
+      "spawnCount": 143,
+      "instanceMap": true,
+      "upstreamScript": "instance_shattered_halls"
+    },
+    {
+      "id": 542,
+      "spawnCount": 191,
+      "instanceMap": true,
+      "upstreamScript": "instance_blood_furnace"
+    },
+    {
+      "id": 543,
+      "spawnCount": 98,
+      "instanceMap": true,
+      "upstreamScript": "instance_hellfire_ramparts"
+    },
+    {
+      "id": 544,
+      "spawnCount": 18,
+      "instanceMap": true,
+      "upstreamScript": "instance_magtheridons_lair"
+    },
+    {
+      "id": 545,
+      "spawnCount": 154,
+      "instanceMap": true,
+      "upstreamScript": "instance_steam_vault"
+    },
+    {
+      "id": 546,
+      "spawnCount": 192,
+      "instanceMap": true,
+      "upstreamScript": "instance_the_underbog"
+    },
+    {
+      "id": 547,
+      "spawnCount": 199,
+      "instanceMap": true,
+      "upstreamScript": "instance_the_slave_pens"
+    },
+    {
+      "id": 548,
+      "spawnCount": 274,
+      "instanceMap": true,
+      "upstreamScript": "instance_serpent_shrine"
+    },
+    {
+      "id": 550,
+      "spawnCount": 188,
+      "instanceMap": true,
+      "upstreamScript": "instance_the_eye"
+    },
+    {
+      "id": 552,
+      "spawnCount": 69,
+      "instanceMap": true,
+      "upstreamScript": "instance_arcatraz"
+    },
+    {
+      "id": 553,
+      "spawnCount": 184,
+      "instanceMap": true,
+      "upstreamScript": "instance_the_botanica"
+    },
+    {
+      "id": 554,
+      "spawnCount": 98,
+      "instanceMap": true,
+      "upstreamScript": "instance_mechanar"
+    },
+    {
+      "id": 555,
+      "spawnCount": 196,
+      "instanceMap": true,
+      "upstreamScript": "instance_shadow_labyrinth"
+    },
+    {
+      "id": 556,
+      "spawnCount": 135,
+      "instanceMap": true,
+      "upstreamScript": "instance_sethekk_halls"
+    },
+    {
+      "id": 557,
+      "spawnCount": 134,
+      "instanceMap": true,
+      "upstreamScript": "instance_mana_tombs"
+    },
+    {
+      "id": 558,
+      "spawnCount": 126,
+      "instanceMap": true,
+      "upstreamScript": "instance_auchenai_crypts"
+    },
+    {
+      "id": 559,
+      "spawnCount": 0,
+      "instanceMap": true,
+      "upstreamScript": ""
+    },
+    {
+      "id": 560,
+      "spawnCount": 528,
+      "instanceMap": true,
+      "upstreamScript": "instance_old_hillsbrad"
+    },
+    {
+      "id": 562,
+      "spawnCount": 0,
+      "instanceMap": true,
+      "upstreamScript": ""
+    },
+    {
+      "id": 564,
+      "spawnCount": 597,
+      "instanceMap": true,
+      "upstreamScript": "instance_black_temple"
+    },
+    {
+      "id": 565,
+      "spawnCount": 18,
+      "instanceMap": true,
+      "upstreamScript": "instance_gruuls_lair"
+    },
+    {
+      "id": 566,
+      "spawnCount": 0,
+      "instanceMap": true,
+      "upstreamScript": ""
+    },
+    {
+      "id": 568,
+      "spawnCount": 211,
+      "instanceMap": true,
+      "upstreamScript": "instance_zulaman"
+    },
+    {
+      "id": 571,
+      "spawnCount": 24466,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 572,
+      "spawnCount": 3,
+      "instanceMap": true,
+      "upstreamScript": ""
+    },
+    {
+      "id": 574,
+      "spawnCount": 123,
+      "instanceMap": true,
+      "upstreamScript": "instance_utgarde_keep"
+    },
+    {
+      "id": 575,
+      "spawnCount": 92,
+      "instanceMap": true,
+      "upstreamScript": "instance_utgarde_pinnacle"
+    },
+    {
+      "id": 576,
+      "spawnCount": 241,
+      "instanceMap": true,
+      "upstreamScript": "instance_nexus"
+    },
+    {
+      "id": 578,
+      "spawnCount": 105,
+      "instanceMap": true,
+      "upstreamScript": "instance_oculus"
+    },
+    {
+      "id": 580,
+      "spawnCount": 214,
+      "instanceMap": true,
+      "upstreamScript": "instance_sunwell_plateau"
+    },
+    {
+      "id": 582,
+      "spawnCount": 6,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 584,
+      "spawnCount": 11,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 585,
+      "spawnCount": 180,
+      "instanceMap": true,
+      "upstreamScript": "instance_magisters_terrace"
+    },
+    {
+      "id": 586,
+      "spawnCount": 6,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 587,
+      "spawnCount": 7,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 588,
+      "spawnCount": 10,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 589,
+      "spawnCount": 8,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 590,
+      "spawnCount": 8,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 591,
+      "spawnCount": 8,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 593,
+      "spawnCount": 8,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 594,
+      "spawnCount": 23,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 595,
+      "spawnCount": 247,
+      "instanceMap": true,
+      "upstreamScript": "instance_culling_of_stratholme"
+    },
+    {
+      "id": 599,
+      "spawnCount": 102,
+      "instanceMap": true,
+      "upstreamScript": "instance_halls_of_stone"
+    },
+    {
+      "id": 600,
+      "spawnCount": 115,
+      "instanceMap": true,
+      "upstreamScript": "instance_drak_tharon_keep"
+    },
+    {
+      "id": 601,
+      "spawnCount": 72,
+      "instanceMap": true,
+      "upstreamScript": "instance_azjol_nerub"
+    },
+    {
+      "id": 602,
+      "spawnCount": 169,
+      "instanceMap": true,
+      "upstreamScript": "instance_halls_of_lightning"
+    },
+    {
+      "id": 603,
+      "spawnCount": 931,
+      "instanceMap": true,
+      "upstreamScript": "instance_ulduar"
+    },
+    {
+      "id": 604,
+      "spawnCount": 177,
+      "instanceMap": true,
+      "upstreamScript": "instance_gundrak"
+    },
+    {
+      "id": 607,
+      "spawnCount": 0,
+      "instanceMap": true,
+      "upstreamScript": ""
+    },
+    {
+      "id": 608,
+      "spawnCount": 15,
+      "instanceMap": true,
+      "upstreamScript": "instance_violet_hold"
+    },
+    {
+      "id": 609,
+      "spawnCount": 543,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 610,
+      "spawnCount": 6,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 612,
+      "spawnCount": 6,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 613,
+      "spawnCount": 6,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 614,
+      "spawnCount": 6,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 615,
+      "spawnCount": 26,
+      "instanceMap": true,
+      "upstreamScript": "instance_obsidian_sanctum"
+    },
+    {
+      "id": 616,
+      "spawnCount": 1,
+      "instanceMap": true,
+      "upstreamScript": "instance_eye_of_eternity"
+    },
+    {
+      "id": 617,
+      "spawnCount": 0,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 618,
+      "spawnCount": 0,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 619,
+      "spawnCount": 144,
+      "instanceMap": true,
+      "upstreamScript": "instance_ahnkahet"
+    },
+    {
+      "id": 620,
+      "spawnCount": 2,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 621,
+      "spawnCount": 2,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 622,
+      "spawnCount": 38,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 623,
+      "spawnCount": 60,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 624,
+      "spawnCount": 12,
+      "instanceMap": true,
+      "upstreamScript": "instance_vault_of_archavon"
+    },
+    {
+      "id": 628,
+      "spawnCount": 0,
+      "instanceMap": true,
+      "upstreamScript": ""
+    },
+    {
+      "id": 631,
+      "spawnCount": 288,
+      "instanceMap": true,
+      "upstreamScript": "instance_icecrown_citadel"
+    },
+    {
+      "id": 632,
+      "spawnCount": 44,
+      "instanceMap": true,
+      "upstreamScript": "instance_forge_of_souls"
+    },
+    {
+      "id": 641,
+      "spawnCount": 12,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 642,
+      "spawnCount": 10,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 647,
+      "spawnCount": 9,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 649,
+      "spawnCount": 80,
+      "instanceMap": true,
+      "upstreamScript": "instance_trial_of_the_crusader"
+    },
+    {
+      "id": 650,
+      "spawnCount": 59,
+      "instanceMap": true,
+      "upstreamScript": "instance_trial_of_the_champion"
+    },
+    {
+      "id": 658,
+      "spawnCount": 169,
+      "instanceMap": true,
+      "upstreamScript": "instance_pit_of_saron"
+    },
+    {
+      "id": 668,
+      "spawnCount": 48,
+      "instanceMap": true,
+      "upstreamScript": "instance_halls_of_reflection"
+    },
+    {
+      "id": 672,
+      "spawnCount": 12,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 673,
+      "spawnCount": 12,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 712,
+      "spawnCount": 50,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 713,
+      "spawnCount": 32,
+      "instanceMap": false,
+      "upstreamScript": ""
+    },
+    {
+      "id": 724,
+      "spawnCount": 45,
+      "instanceMap": true,
+      "upstreamScript": "instance_ruby_sanctum"
+    }
+  ],
+  "starts": [
+    {
+      "race": 1,
+      "classId": 1,
+      "level": 1,
+      "mapId": 0,
+      "x": -8949.95,
+      "y": -132.493,
+      "z": 83.5312,
+      "orientation": 0
+    },
+    {
+      "race": 1,
+      "classId": 2,
+      "level": 1,
+      "mapId": 0,
+      "x": -8949.95,
+      "y": -132.493,
+      "z": 83.5312,
+      "orientation": 0
+    },
+    {
+      "race": 1,
+      "classId": 4,
+      "level": 1,
+      "mapId": 0,
+      "x": -8949.95,
+      "y": -132.493,
+      "z": 83.5312,
+      "orientation": 0
+    },
+    {
+      "race": 1,
+      "classId": 5,
+      "level": 1,
+      "mapId": 0,
+      "x": -8949.95,
+      "y": -132.493,
+      "z": 83.5312,
+      "orientation": 0
+    },
+    {
+      "race": 1,
+      "classId": 6,
+      "level": 55,
+      "mapId": 609,
+      "x": 2355.84,
+      "y": -5664.77,
+      "z": 426.028,
+      "orientation": 3.65997
+    },
+    {
+      "race": 1,
+      "classId": 8,
+      "level": 1,
+      "mapId": 0,
+      "x": -8949.95,
+      "y": -132.493,
+      "z": 83.5312,
+      "orientation": 0
+    },
+    {
+      "race": 1,
+      "classId": 9,
+      "level": 1,
+      "mapId": 0,
+      "x": -8949.95,
+      "y": -132.493,
+      "z": 83.5312,
+      "orientation": 0
+    },
+    {
+      "race": 2,
+      "classId": 1,
+      "level": 1,
+      "mapId": 1,
+      "x": -618.518,
+      "y": -4251.67,
+      "z": 38.718,
+      "orientation": 0
+    },
+    {
+      "race": 2,
+      "classId": 3,
+      "level": 1,
+      "mapId": 1,
+      "x": -618.518,
+      "y": -4251.67,
+      "z": 38.718,
+      "orientation": 0
+    },
+    {
+      "race": 2,
+      "classId": 4,
+      "level": 1,
+      "mapId": 1,
+      "x": -618.518,
+      "y": -4251.67,
+      "z": 38.718,
+      "orientation": 0
+    },
+    {
+      "race": 2,
+      "classId": 6,
+      "level": 55,
+      "mapId": 609,
+      "x": 2358.44,
+      "y": -5666.9,
+      "z": 426.023,
+      "orientation": 3.65997
+    },
+    {
+      "race": 2,
+      "classId": 7,
+      "level": 1,
+      "mapId": 1,
+      "x": -618.518,
+      "y": -4251.67,
+      "z": 38.718,
+      "orientation": 0
+    },
+    {
+      "race": 2,
+      "classId": 9,
+      "level": 1,
+      "mapId": 1,
+      "x": -618.518,
+      "y": -4251.67,
+      "z": 38.718,
+      "orientation": 0
+    },
+    {
+      "race": 3,
+      "classId": 1,
+      "level": 1,
+      "mapId": 0,
+      "x": -6240.32,
+      "y": 331.033,
+      "z": 382.758,
+      "orientation": 6.17716
+    },
+    {
+      "race": 3,
+      "classId": 2,
+      "level": 1,
+      "mapId": 0,
+      "x": -6240.32,
+      "y": 331.033,
+      "z": 382.758,
+      "orientation": 6.17716
+    },
+    {
+      "race": 3,
+      "classId": 3,
+      "level": 1,
+      "mapId": 0,
+      "x": -6240.32,
+      "y": 331.033,
+      "z": 382.758,
+      "orientation": 6.17716
+    },
+    {
+      "race": 3,
+      "classId": 4,
+      "level": 1,
+      "mapId": 0,
+      "x": -6240.32,
+      "y": 331.033,
+      "z": 382.758,
+      "orientation": 6.17716
+    },
+    {
+      "race": 3,
+      "classId": 5,
+      "level": 1,
+      "mapId": 0,
+      "x": -6240.32,
+      "y": 331.033,
+      "z": 382.758,
+      "orientation": 6.17716
+    },
+    {
+      "race": 3,
+      "classId": 6,
+      "level": 55,
+      "mapId": 609,
+      "x": 2358.44,
+      "y": -5666.9,
+      "z": 426.023,
+      "orientation": 3.65997
+    },
+    {
+      "race": 4,
+      "classId": 1,
+      "level": 1,
+      "mapId": 1,
+      "x": 10311.3,
+      "y": 832.463,
+      "z": 1326.41,
+      "orientation": 5.69632
+    },
+    {
+      "race": 4,
+      "classId": 3,
+      "level": 1,
+      "mapId": 1,
+      "x": 10311.3,
+      "y": 832.463,
+      "z": 1326.41,
+      "orientation": 5.69632
+    },
+    {
+      "race": 4,
+      "classId": 4,
+      "level": 1,
+      "mapId": 1,
+      "x": 10311.3,
+      "y": 832.463,
+      "z": 1326.41,
+      "orientation": 5.69632
+    },
+    {
+      "race": 4,
+      "classId": 5,
+      "level": 1,
+      "mapId": 1,
+      "x": 10311.3,
+      "y": 832.463,
+      "z": 1326.41,
+      "orientation": 5.69632
+    },
+    {
+      "race": 4,
+      "classId": 6,
+      "level": 55,
+      "mapId": 609,
+      "x": 2356.21,
+      "y": -5662.21,
+      "z": 426.026,
+      "orientation": 3.65997
+    },
+    {
+      "race": 4,
+      "classId": 11,
+      "level": 1,
+      "mapId": 1,
+      "x": 10311.3,
+      "y": 832.463,
+      "z": 1326.41,
+      "orientation": 5.69632
+    },
+    {
+      "race": 5,
+      "classId": 1,
+      "level": 1,
+      "mapId": 0,
+      "x": 1676.71,
+      "y": 1678.31,
+      "z": 121.67,
+      "orientation": 2.70526
+    },
+    {
+      "race": 5,
+      "classId": 4,
+      "level": 1,
+      "mapId": 0,
+      "x": 1676.71,
+      "y": 1678.31,
+      "z": 121.67,
+      "orientation": 2.70526
+    },
+    {
+      "race": 5,
+      "classId": 5,
+      "level": 1,
+      "mapId": 0,
+      "x": 1676.71,
+      "y": 1678.31,
+      "z": 121.67,
+      "orientation": 2.70526
+    },
+    {
+      "race": 5,
+      "classId": 6,
+      "level": 55,
+      "mapId": 609,
+      "x": 2356.21,
+      "y": -5662.21,
+      "z": 426.026,
+      "orientation": 3.65997
+    },
+    {
+      "race": 5,
+      "classId": 8,
+      "level": 1,
+      "mapId": 0,
+      "x": 1676.71,
+      "y": 1678.31,
+      "z": 121.67,
+      "orientation": 2.70526
+    },
+    {
+      "race": 5,
+      "classId": 9,
+      "level": 1,
+      "mapId": 0,
+      "x": 1676.71,
+      "y": 1678.31,
+      "z": 121.67,
+      "orientation": 2.70526
+    },
+    {
+      "race": 6,
+      "classId": 1,
+      "level": 1,
+      "mapId": 1,
+      "x": -2917.58,
+      "y": -257.98,
+      "z": 52.9968,
+      "orientation": 0
+    },
+    {
+      "race": 6,
+      "classId": 3,
+      "level": 1,
+      "mapId": 1,
+      "x": -2917.58,
+      "y": -257.98,
+      "z": 52.9968,
+      "orientation": 0
+    },
+    {
+      "race": 6,
+      "classId": 6,
+      "level": 55,
+      "mapId": 609,
+      "x": 2358.17,
+      "y": -5663.21,
+      "z": 426.027,
+      "orientation": 3.65997
+    },
+    {
+      "race": 6,
+      "classId": 7,
+      "level": 1,
+      "mapId": 1,
+      "x": -2917.58,
+      "y": -257.98,
+      "z": 52.9968,
+      "orientation": 0
+    },
+    {
+      "race": 6,
+      "classId": 11,
+      "level": 1,
+      "mapId": 1,
+      "x": -2917.58,
+      "y": -257.98,
+      "z": 52.9968,
+      "orientation": 0
+    },
+    {
+      "race": 7,
+      "classId": 1,
+      "level": 1,
+      "mapId": 0,
+      "x": -6240.32,
+      "y": 331.033,
+      "z": 382.758,
+      "orientation": 0
+    },
+    {
+      "race": 7,
+      "classId": 4,
+      "level": 1,
+      "mapId": 0,
+      "x": -6240,
+      "y": 331,
+      "z": 383,
+      "orientation": 0
+    },
+    {
+      "race": 7,
+      "classId": 6,
+      "level": 55,
+      "mapId": 609,
+      "x": 2355.05,
+      "y": -5661.7,
+      "z": 426.026,
+      "orientation": 3.65997
+    },
+    {
+      "race": 7,
+      "classId": 8,
+      "level": 1,
+      "mapId": 0,
+      "x": -6240,
+      "y": 331,
+      "z": 383,
+      "orientation": 0
+    },
+    {
+      "race": 7,
+      "classId": 9,
+      "level": 1,
+      "mapId": 0,
+      "x": -6240,
+      "y": 331,
+      "z": 383,
+      "orientation": 0
+    },
+    {
+      "race": 8,
+      "classId": 1,
+      "level": 1,
+      "mapId": 1,
+      "x": -618.518,
+      "y": -4251.67,
+      "z": 38.718,
+      "orientation": 0
+    },
+    {
+      "race": 8,
+      "classId": 3,
+      "level": 1,
+      "mapId": 1,
+      "x": -618.518,
+      "y": -4251.67,
+      "z": 38.718,
+      "orientation": 0
+    },
+    {
+      "race": 8,
+      "classId": 4,
+      "level": 1,
+      "mapId": 1,
+      "x": -618.518,
+      "y": -4251.67,
+      "z": 38.718,
+      "orientation": 0
+    },
+    {
+      "race": 8,
+      "classId": 5,
+      "level": 1,
+      "mapId": 1,
+      "x": -618.518,
+      "y": -4251.67,
+      "z": 38.718,
+      "orientation": 0
+    },
+    {
+      "race": 8,
+      "classId": 6,
+      "level": 55,
+      "mapId": 609,
+      "x": 2355.05,
+      "y": -5661.7,
+      "z": 426.026,
+      "orientation": 3.65997
+    },
+    {
+      "race": 8,
+      "classId": 7,
+      "level": 1,
+      "mapId": 1,
+      "x": -618.518,
+      "y": -4251.67,
+      "z": 38.718,
+      "orientation": 0
+    },
+    {
+      "race": 8,
+      "classId": 8,
+      "level": 1,
+      "mapId": 1,
+      "x": -618.518,
+      "y": -4251.67,
+      "z": 38.718,
+      "orientation": 0
+    },
+    {
+      "race": 10,
+      "classId": 2,
+      "level": 1,
+      "mapId": 530,
+      "x": 10349.6,
+      "y": -6357.29,
+      "z": 33.4026,
+      "orientation": 5.31605
+    },
+    {
+      "race": 10,
+      "classId": 3,
+      "level": 1,
+      "mapId": 530,
+      "x": 10349.6,
+      "y": -6357.29,
+      "z": 33.4026,
+      "orientation": 5.31605
+    },
+    {
+      "race": 10,
+      "classId": 4,
+      "level": 1,
+      "mapId": 530,
+      "x": 10349.6,
+      "y": -6357.29,
+      "z": 33.4026,
+      "orientation": 5.31605
+    },
+    {
+      "race": 10,
+      "classId": 5,
+      "level": 1,
+      "mapId": 530,
+      "x": 10349.6,
+      "y": -6357.29,
+      "z": 33.4026,
+      "orientation": 5.31605
+    },
+    {
+      "race": 10,
+      "classId": 6,
+      "level": 55,
+      "mapId": 609,
+      "x": 2355.84,
+      "y": -5664.77,
+      "z": 426.028,
+      "orientation": 3.65997
+    },
+    {
+      "race": 10,
+      "classId": 8,
+      "level": 1,
+      "mapId": 530,
+      "x": 10349.6,
+      "y": -6357.29,
+      "z": 33.4026,
+      "orientation": 5.31605
+    },
+    {
+      "race": 10,
+      "classId": 9,
+      "level": 1,
+      "mapId": 530,
+      "x": 10349.6,
+      "y": -6357.29,
+      "z": 33.4026,
+      "orientation": 5.31605
+    },
+    {
+      "race": 11,
+      "classId": 1,
+      "level": 1,
+      "mapId": 530,
+      "x": -3961.64,
+      "y": -13931.2,
+      "z": 100.615,
+      "orientation": 2.08364
+    },
+    {
+      "race": 11,
+      "classId": 2,
+      "level": 1,
+      "mapId": 530,
+      "x": -3961.64,
+      "y": -13931.2,
+      "z": 100.615,
+      "orientation": 2.08364
+    },
+    {
+      "race": 11,
+      "classId": 3,
+      "level": 1,
+      "mapId": 530,
+      "x": -3961.64,
+      "y": -13931.2,
+      "z": 100.615,
+      "orientation": 2.08364
+    },
+    {
+      "race": 11,
+      "classId": 5,
+      "level": 1,
+      "mapId": 530,
+      "x": -3961.64,
+      "y": -13931.2,
+      "z": 100.615,
+      "orientation": 2.08364
+    },
+    {
+      "race": 11,
+      "classId": 6,
+      "level": 55,
+      "mapId": 609,
+      "x": 2358.17,
+      "y": -5663.21,
+      "z": 426.027,
+      "orientation": 3.65997
+    },
+    {
+      "race": 11,
+      "classId": 7,
+      "level": 1,
+      "mapId": 530,
+      "x": -3961.64,
+      "y": -13931.2,
+      "z": 100.615,
+      "orientation": 2.08364
+    },
+    {
+      "race": 11,
+      "classId": 8,
+      "level": 1,
+      "mapId": 530,
+      "x": -3961.64,
+      "y": -13931.2,
+      "z": 100.615,
+      "orientation": 2.08364
+    }
+  ],
+  "destinations": [
+    {
+      "id": 45,
+      "name": "Scarlet Monastery - Graveyard (Entrance)",
+      "mapId": 189,
+      "x": 1688.99,
+      "y": 1053.48,
+      "z": 18.6775,
+      "orientation": 0.00117,
+      "instanceMap": true
+    },
+    {
+      "id": 78,
+      "name": "DeadMines Entrance",
+      "mapId": 36,
+      "x": -16.4,
+      "y": -383.07,
+      "z": 61.78,
+      "orientation": 1.86,
+      "instanceMap": true
+    },
+    {
+      "id": 101,
+      "name": "Stormwind Stockades Entrance",
+      "mapId": 34,
+      "x": 54.23,
+      "y": 0.28,
+      "z": -18.34,
+      "orientation": 6.26,
+      "instanceMap": true
+    },
+    {
+      "id": 107,
+      "name": "Stormwind Vault Entrance",
+      "mapId": 35,
+      "x": -0.91,
+      "y": 40.57,
+      "z": -24.23,
+      "orientation": 0,
+      "instanceMap": false
+    },
+    {
+      "id": 109,
+      "name": "Stormwind Vault Instance",
+      "mapId": 0,
+      "x": -8653.45,
+      "y": 606.19,
+      "z": 91.16,
+      "orientation": 0,
+      "instanceMap": false
+    },
+    {
+      "id": 119,
+      "name": "DeadMines Instance Start",
+      "mapId": 0,
+      "x": -11208.3,
+      "y": 1672.52,
+      "z": 24.66,
+      "orientation": 4.55217,
+      "instanceMap": false
+    },
+    {
+      "id": 121,
+      "name": "Deadmines Instance End",
+      "mapId": 0,
+      "x": -11339.4,
+      "y": 1571.16,
+      "z": 100.56,
+      "orientation": 0,
+      "instanceMap": false
+    },
+    {
+      "id": 145,
+      "name": "Shadowfang Keep Entrance",
+      "mapId": 33,
+      "x": -229.135,
+      "y": 2109.18,
+      "z": 76.8898,
+      "orientation": 1.267,
+      "instanceMap": true
+    },
+    {
+      "id": 194,
+      "name": "Shadowfang keep - Entrance",
+      "mapId": 0,
+      "x": -232.796,
+      "y": 1568.28,
+      "z": 76.8909,
+      "orientation": 4.398,
+      "instanceMap": false
+    },
+    {
+      "id": 226,
+      "name": "The Barrens - Wailing Caverns",
+      "mapId": 1,
+      "x": -740.059,
+      "y": -2214.23,
+      "z": 16.1374,
+      "orientation": 5.68,
+      "instanceMap": false
+    },
+    {
+      "id": 228,
+      "name": "The Barrens - Wailing Caverns",
+      "mapId": 43,
+      "x": -163.49,
+      "y": 132.9,
+      "z": -73.66,
+      "orientation": 5.83,
+      "instanceMap": true
+    },
+    {
+      "id": 242,
+      "name": "Razorfen Kraul Instance Start",
+      "mapId": 1,
+      "x": -4464.92,
+      "y": -1666.24,
+      "z": 81.8928,
+      "orientation": 4.28827,
+      "instanceMap": false
+    },
+    {
+      "id": 244,
+      "name": "Razorfen Kraul Entrance",
+      "mapId": 47,
+      "x": 1943,
+      "y": 1544.63,
+      "z": 82,
+      "orientation": 1.38,
+      "instanceMap": true
+    },
+    {
+      "id": 257,
+      "name": "Blackphantom Deeps Entrance",
+      "mapId": 48,
+      "x": -151.89,
+      "y": 106.96,
+      "z": -39.87,
+      "orientation": 4.53,
+      "instanceMap": true
+    },
+    {
+      "id": 259,
+      "name": "Blackphantom Deeps Instance Start",
+      "mapId": 1,
+      "x": 4247.74,
+      "y": 745.879,
+      "z": -24.5299,
+      "orientation": 4.5828,
+      "instanceMap": false
+    },
+    {
+      "id": 286,
+      "name": "Uldaman Entrance",
+      "mapId": 70,
+      "x": -226.8,
+      "y": 49.09,
+      "z": -46.03,
+      "orientation": 1.39,
+      "instanceMap": true
+    },
+    {
+      "id": 288,
+      "name": "Uldaman Instance Start",
+      "mapId": 0,
+      "x": -6066.73,
+      "y": -2955.63,
+      "z": 209.776,
+      "orientation": 3.20443,
+      "instanceMap": false
+    },
+    {
+      "id": 322,
+      "name": "Gnomeregan Instance Start",
+      "mapId": 0,
+      "x": -5163.33,
+      "y": 927.623,
+      "z": 257.188,
+      "orientation": 0,
+      "instanceMap": false
+    },
+    {
+      "id": 324,
+      "name": "Gnomeregan Entrance",
+      "mapId": 90,
+      "x": -332.22,
+      "y": -2.28,
+      "z": -150.86,
+      "orientation": 2.77,
+      "instanceMap": true
+    },
+    {
+      "id": 442,
+      "name": "Razorfen Downs Entrance",
+      "mapId": 129,
+      "x": 2592.55,
+      "y": 1107.5,
+      "z": 51.29,
+      "orientation": 4.74,
+      "instanceMap": true
+    },
+    {
+      "id": 444,
+      "name": "Razorfen Downs Instance Start",
+      "mapId": 1,
+      "x": -4658.12,
+      "y": -2526.35,
+      "z": 81.492,
+      "orientation": 1.25978,
+      "instanceMap": false
+    },
+    {
+      "id": 446,
+      "name": "Altar of Atal'Hakkar Entrance",
+      "mapId": 109,
+      "x": -319.24,
+      "y": 99.9,
+      "z": -131.85,
+      "orientation": 3.19,
+      "instanceMap": true
+    },
+    {
+      "id": 448,
+      "name": "Altar Of Atal'Hakkar Instance Start",
+      "mapId": 0,
+      "x": -10175.1,
+      "y": -3995.15,
+      "z": -112.9,
+      "orientation": 2.95938,
+      "instanceMap": false
+    },
+    {
+      "id": 503,
+      "name": "Stockades Instance",
+      "mapId": 0,
+      "x": -8764.83,
+      "y": 846.075,
+      "z": 87.4842,
+      "orientation": 3.77934,
+      "instanceMap": false
+    },
+    {
+      "id": 523,
+      "name": "Gnomeregan Train Depot Entrance",
+      "mapId": 90,
+      "x": -736.51,
+      "y": 2.71,
+      "z": -249.99,
+      "orientation": 3.14,
+      "instanceMap": true
+    },
+    {
+      "id": 525,
+      "name": "Gnomeregan Train Depot Instance",
+      "mapId": 0,
+      "x": -4858.27,
+      "y": 756.435,
+      "z": 244.923,
+      "orientation": 0,
+      "instanceMap": false
+    },
+    {
+      "id": 527,
+      "name": "Teddrassil - Ruth Theran",
+      "mapId": 1,
+      "x": 8786.36,
+      "y": 967.445,
+      "z": 30.197,
+      "orientation": 3.39632,
+      "instanceMap": false
+    },
+    {
+      "id": 542,
+      "name": "Teddrassil - Darnassus",
+      "mapId": 1,
+      "x": 9945.13,
+      "y": 2616.89,
+      "z": 1316.46,
+      "orientation": 4.61446,
+      "instanceMap": false
+    },
+    {
+      "id": 602,
+      "name": "Scarlet Monastery - Graveyard (Exit)",
+      "mapId": 0,
+      "x": 2913.92,
+      "y": -802.404,
+      "z": 160.333,
+      "orientation": 3.50405,
+      "instanceMap": false
+    },
+    {
+      "id": 604,
+      "name": "Scarlet Monastery - Cathedral (Exit)",
+      "mapId": 0,
+      "x": 2906.14,
+      "y": -813.772,
+      "z": 160.333,
+      "orientation": 1.95739,
+      "instanceMap": false
+    },
+    {
+      "id": 606,
+      "name": "Scarlet Monastery - Armory (Exit)",
+      "mapId": 0,
+      "x": 2884.45,
+      "y": -822.01,
+      "z": 160.333,
+      "orientation": 1.95268,
+      "instanceMap": false
+    },
+    {
+      "id": 608,
+      "name": "Scarlet Monastery - Library (Exit)",
+      "mapId": 0,
+      "x": 2870.9,
+      "y": -820.164,
+      "z": 160.333,
+      "orientation": 0.387856,
+      "instanceMap": false
+    },
+    {
+      "id": 610,
+      "name": "Scarlet Monastery - Cathedral (Entrance)",
+      "mapId": 189,
+      "x": 855.683,
+      "y": 1321.5,
+      "z": 18.6709,
+      "orientation": 0.001747,
+      "instanceMap": true
+    },
+    {
+      "id": 612,
+      "name": "Scarlet Monastery - Armory (Entrance)",
+      "mapId": 189,
+      "x": 1610.83,
+      "y": -323.433,
+      "z": 18.6738,
+      "orientation": 6.28022,
+      "instanceMap": true
+    },
+    {
+      "id": 614,
+      "name": "Scarlet Monastery - Library (Entrance)",
+      "mapId": 189,
+      "x": 255.346,
+      "y": -209.09,
+      "z": 18.6773,
+      "orientation": 6.26656,
+      "instanceMap": true
+    },
+    {
+      "id": 702,
+      "name": "Stormwind - Wizard Sanctum Room",
+      "mapId": 0,
+      "x": -9015.76,
+      "y": 874.94,
+      "z": 148.62,
+      "orientation": 5.211,
+      "instanceMap": false
+    },
+    {
+      "id": 704,
+      "name": "Stormwind - Wizard Sanctum Tower Portal",
+      "mapId": 0,
+      "x": -9018.56,
+      "y": 887.664,
+      "z": 29.63,
+      "orientation": 5.346,
+      "instanceMap": false
+    },
+    {
+      "id": 882,
+      "name": "Uldaman Instance End",
+      "mapId": 0,
+      "x": -6620.48,
+      "y": -3765.19,
+      "z": 266.226,
+      "orientation": 3.13531,
+      "instanceMap": false
+    },
+    {
+      "id": 902,
+      "name": "Uldaman Exit",
+      "mapId": 70,
+      "x": -214.02,
+      "y": 383.607,
+      "z": -38.7687,
+      "orientation": 0.5,
+      "instanceMap": true
+    },
+    {
+      "id": 922,
+      "name": "Zul'Farrak Instance Start",
+      "mapId": 1,
+      "x": -6796.49,
+      "y": -2890.77,
+      "z": 8.88063,
+      "orientation": 3.30496,
+      "instanceMap": false
+    },
+    {
+      "id": 924,
+      "name": "Zul'Farrak Entrance",
+      "mapId": 209,
+      "x": 1213.52,
+      "y": 841.59,
+      "z": 8.93,
+      "orientation": 6.09,
+      "instanceMap": true
+    },
+    {
+      "id": 943,
+      "name": "Leap of Faith - End of fall",
+      "mapId": 1,
+      "x": -5187.47,
+      "y": -2804.32,
+      "z": -8.375,
+      "orientation": 5.76,
+      "instanceMap": false
+    },
+    {
+      "id": 1064,
+      "name": "Onyxia's Lair - Dustwallow Instance",
+      "mapId": 1,
+      "x": -4747.17,
+      "y": -3753.27,
+      "z": 49.8122,
+      "orientation": 0.713271,
+      "instanceMap": false
+    },
+    {
+      "id": 1466,
+      "name": "Blackrock Depths Entrance",
+      "mapId": 230,
+      "x": 456.929,
+      "y": 34.0923,
+      "z": -68.0896,
+      "orientation": 4.71239,
+      "instanceMap": true
+    },
+    {
+      "id": 1468,
+      "name": "Blackrock Spire - Searing Gorge Instance (Inside)",
+      "mapId": 229,
+      "x": 78.5083,
+      "y": -225.044,
+      "z": 49.839,
+      "orientation": 5.1,
+      "instanceMap": true
+    },
+    {
+      "id": 1470,
+      "name": "Blackrock Spire Entrance",
+      "mapId": 0,
+      "x": -7524.7,
+      "y": -1228.41,
+      "z": 287.204,
+      "orientation": 1.74533,
+      "instanceMap": false
+    },
+    {
+      "id": 1472,
+      "name": "Blackrock Dephts - Searing Gorge Instance",
+      "mapId": 0,
+      "x": -7179.63,
+      "y": -923.667,
+      "z": 166.416,
+      "orientation": 1.84097,
+      "instanceMap": false
+    },
+    {
+      "id": 2068,
+      "name": "Blackrock Spire - Jump Exit",
+      "mapId": 0,
+      "x": -7558.39,
+      "y": -1309.43,
+      "z": 248.454,
+      "orientation": 1.5708,
+      "instanceMap": false
+    },
+    {
+      "id": 2166,
+      "name": "Deeprun Tram - Ironforge Instance (Inside)",
+      "mapId": 0,
+      "x": -4838.95,
+      "y": -1318.46,
+      "z": 501.868,
+      "orientation": 1.42372,
+      "instanceMap": false
+    },
+    {
+      "id": 2171,
+      "name": "Deeprun Tram - Stormwind Instance (Inside)",
+      "mapId": 0,
+      "x": -8364.57,
+      "y": 535.981,
+      "z": 91.7969,
+      "orientation": 2.24619,
+      "instanceMap": false
+    },
+    {
+      "id": 2173,
+      "name": "Deeprun Tram - Stormwind Instance",
+      "mapId": 369,
+      "x": 68.3006,
+      "y": 2490.91,
+      "z": -4.29647,
+      "orientation": 3.12192,
+      "instanceMap": false
+    },
+    {
+      "id": 2175,
+      "name": "Deeprun Tram - Ironforge Instance",
+      "mapId": 369,
+      "x": 69.2542,
+      "y": 10.257,
+      "z": -4.29664,
+      "orientation": 3.09832,
+      "instanceMap": false
+    },
+    {
+      "id": 2214,
+      "name": "Stratholme - Eastern Plaguelands Instance",
+      "mapId": 329,
+      "x": 3593.15,
+      "y": -3646.56,
+      "z": 138.5,
+      "orientation": 5.33,
+      "instanceMap": true
+    },
+    {
+      "id": 2216,
+      "name": "Stratholme - Eastern Plaguelands Instance",
+      "mapId": 329,
+      "x": 3395.09,
+      "y": -3380.25,
+      "z": 142.702,
+      "orientation": 0.1,
+      "instanceMap": true
+    },
+    {
+      "id": 2217,
+      "name": "Stratholme - Eastern Plaguelands Instance",
+      "mapId": 329,
+      "x": 3395.09,
+      "y": -3380.25,
+      "z": 142.702,
+      "orientation": 0.1,
+      "instanceMap": true
+    },
+    {
+      "id": 2221,
+      "name": "Stratholme - Eastern Plaguelands Instance (Inside)",
+      "mapId": 0,
+      "x": 3235.46,
+      "y": -4050.6,
+      "z": 108.45,
+      "orientation": 1.93522,
+      "instanceMap": false
+    },
+    {
+      "id": 2226,
+      "name": "Ragefire Chasm - Ogrimmar Instance (Inside)",
+      "mapId": 1,
+      "x": 1813.49,
+      "y": -4418.58,
+      "z": -18.57,
+      "orientation": 1.78,
+      "instanceMap": false
+    },
+    {
+      "id": 2230,
+      "name": "Ragefire Chasm - Ogrimmar Instance",
+      "mapId": 389,
+      "x": 3.81,
+      "y": -14.82,
+      "z": -17.84,
+      "orientation": 4.39,
+      "instanceMap": true
+    },
+    {
+      "id": 2406,
+      "name": "Shadowfang - South Fall Target",
+      "mapId": 0,
+      "x": -276.241,
+      "y": 1652.68,
+      "z": 77.5589,
+      "orientation": 3.14159,
+      "instanceMap": false
+    },
+    {
+      "id": 2407,
+      "name": "Shadowfang - South Fall Target",
+      "mapId": 0,
+      "x": -276.241,
+      "y": 1652.68,
+      "z": 77.5589,
+      "orientation": 3.14159,
+      "instanceMap": false
+    },
+    {
+      "id": 2408,
+      "name": "Shadowfang Front Fall Exit Target",
+      "mapId": 0,
+      "x": -225.34,
+      "y": 1556.53,
+      "z": 93.0454,
+      "orientation": 4.71239,
+      "instanceMap": false
+    },
+    {
+      "id": 2409,
+      "name": "Shadowfang Front Fall Exit Target",
+      "mapId": 0,
+      "x": -225.34,
+      "y": 1556.53,
+      "z": 93.0454,
+      "orientation": 4.71239,
+      "instanceMap": false
+    },
+    {
+      "id": 2410,
+      "name": "Shadowfang - North Fall Target",
+      "mapId": 0,
+      "x": -181.26,
+      "y": 1580.65,
+      "z": 97.4466,
+      "orientation": 6.28319,
+      "instanceMap": false
+    },
+    {
+      "id": 2411,
+      "name": "Shadowfang - North Fall Target",
+      "mapId": 0,
+      "x": -181.26,
+      "y": 1580.65,
+      "z": 97.4466,
+      "orientation": 6.28319,
+      "instanceMap": false
+    },
+    {
+      "id": 2530,
+      "name": "Hall of Legends - Ogrimmar (Inside)",
+      "mapId": 1,
+      "x": 1637.32,
+      "y": -4242.7,
+      "z": 56.1827,
+      "orientation": 4.1927,
+      "instanceMap": false
+    },
+    {
+      "id": 2534,
+      "name": "Stormwind (Inside) - Champions Hall",
+      "mapId": 0,
+      "x": -8762.45,
+      "y": 403.062,
+      "z": 103.902,
+      "orientation": 5.34463,
+      "instanceMap": false
+    },
+    {
+      "id": 2547,
+      "name": "Scholomance - Exit Porch Target 001",
+      "mapId": 0,
+      "x": 1399.42,
+      "y": -2574.59,
+      "z": 107.786,
+      "orientation": 6.28319,
+      "instanceMap": false
+    },
+    {
+      "id": 2548,
+      "name": "Scholomance - Exit Porch Target 001",
+      "mapId": 0,
+      "x": 1399.42,
+      "y": -2574.59,
+      "z": 107.786,
+      "orientation": 6.28319,
+      "instanceMap": false
+    },
+    {
+      "id": 2549,
+      "name": "Scholomance - Exit Porch Target 001",
+      "mapId": 0,
+      "x": 1399.42,
+      "y": -2574.59,
+      "z": 107.786,
+      "orientation": 6.28319,
+      "instanceMap": false
+    },
+    {
+      "id": 2567,
+      "name": "Scholomance Entrance",
+      "mapId": 289,
+      "x": 196.37,
+      "y": 127.05,
+      "z": 134.91,
+      "orientation": 6.09,
+      "instanceMap": true
+    },
+    {
+      "id": 2568,
+      "name": "Scholomance Instance",
+      "mapId": 0,
+      "x": 1275.05,
+      "y": -2552.03,
+      "z": 90.3994,
+      "orientation": 3.6631,
+      "instanceMap": false
+    },
+    {
+      "id": 2606,
+      "name": "Alterac Valley - Horde Exit",
+      "mapId": 0,
+      "x": 534.868,
+      "y": -1087.68,
+      "z": 106.119,
+      "orientation": 3.35758,
+      "instanceMap": false
+    },
+    {
+      "id": 2608,
+      "name": "Alterac Valley - Alliance Exit",
+      "mapId": 0,
+      "x": 98.432,
+      "y": -182.274,
+      "z": 127.52,
+      "orientation": 5.02654,
+      "instanceMap": false
+    },
+    {
+      "id": 2848,
+      "name": "Onyxia's Lair Entrance",
+      "mapId": 249,
+      "x": 29.1607,
+      "y": -71.3372,
+      "z": -8.18032,
+      "orientation": 4.58,
+      "instanceMap": true
+    },
+    {
+      "id": 2886,
+      "name": "The Molten Bridge",
+      "mapId": 409,
+      "x": 1091.89,
+      "y": -466.985,
+      "z": -105.084,
+      "orientation": 3.14159,
+      "instanceMap": true
+    },
+    {
+      "id": 2890,
+      "name": "The Molten Core, Exit (from inside of the Instance)",
+      "mapId": 0,
+      "x": -7508.32,
+      "y": -1039.74,
+      "z": 180.912,
+      "orientation": 3.83972,
+      "instanceMap": false
+    },
+    {
+      "id": 3126,
+      "name": "Maraudon, The Wicked Grotto [Purple Wing] (Exit)",
+      "mapId": 1,
+      "x": -1186.98,
+      "y": 2875.95,
+      "z": 85.7258,
+      "orientation": 1.78443,
+      "instanceMap": false
+    },
+    {
+      "id": 3131,
+      "name": "Maraudon, Foulspore Cavern [Orange Wing] (Exit)",
+      "mapId": 1,
+      "x": -1471.07,
+      "y": 2618.57,
+      "z": 76.1944,
+      "orientation": 0,
+      "instanceMap": false
+    },
+    {
+      "id": 3133,
+      "name": "Maraudon, Foulspore Cavern [Orange Wing] (Entrance)",
+      "mapId": 349,
+      "x": 1019.69,
+      "y": -458.31,
+      "z": -43.43,
+      "orientation": 0.31,
+      "instanceMap": true
+    },
+    {
+      "id": 3134,
+      "name": "Maraudon, The Wicked Grotto [Purple Wing] (Entrance)",
+      "mapId": 349,
+      "x": 752.91,
+      "y": -616.53,
+      "z": -33.11,
+      "orientation": 1.37,
+      "instanceMap": true
+    },
+    {
+      "id": 3183,
+      "name": "Dire Maul, East Wing [West] (Entrance)",
+      "mapId": 429,
+      "x": 44.4499,
+      "y": -154.822,
+      "z": -2.71201,
+      "orientation": 0,
+      "instanceMap": true
+    },
+    {
+      "id": 3184,
+      "name": "Dire Maul, East Wing [South] (Entrance)",
+      "mapId": 429,
+      "x": -201.11,
+      "y": -328.66,
+      "z": -2.72,
+      "orientation": 5.22,
+      "instanceMap": true
+    },
+    {
+      "id": 3185,
+      "name": "Dire Maul, East Wing [East] (Entrance)",
+      "mapId": 429,
+      "x": 9.31119,
+      "y": -837.085,
+      "z": -32.5305,
+      "orientation": 0,
+      "instanceMap": true
+    },
+    {
+      "id": 3186,
+      "name": "Dire Maul, West Wing [South] (Entrance)",
+      "mapId": 429,
+      "x": -62.9658,
+      "y": 159.867,
+      "z": -3.46206,
+      "orientation": 3.14788,
+      "instanceMap": true
+    },
+    {
+      "id": 3187,
+      "name": "Dire Maul, West Wing [North] (Entrance)",
+      "mapId": 429,
+      "x": 31.5609,
+      "y": 159.45,
+      "z": -3.4777,
+      "orientation": 0.01,
+      "instanceMap": true
+    },
+    {
+      "id": 3189,
+      "name": "Dire Maul, North Wing (Entrance)",
+      "mapId": 429,
+      "x": 255.249,
+      "y": -16.0561,
+      "z": -2.58737,
+      "orientation": 4.7,
+      "instanceMap": true
+    },
+    {
+      "id": 3190,
+      "name": "Dire Maul, West Wing [South] (Exit)",
+      "mapId": 1,
+      "x": -3831.79,
+      "y": 1250.23,
+      "z": 160.223,
+      "orientation": 0,
+      "instanceMap": false
+    },
+    {
+      "id": 3191,
+      "name": "Dire Maul, West Wing [North](Exit)",
+      "mapId": 1,
+      "x": -3747.96,
+      "y": 1249.18,
+      "z": 160.217,
+      "orientation": 3.15827,
+      "instanceMap": false
+    },
+    {
+      "id": 3193,
+      "name": "Dire Maul, North Wing (Exit)",
+      "mapId": 1,
+      "x": -3520.65,
+      "y": 1077.72,
+      "z": 161.138,
+      "orientation": 1.5009,
+      "instanceMap": false
+    },
+    {
+      "id": 3194,
+      "name": "Dire Maul, East Wing [West] (Exit)",
+      "mapId": 1,
+      "x": -3737.48,
+      "y": 934.975,
+      "z": 160.973,
+      "orientation": 3.13864,
+      "instanceMap": false
+    },
+    {
+      "id": 3195,
+      "name": "Dire Maul, East Wing [South] (Exit)",
+      "mapId": 1,
+      "x": -3980.58,
+      "y": 776.193,
+      "z": 161.006,
+      "orientation": 0,
+      "instanceMap": false
+    },
+    {
+      "id": 3196,
+      "name": "Dire Maul, East Wing [East] (Exit)",
+      "mapId": 1,
+      "x": -4030.21,
+      "y": 127.966,
+      "z": 26.8109,
+      "orientation": 0,
+      "instanceMap": false
+    },
+    {
+      "id": 3197,
+      "name": "Dire Maul, Alzzin the Wildshaper's broken wall [1-Way] (Exit)",
+      "mapId": 1,
+      "x": -3577.67,
+      "y": 841.859,
+      "z": 134.594,
+      "orientation": 0,
+      "instanceMap": false
+    },
+    {
+      "id": 3528,
+      "name": "The Molten Core Window Entrance",
+      "mapId": 409,
+      "x": 1091.89,
+      "y": -466.985,
+      "z": -105.084,
+      "orientation": 3.14159,
+      "instanceMap": true
+    },
+    {
+      "id": 3529,
+      "name": "The Molten Core Window(Lava) Entrance",
+      "mapId": 409,
+      "x": 1091.89,
+      "y": -466.985,
+      "z": -105.084,
+      "orientation": 3.14159,
+      "instanceMap": true
+    },
+    {
+      "id": 3726,
+      "name": "Blackwing Lair - Blackrock Mountain - Eastern Kingdoms",
+      "mapId": 469,
+      "x": -7673.03,
+      "y": -1106.08,
+      "z": 396.651,
+      "orientation": 0.703353,
+      "instanceMap": true
+    },
+    {
+      "id": 3728,
+      "name": "Blackrock Spire, Exit (from inside of Blackwing Lair Instance)",
+      "mapId": 229,
+      "x": 174.74,
+      "y": -474.77,
+      "z": 116.84,
+      "orientation": 3.2,
+      "instanceMap": true
+    },
+    {
+      "id": 3928,
+      "name": "Zul'Gurub Entrance ",
+      "mapId": 309,
+      "x": -11916.1,
+      "y": -1230.53,
+      "z": 92.5334,
+      "orientation": 4.71867,
+      "instanceMap": true
+    },
+    {
+      "id": 3930,
+      "name": "Zul'Gurub Exit ",
+      "mapId": 0,
+      "x": -11916.3,
+      "y": -1208.37,
+      "z": 92.2868,
+      "orientation": 1.61792,
+      "instanceMap": false
+    },
+    {
+      "id": 3948,
+      "name": "Arathi Basin Alliance Out",
+      "mapId": 0,
+      "x": -1198,
+      "y": -2533,
+      "z": 22,
+      "orientation": 0,
+      "instanceMap": false
+    },
+    {
+      "id": 3949,
+      "name": "Arathi Basin Horde Out",
+      "mapId": 0,
+      "x": -817,
+      "y": -3509,
+      "z": 73,
+      "orientation": 0,
+      "instanceMap": false
+    },
+    {
+      "id": 4006,
+      "name": "Ruins Of Ahn'Qiraj (Inside)",
+      "mapId": 1,
+      "x": -8418.5,
+      "y": 1505.94,
+      "z": 31.8232,
+      "orientation": 0,
+      "instanceMap": false
+    },
+    {
+      "id": 4008,
+      "name": "Ruins Of Ahn'Qiraj (Outside)",
+      "mapId": 509,
+      "x": -8429.74,
+      "y": 1512.14,
+      "z": 31.9074,
+      "orientation": 2.58,
+      "instanceMap": true
+    },
+    {
+      "id": 4010,
+      "name": "Ahn'Qiraj Temple (Outside)",
+      "mapId": 531,
+      "x": -8231.33,
+      "y": 2010.6,
+      "z": 129.331,
+      "orientation": 0.929912,
+      "instanceMap": true
+    },
+    {
+      "id": 4012,
+      "name": "Ahn'Qiraj Temple (Inside)",
+      "mapId": 1,
+      "x": -8242.67,
+      "y": 1992.06,
+      "z": 129.072,
+      "orientation": 4.03066,
+      "instanceMap": false
+    },
+    {
+      "id": 4131,
+      "name": "Karazhan, Main (Entrance)",
+      "mapId": 532,
+      "x": -11100,
+      "y": -2003.98,
+      "z": 49.8927,
+      "orientation": 0.577268,
+      "instanceMap": true
+    },
+    {
+      "id": 4135,
+      "name": "Karazhan, Service (Entrance)",
+      "mapId": 532,
+      "x": -11040.1,
+      "y": -1996.85,
+      "z": 94.6837,
+      "orientation": 2.20224,
+      "instanceMap": true
+    },
+    {
+      "id": 4145,
+      "name": "The Shattered Halls (Exit)",
+      "mapId": 530,
+      "x": -311.16,
+      "y": 3082.1,
+      "z": -3.71,
+      "orientation": 4.92,
+      "instanceMap": false
+    },
+    {
+      "id": 4147,
+      "name": "The Blood Furnace (Exit)",
+      "mapId": 530,
+      "x": -303.506,
+      "y": 3164.82,
+      "z": 31.7425,
+      "orientation": 5.24025,
+      "instanceMap": false
+    },
+    {
+      "id": 4149,
+      "name": "Magtheridon's Lair (Exit)",
+      "mapId": 530,
+      "x": -313.679,
+      "y": 3088.35,
+      "z": -116.502,
+      "orientation": 2.05307,
+      "instanceMap": false
+    },
+    {
+      "id": 4150,
+      "name": "Hellfire Ramparts (Entrance)",
+      "mapId": 543,
+      "x": -1355.24,
+      "y": 1641.12,
+      "z": 68.2491,
+      "orientation": 0.6687,
+      "instanceMap": true
+    },
+    {
+      "id": 4151,
+      "name": "The Shattered Halls (Entrance)",
+      "mapId": 540,
+      "x": -40.8716,
+      "y": -19.7538,
+      "z": -13.8065,
+      "orientation": 1.11133,
+      "instanceMap": true
+    },
+    {
+      "id": 4152,
+      "name": "The Blood Furnace (Entrance)",
+      "mapId": 542,
+      "x": -3.9967,
+      "y": 14.6363,
+      "z": -44.8009,
+      "orientation": 4.88748,
+      "instanceMap": true
+    },
+    {
+      "id": 4153,
+      "name": "Magtheridon's Lair (Entrance)",
+      "mapId": 544,
+      "x": 187.843,
+      "y": 35.9232,
+      "z": 67.9252,
+      "orientation": 4.79879,
+      "instanceMap": true
+    },
+    {
+      "id": 4297,
+      "name": "Hellfire Ramparts (Exit)",
+      "mapId": 530,
+      "x": -360.671,
+      "y": 3071.9,
+      "z": -15.0977,
+      "orientation": 5.14274,
+      "instanceMap": false
+    },
+    {
+      "id": 4304,
+      "name": "Hellfire Ramparts - Omor Exit Target",
+      "mapId": 530,
+      "x": -233.33,
+      "y": 3199.71,
+      "z": -50,
+      "orientation": 0.785398,
+      "instanceMap": false
+    },
+    {
+      "id": 4311,
+      "name": "Battle Of Mount Hyjal, Alliance Base (Entrance)",
+      "mapId": 534,
+      "x": 5066.79,
+      "y": -1791.9,
+      "z": 1321.65,
+      "orientation": 2.35619,
+      "instanceMap": true
+    },
+    {
+      "id": 4312,
+      "name": "Battle Of Mount Hyjal, Horde Base (Entrance)",
+      "mapId": 534,
+      "x": 5499.96,
+      "y": -2756.8,
+      "z": 1488.96,
+      "orientation": 1.39626,
+      "instanceMap": true
+    },
+    {
+      "id": 4313,
+      "name": "Battle Of Mount Hyjal, Night Elf Base (Entrance)",
+      "mapId": 534,
+      "x": 5163.02,
+      "y": -3428.31,
+      "z": 1627.61,
+      "orientation": 0.785398,
+      "instanceMap": true
+    },
+    {
+      "id": 4319,
+      "name": "Caverns Of Time, Battle Of Mount Hyjal (Entrance) ",
+      "mapId": 534,
+      "x": 4259.61,
+      "y": -4233.77,
+      "z": 868.199,
+      "orientation": 2.53,
+      "instanceMap": true
+    },
+    {
+      "id": 4320,
+      "name": "Caverns Of Time, Black Morass (Entrance)",
+      "mapId": 269,
+      "x": -1496.24,
+      "y": 7034.7,
+      "z": 32.5619,
+      "orientation": 1.75699,
+      "instanceMap": true
+    },
+    {
+      "id": 4321,
+      "name": "Caverns Of Time, Old Hillsbrad Foothills (Entrance)",
+      "mapId": 560,
+      "x": 2741.87,
+      "y": 1315.25,
+      "z": 14.0423,
+      "orientation": 2.96016,
+      "instanceMap": true
+    },
+    {
+      "id": 4322,
+      "name": "Caverns Of Time, Black Morass (Exit)",
+      "mapId": 1,
+      "x": -8765.66,
+      "y": -4175,
+      "z": -209.863,
+      "orientation": 5.53463,
+      "instanceMap": false
+    },
+    {
+      "id": 4323,
+      "name": "Caverns Of Time, Battle Of Mount Hyjal (Exit)",
+      "mapId": 1,
+      "x": -8177.5,
+      "y": -4183,
+      "z": -168,
+      "orientation": 4.5,
+      "instanceMap": false
+    },
+    {
+      "id": 4324,
+      "name": "Caverns Of Time, Old Hillsbrad Foothills (Exit)",
+      "mapId": 1,
+      "x": -8334.98,
+      "y": -4055.32,
+      "z": -207.737,
+      "orientation": 3.27431,
+      "instanceMap": false
+    },
+    {
+      "id": 4352,
+      "name": "Outland To Dark Portal",
+      "mapId": 0,
+      "x": -11877.7,
+      "y": -3204.49,
+      "z": -18.49,
+      "orientation": 0.23,
+      "instanceMap": false
+    },
+    {
+      "id": 4354,
+      "name": "Dark Portal To Outland",
+      "mapId": 530,
+      "x": -248.149,
+      "y": 921.875,
+      "z": 84.3885,
+      "orientation": 1.58415,
+      "instanceMap": false
+    },
+    {
+      "id": 4363,
+      "name": "The Underbog (Entrance)",
+      "mapId": 546,
+      "x": 9.71391,
+      "y": -16.2008,
+      "z": -2.75334,
+      "orientation": 5.57082,
+      "instanceMap": true
+    },
+    {
+      "id": 4364,
+      "name": "The Steamvault (Entrance)",
+      "mapId": 545,
+      "x": -13.8425,
+      "y": 6.7542,
+      "z": -4.2586,
+      "orientation": 0,
+      "instanceMap": true
+    },
+    {
+      "id": 4365,
+      "name": "The Slave Pens (Entrance)",
+      "mapId": 547,
+      "x": 120.101,
+      "y": -131.957,
+      "z": -0.801547,
+      "orientation": 1.47574,
+      "instanceMap": true
+    },
+    {
+      "id": 4366,
+      "name": "The Steamvault (Exit)",
+      "mapId": 530,
+      "x": 816.59,
+      "y": 6934.67,
+      "z": -80.5446,
+      "orientation": 4.53174,
+      "instanceMap": false
+    },
+    {
+      "id": 4367,
+      "name": "The Underbog (Exit)",
+      "mapId": 530,
+      "x": 777.089,
+      "y": 6763.45,
+      "z": -72.0662,
+      "orientation": 2.72453,
+      "instanceMap": false
+    },
+    {
+      "id": 4379,
+      "name": "The Slave Pens (Exit)",
+      "mapId": 530,
+      "x": 719.508,
+      "y": 6999.34,
+      "z": -73.0743,
+      "orientation": 4.52702,
+      "instanceMap": false
+    },
+    {
+      "id": 4386,
+      "name": "Sunstrider Isle to Eastern Plaguelands",
+      "mapId": 0,
+      "x": 3476.36,
+      "y": -4493.36,
+      "z": 137.49,
+      "orientation": 2.25566,
+      "instanceMap": false
+    },
+    {
+      "id": 4397,
+      "name": "Shadow Labyrinth (Exit)",
+      "mapId": 530,
+      "x": -3645.06,
+      "y": 4943.62,
+      "z": -101.048,
+      "orientation": 6.27058,
+      "instanceMap": false
+    },
+    {
+      "id": 4399,
+      "name": "Sethekk Halls (Exit)",
+      "mapId": 530,
+      "x": -3361.96,
+      "y": 4660.41,
+      "z": -101.048,
+      "orientation": 1.65638,
+      "instanceMap": false
+    },
+    {
+      "id": 4401,
+      "name": "Mana Tombs (Exit)",
+      "mapId": 530,
+      "x": -3079.81,
+      "y": 4943.04,
+      "z": -101.047,
+      "orientation": 3.16432,
+      "instanceMap": false
+    },
+    {
+      "id": 4403,
+      "name": "Auchenai Crypts (Exit)",
+      "mapId": 530,
+      "x": -3362.22,
+      "y": 5225.77,
+      "z": -101.049,
+      "orientation": 4.67224,
+      "instanceMap": false
+    },
+    {
+      "id": 4404,
+      "name": "Auchenai Crypts (Entrance)",
+      "mapId": 558,
+      "x": -21.8975,
+      "y": 0.16,
+      "z": -0.1206,
+      "orientation": 0.0353412,
+      "instanceMap": true
+    },
+    {
+      "id": 4405,
+      "name": "Mana Tombs (Entrance)",
+      "mapId": 557,
+      "x": 0.0191,
+      "y": 0.9478,
+      "z": -0.9543,
+      "orientation": 3.03164,
+      "instanceMap": true
+    },
+    {
+      "id": 4406,
+      "name": "Sethekk Halls (Entrance)",
+      "mapId": 556,
+      "x": -4.6811,
+      "y": -0.0930796,
+      "z": 0.0062,
+      "orientation": 0.0353424,
+      "instanceMap": true
+    },
+    {
+      "id": 4407,
+      "name": "Shadow Labyrinth (Entrance)",
+      "mapId": 555,
+      "x": 0.488033,
+      "y": -0.215935,
+      "z": -1.12788,
+      "orientation": 3.15888,
+      "instanceMap": true
+    },
+    {
+      "id": 4409,
+      "name": "Eastern Plaguelands To Sunstrider Isle",
+      "mapId": 530,
+      "x": 6123,
+      "y": -7005,
+      "z": 138,
+      "orientation": 5,
+      "instanceMap": false
+    },
+    {
+      "id": 4416,
+      "name": "Serpentshrine Cavern (Entrance)",
+      "mapId": 548,
+      "x": 2.5343,
+      "y": -0.022318,
+      "z": 821.727,
+      "orientation": 0.004512,
+      "instanceMap": true
+    },
+    {
+      "id": 4418,
+      "name": "Serpentshrine Cavern (Exit)",
+      "mapId": 530,
+      "x": 827.011,
+      "y": 6865.47,
+      "z": -63.7844,
+      "orientation": 3.06507,
+      "instanceMap": false
+    },
+    {
+      "id": 4436,
+      "name": "Karazhan, Main (Exit)",
+      "mapId": 0,
+      "x": -11112.9,
+      "y": -2005.89,
+      "z": 49.3307,
+      "orientation": 4.02516,
+      "instanceMap": false
+    },
+    {
+      "id": 4455,
+      "name": "The Mechanar (Exit)",
+      "mapId": 530,
+      "x": 3312.09,
+      "y": 1331.89,
+      "z": 505.559,
+      "orientation": 2.00554,
+      "instanceMap": false
+    },
+    {
+      "id": 4457,
+      "name": "The Eye (Exit)",
+      "mapId": 530,
+      "x": 3087.31,
+      "y": 1373.79,
+      "z": 184.643,
+      "orientation": 1.52918,
+      "instanceMap": false
+    },
+    {
+      "id": 4459,
+      "name": "The Botanica (Exit)",
+      "mapId": 530,
+      "x": 3413.65,
+      "y": 1483.32,
+      "z": 182.838,
+      "orientation": 2.54432,
+      "instanceMap": false
+    },
+    {
+      "id": 4461,
+      "name": "The Arcatraz (Exit)",
+      "mapId": 530,
+      "x": 2862.41,
+      "y": 1546.09,
+      "z": 252.161,
+      "orientation": 0.805457,
+      "instanceMap": false
+    },
+    {
+      "id": 4467,
+      "name": "The Botanica (Entrance)",
+      "mapId": 553,
+      "x": 40.0395,
+      "y": -28.613,
+      "z": -1.1189,
+      "orientation": 2.35856,
+      "instanceMap": true
+    },
+    {
+      "id": 4468,
+      "name": "The Arcatraz (Entrance)",
+      "mapId": 552,
+      "x": -1.23165,
+      "y": 0.0143459,
+      "z": -0.204293,
+      "orientation": 0.0157123,
+      "instanceMap": true
+    },
+    {
+      "id": 4469,
+      "name": "The Mechanar (Entrance)",
+      "mapId": 554,
+      "x": -28.906,
+      "y": 0.680314,
+      "z": -1.81282,
+      "orientation": 0.0345509,
+      "instanceMap": true
+    },
+    {
+      "id": 4470,
+      "name": "The Eye (Entrance)",
+      "mapId": 550,
+      "x": -10.8021,
+      "y": -1.15045,
+      "z": -2.42833,
+      "orientation": 6.22821,
+      "instanceMap": true
+    },
+    {
+      "id": 4487,
+      "name": "Battle Of Mount Hyjal (Exit)",
+      "mapId": 1,
+      "x": -8177.5,
+      "y": -4183,
+      "z": -168,
+      "orientation": 4.5,
+      "instanceMap": false
+    },
+    {
+      "id": 4520,
+      "name": "Karazhan, Service (Exit)",
+      "mapId": 0,
+      "x": -11034.8,
+      "y": -2003.8,
+      "z": 92.98,
+      "orientation": 0,
+      "instanceMap": false
+    },
+    {
+      "id": 4523,
+      "name": "Socrethar's Seat To Mainland",
+      "mapId": 530,
+      "x": 4773.76,
+      "y": 3451.27,
+      "z": 105.15,
+      "orientation": 3.84,
+      "instanceMap": false
+    },
+    {
+      "id": 4534,
+      "name": "Gruul's Lair (Exit)",
+      "mapId": 530,
+      "x": 3549.8,
+      "y": 5085.97,
+      "z": 2.46332,
+      "orientation": 2.25742,
+      "instanceMap": false
+    },
+    {
+      "id": 4535,
+      "name": "Gruul's Lair (Entrance)",
+      "mapId": 565,
+      "x": 62.7842,
+      "y": 35.462,
+      "z": -3.9835,
+      "orientation": 1.41844,
+      "instanceMap": true
+    },
+    {
+      "id": 4561,
+      "name": "Invasion Point, Cataclysm (Return Point)",
+      "mapId": 530,
+      "x": -3278.63,
+      "y": 2831.31,
+      "z": 123.01,
+      "orientation": 1.56,
+      "instanceMap": false
+    },
+    {
+      "id": 4562,
+      "name": "Invasion Point, Cataclysm (Return Point)",
+      "mapId": 530,
+      "x": -3278.63,
+      "y": 2831.31,
+      "z": 123.01,
+      "orientation": 1.56,
+      "instanceMap": false
+    },
+    {
+      "id": 4598,
+      "name": "Black Temple (Entrance)",
+      "mapId": 564,
+      "x": 96.4462,
+      "y": 1002.35,
+      "z": -86.9984,
+      "orientation": 6.15675,
+      "instanceMap": true
+    },
+    {
+      "id": 4612,
+      "name": "The Botanica",
+      "mapId": 530,
+      "x": 3407.11,
+      "y": 1488.48,
+      "z": 182.838,
+      "orientation": 2.50112,
+      "instanceMap": false
+    },
+    {
+      "id": 4614,
+      "name": "The Mechanar",
+      "mapId": 530,
+      "x": 2869.89,
+      "y": 1552.76,
+      "z": 252.159,
+      "orientation": 0.733993,
+      "instanceMap": false
+    },
+    {
+      "id": 4619,
+      "name": "Black Temple (Exit)",
+      "mapId": 530,
+      "x": -3653.51,
+      "y": 317.493,
+      "z": 36.1671,
+      "orientation": 6.24941,
+      "instanceMap": false
+    },
+    {
+      "id": 4738,
+      "name": "Zul'Aman (Entrance)",
+      "mapId": 568,
+      "x": 120.7,
+      "y": 1776,
+      "z": 43.46,
+      "orientation": 4.7713,
+      "instanceMap": true
+    },
+    {
+      "id": 4739,
+      "name": "Zul'Aman (Exit)",
+      "mapId": 530,
+      "x": 6851.5,
+      "y": -7997.68,
+      "z": 192.36,
+      "orientation": 1.56688,
+      "instanceMap": false
+    },
+    {
+      "id": 4741,
+      "name": "Utgarde Pinnacle (exit)",
+      "mapId": 571,
+      "x": 1228.09,
+      "y": -4862.45,
+      "z": 41.248,
+      "orientation": 3.443,
+      "instanceMap": false
+    },
+    {
+      "id": 4743,
+      "name": "Utgarde Keep (exit)",
+      "mapId": 571,
+      "x": 1237.2,
+      "y": -4859.27,
+      "z": 218.283,
+      "orientation": 0.274,
+      "instanceMap": false
+    },
+    {
+      "id": 4745,
+      "name": "Utgarde Keep (entrance)",
+      "mapId": 574,
+      "x": 153.789,
+      "y": -86.548,
+      "z": 12.551,
+      "orientation": 0.304,
+      "instanceMap": true
+    },
+    {
+      "id": 4747,
+      "name": "Utgarde Pinnacle (entrance)",
+      "mapId": 575,
+      "x": 584.117,
+      "y": -327.974,
+      "z": 110.138,
+      "orientation": 3.122,
+      "instanceMap": true
+    },
+    {
+      "id": 4885,
+      "name": "Magisters' Terrace (Exit)",
+      "mapId": 530,
+      "x": 12884.6,
+      "y": -7336.17,
+      "z": 65.48,
+      "orientation": 1.09,
+      "instanceMap": false
+    },
+    {
+      "id": 4887,
+      "name": "Magisters' Terrace (Entrance)",
+      "mapId": 585,
+      "x": 7.09,
+      "y": -0.45,
+      "z": -2.8,
+      "orientation": 0.05,
+      "instanceMap": true
+    },
+    {
+      "id": 4889,
+      "name": "Sunwell Plateau (Entrance)",
+      "mapId": 580,
+      "x": 1790.65,
+      "y": 925.67,
+      "z": 15.15,
+      "orientation": 3.1,
+      "instanceMap": true
+    },
+    {
+      "id": 4891,
+      "name": "Sunwell Plateau (Exit)",
+      "mapId": 530,
+      "x": 12560.8,
+      "y": -6774.59,
+      "z": 15.08,
+      "orientation": 6.25,
+      "instanceMap": false
+    },
+    {
+      "id": 4917,
+      "name": "Arena - Nagrand - Teleport Target - Game On",
+      "mapId": 559,
+      "x": 4054.57,
+      "y": 2923.23,
+      "z": 13.8179,
+      "orientation": 0,
+      "instanceMap": true
+    },
+    {
+      "id": 4919,
+      "name": "Arena - Bladesedge - Teleport Target - Game On",
+      "mapId": 562,
+      "x": 6238.89,
+      "y": 264.155,
+      "z": 0.894302,
+      "orientation": 0,
+      "instanceMap": true
+    },
+    {
+      "id": 4921,
+      "name": "Arena - Bladesedge - Teleport Target - Game On",
+      "mapId": 562,
+      "x": 6238.89,
+      "y": 264.155,
+      "z": 0.894302,
+      "orientation": 0,
+      "instanceMap": true
+    },
+    {
+      "id": 4922,
+      "name": "Arena - Bladesedge - Teleport Target - Game On",
+      "mapId": 562,
+      "x": 6238.89,
+      "y": 264.155,
+      "z": 0.894302,
+      "orientation": 0,
+      "instanceMap": true
+    },
+    {
+      "id": 4923,
+      "name": "Arena - Bladesedge - Teleport Target - Game On",
+      "mapId": 562,
+      "x": 6238.89,
+      "y": 264.155,
+      "z": 0.894302,
+      "orientation": 0,
+      "instanceMap": true
+    },
+    {
+      "id": 4924,
+      "name": "Arena - Bladesedge - Teleport Target - Game On",
+      "mapId": 562,
+      "x": 6238.89,
+      "y": 264.155,
+      "z": 0.894302,
+      "orientation": 0,
+      "instanceMap": true
+    },
+    {
+      "id": 4925,
+      "name": "Arena - Bladesedge - Teleport Target - Game On",
+      "mapId": 562,
+      "x": 6238.89,
+      "y": 264.155,
+      "z": 0.894302,
+      "orientation": 0,
+      "instanceMap": true
+    },
+    {
+      "id": 4927,
+      "name": "Arena - Undercity - Teleport Target - Game On",
+      "mapId": 572,
+      "x": 1286.57,
+      "y": 1667.4,
+      "z": 39.602,
+      "orientation": 0,
+      "instanceMap": true
+    },
+    {
+      "id": 4928,
+      "name": "Arena - Undercity - Teleport Target - Game On",
+      "mapId": 572,
+      "x": 1286.57,
+      "y": 1667.4,
+      "z": 39.602,
+      "orientation": 0,
+      "instanceMap": true
+    },
+    {
+      "id": 4929,
+      "name": "Arena - Undercity - Teleport Target - Game On",
+      "mapId": 572,
+      "x": 1286.57,
+      "y": 1667.4,
+      "z": 39.602,
+      "orientation": 0,
+      "instanceMap": true
+    },
+    {
+      "id": 4930,
+      "name": "Arena - Undercity - Teleport Target - Game On",
+      "mapId": 572,
+      "x": 1286.57,
+      "y": 1667.4,
+      "z": 39.602,
+      "orientation": 0,
+      "instanceMap": true
+    },
+    {
+      "id": 4931,
+      "name": "Arena - Undercity - Teleport Target - Game On",
+      "mapId": 572,
+      "x": 1286.57,
+      "y": 1667.4,
+      "z": 39.602,
+      "orientation": 0,
+      "instanceMap": true
+    },
+    {
+      "id": 4932,
+      "name": "Arena - Undercity - Teleport Target - Game On",
+      "mapId": 572,
+      "x": 1286.57,
+      "y": 1667.4,
+      "z": 39.602,
+      "orientation": 0,
+      "instanceMap": true
+    },
+    {
+      "id": 4933,
+      "name": "Arena - Undercity - Teleport Target - Game On",
+      "mapId": 572,
+      "x": 1286.57,
+      "y": 1667.4,
+      "z": 39.602,
+      "orientation": 0,
+      "instanceMap": true
+    },
+    {
+      "id": 4934,
+      "name": "Arena - Undercity - Teleport Target - Game On",
+      "mapId": 572,
+      "x": 1286.57,
+      "y": 1667.4,
+      "z": 39.602,
+      "orientation": 0,
+      "instanceMap": true
+    },
+    {
+      "id": 4935,
+      "name": "Arena - Undercity - Teleport Target - Game On",
+      "mapId": 572,
+      "x": 1286.57,
+      "y": 1667.4,
+      "z": 39.602,
+      "orientation": 0,
+      "instanceMap": true
+    },
+    {
+      "id": 4936,
+      "name": "Arena - Undercity - Teleport Target - Game On",
+      "mapId": 572,
+      "x": 1286.57,
+      "y": 1667.4,
+      "z": 39.602,
+      "orientation": 0,
+      "instanceMap": true
+    },
+    {
+      "id": 4941,
+      "name": "Arena - Undercity - Teleport Target - Game On",
+      "mapId": 572,
+      "x": 1286.57,
+      "y": 1667.4,
+      "z": 39.602,
+      "orientation": 0,
+      "instanceMap": true
+    },
+    {
+      "id": 4944,
+      "name": "Arena - Bladesedge - Teleport Target - Game On",
+      "mapId": 562,
+      "x": 6238.89,
+      "y": 264.155,
+      "z": 0.894302,
+      "orientation": 0,
+      "instanceMap": true
+    },
+    {
+      "id": 4981,
+      "name": "The Nexus (exit)",
+      "mapId": 571,
+      "x": 3897.42,
+      "y": 6985.33,
+      "z": 69.487,
+      "orientation": 3.17,
+      "instanceMap": false
+    },
+    {
+      "id": 4983,
+      "name": "The Nexus (entrance)",
+      "mapId": 576,
+      "x": 145.87,
+      "y": -10.554,
+      "z": -16.636,
+      "orientation": 1.528,
+      "instanceMap": true
+    },
+    {
+      "id": 4998,
+      "name": "Drak'Tharon Keep (entrance)",
+      "mapId": 600,
+      "x": -517.343,
+      "y": -487.976,
+      "z": 11.01,
+      "orientation": 4.831,
+      "instanceMap": true
+    },
+    {
+      "id": 5000,
+      "name": "Drak'Tharon Keep (exit)",
+      "mapId": 571,
+      "x": 4774.47,
+      "y": -2028.04,
+      "z": 229.373,
+      "orientation": 4.645,
+      "instanceMap": false
+    },
+    {
+      "id": 5001,
+      "name": "The Oculus (exit)",
+      "mapId": 571,
+      "x": 3876.16,
+      "y": 6984.44,
+      "z": 106.32,
+      "orientation": 6.279,
+      "instanceMap": false
+    },
+    {
+      "id": 5010,
+      "name": "Ulduar, Halls of Stone (entrance)",
+      "mapId": 599,
+      "x": 1153.24,
+      "y": 806.164,
+      "z": 195.937,
+      "orientation": 4.715,
+      "instanceMap": true
+    },
+    {
+      "id": 5012,
+      "name": "Ulduar, Halls of Stone (exit)",
+      "mapId": 571,
+      "x": 8921.93,
+      "y": -970.399,
+      "z": 1039.2,
+      "orientation": 4.726,
+      "instanceMap": false
+    },
+    {
+      "id": 5051,
+      "name": "Zul'drak - Voltarus, base floor -> middle",
+      "mapId": 571,
+      "x": 6159.16,
+      "y": -2028.6,
+      "z": 408.168,
+      "orientation": 3.74088,
+      "instanceMap": false
+    },
+    {
+      "id": 5061,
+      "name": "Zul'drak - Voltarus, middle floor -> base",
+      "mapId": 571,
+      "x": 6175.6,
+      "y": -2008.78,
+      "z": 245.255,
+      "orientation": 1.49857,
+      "instanceMap": false
+    },
+    {
+      "id": 5079,
+      "name": "Zul'drak - Voltarus, middle floor -> top",
+      "mapId": 571,
+      "x": 6242.67,
+      "y": -1972.1,
+      "z": 484.783,
+      "orientation": 0.6,
+      "instanceMap": false
+    },
+    {
+      "id": 5080,
+      "name": "Zul'drak - Voltarus, upper floor -> middle",
+      "mapId": 571,
+      "x": 6159.16,
+      "y": -2028.6,
+      "z": 408.168,
+      "orientation": 3.74088,
+      "instanceMap": false
+    },
+    {
+      "id": 5091,
+      "name": "Ulduar, Halls of Lightning (exit)",
+      "mapId": 571,
+      "x": 9182.91,
+      "y": -1384.73,
+      "z": 1110.21,
+      "orientation": 2.431,
+      "instanceMap": false
+    },
+    {
+      "id": 5093,
+      "name": "Ulduar, Halls of Lightning (entrance)",
+      "mapId": 602,
+      "x": 1331.47,
+      "y": 259.619,
+      "z": 53.398,
+      "orientation": 4.772,
+      "instanceMap": true
+    },
+    {
+      "id": 5113,
+      "name": "Azjol-Nerub (exit back)",
+      "mapId": 571,
+      "x": 3820.08,
+      "y": 2035.62,
+      "z": 11.0722,
+      "orientation": 3.22311,
+      "instanceMap": false
+    },
+    {
+      "id": 5115,
+      "name": "Azjol-Nerub (exit)",
+      "mapId": 571,
+      "x": 3678.05,
+      "y": 2166.4,
+      "z": 35.795,
+      "orientation": 5.58,
+      "instanceMap": false
+    },
+    {
+      "id": 5117,
+      "name": "Azjol-Nerub (entrance)",
+      "mapId": 601,
+      "x": 413.314,
+      "y": 795.968,
+      "z": 831.351,
+      "orientation": 5.5,
+      "instanceMap": true
+    },
+    {
+      "id": 5127,
+      "name": "Ebon Hold (E.K.) Top Return Target",
+      "mapId": 0,
+      "x": 2462.76,
+      "y": -5598.19,
+      "z": 550.22,
+      "orientation": 3.66519,
+      "instanceMap": false
+    },
+    {
+      "id": 5128,
+      "name": "Ebon Hold (E.K.) Top West Target",
+      "mapId": 0,
+      "x": 2472.67,
+      "y": -5530.1,
+      "z": 420.642,
+      "orientation": 4.50295,
+      "instanceMap": false
+    },
+    {
+      "id": 5129,
+      "name": "Ebon Hold (E.K.) Top Return Target",
+      "mapId": 0,
+      "x": 2462.76,
+      "y": -5598.19,
+      "z": 550.22,
+      "orientation": 3.66519,
+      "instanceMap": false
+    },
+    {
+      "id": 5130,
+      "name": "Ebon Hold (E.K.) Top South Target",
+      "mapId": 0,
+      "x": 2397.37,
+      "y": -5581.06,
+      "z": 420.643,
+      "orientation": 6.07375,
+      "instanceMap": false
+    },
+    {
+      "id": 5131,
+      "name": "Ebon Hold (E.K.) Top Return Target",
+      "mapId": 0,
+      "x": 2462.76,
+      "y": -5598.19,
+      "z": 550.22,
+      "orientation": 3.66519,
+      "instanceMap": false
+    },
+    {
+      "id": 5132,
+      "name": "Ebon Hold (E.K.) Top North Target",
+      "mapId": 0,
+      "x": 2522.45,
+      "y": -5605.7,
+      "z": 420.642,
+      "orientation": 2.94961,
+      "instanceMap": false
+    },
+    {
+      "id": 5133,
+      "name": "Ebon Hold (E.K.) Top Return Target",
+      "mapId": 0,
+      "x": 2462.76,
+      "y": -5598.19,
+      "z": 550.22,
+      "orientation": 3.66519,
+      "instanceMap": false
+    },
+    {
+      "id": 5134,
+      "name": "Ebon Hold (E.K.) Top East Target",
+      "mapId": 0,
+      "x": 2448.02,
+      "y": -5655.82,
+      "z": 420.643,
+      "orientation": 1.3439,
+      "instanceMap": false
+    },
+    {
+      "id": 5135,
+      "name": "Ebon Hold (E.K.) Middle -> Bottom Target",
+      "mapId": 0,
+      "x": 2435.77,
+      "y": -5610.34,
+      "z": 366.82,
+      "orientation": 0.610865,
+      "instanceMap": false
+    },
+    {
+      "id": 5136,
+      "name": "Ebon Hold (E.K.) Middle -> Bottom Target",
+      "mapId": 0,
+      "x": 2435.77,
+      "y": -5610.34,
+      "z": 366.82,
+      "orientation": 0.610865,
+      "instanceMap": false
+    },
+    {
+      "id": 5137,
+      "name": "Ebon Hold (E.K.) Bottom -> Middle Target",
+      "mapId": 0,
+      "x": 2472.9,
+      "y": -5530.64,
+      "z": 420.643,
+      "orientation": 4.45059,
+      "instanceMap": false
+    },
+    {
+      "id": 5138,
+      "name": "Ebon Hold (E.K.) Bottom -> Ground Target",
+      "mapId": 0,
+      "x": 2415.16,
+      "y": -5733.04,
+      "z": 153.922,
+      "orientation": 3.64774,
+      "instanceMap": false
+    },
+    {
+      "id": 5148,
+      "name": "CoT Stratholme - Exit Target",
+      "mapId": 1,
+      "x": -8756.6,
+      "y": -4457.02,
+      "z": -200.481,
+      "orientation": 1.39626,
+      "instanceMap": false
+    },
+    {
+      "id": 5150,
+      "name": "Culling of Stratholme (entrance)",
+      "mapId": 595,
+      "x": 1431.1,
+      "y": 556.92,
+      "z": 36.69,
+      "orientation": 5.16,
+      "instanceMap": true
+    },
+    {
+      "id": 5181,
+      "name": "Culling of Stratholme (exit 2)",
+      "mapId": 1,
+      "x": -8756.87,
+      "y": -4459.29,
+      "z": -200.73,
+      "orientation": 1.32,
+      "instanceMap": false
+    },
+    {
+      "id": 5191,
+      "name": "Naxxramas, East (Entrance)",
+      "mapId": 533,
+      "x": 3005.68,
+      "y": -3447.77,
+      "z": 293.93,
+      "orientation": 4.65,
+      "instanceMap": true
+    },
+    {
+      "id": 5192,
+      "name": "Naxxramas, North (Entrance)",
+      "mapId": 533,
+      "x": 3019.34,
+      "y": -3434.36,
+      "z": 293.99,
+      "orientation": 6.27,
+      "instanceMap": true
+    },
+    {
+      "id": 5193,
+      "name": "Naxxramas, West (Entrance)",
+      "mapId": 533,
+      "x": 3005.9,
+      "y": -3420.58,
+      "z": 294.11,
+      "orientation": 1.58,
+      "instanceMap": true
+    },
+    {
+      "id": 5194,
+      "name": "Naxxramas, South (Entrance)",
+      "mapId": 533,
+      "x": 2992.5,
+      "y": -3434.42,
+      "z": 293.94,
+      "orientation": 3.13,
+      "instanceMap": true
+    },
+    {
+      "id": 5196,
+      "name": "Naxxramas, North-East (Exit)",
+      "mapId": 571,
+      "x": 3679.25,
+      "y": -1278.58,
+      "z": 243.55,
+      "orientation": 2.39,
+      "instanceMap": false
+    },
+    {
+      "id": 5197,
+      "name": "Naxxramas, North-West (Exit)",
+      "mapId": 571,
+      "x": 3679.03,
+      "y": -1259.68,
+      "z": 243.55,
+      "orientation": 3.98,
+      "instanceMap": false
+    },
+    {
+      "id": 5198,
+      "name": "Naxxramas, South-East (Exit)",
+      "mapId": 571,
+      "x": 3661.14,
+      "y": -1279.55,
+      "z": 243.55,
+      "orientation": 0.82,
+      "instanceMap": false
+    },
+    {
+      "id": 5199,
+      "name": "Naxxramas, South-West (Exit)",
+      "mapId": 571,
+      "x": 3660.01,
+      "y": -1260.99,
+      "z": 243.55,
+      "orientation": 5.51,
+      "instanceMap": false
+    },
+    {
+      "id": 5205,
+      "name": "Gundrak (entrance south)",
+      "mapId": 604,
+      "x": 1891.84,
+      "y": 832.169,
+      "z": 176.669,
+      "orientation": 2.109,
+      "instanceMap": true
+    },
+    {
+      "id": 5206,
+      "name": "Gundrak (entrance north)",
+      "mapId": 604,
+      "x": 1894.58,
+      "y": 652.713,
+      "z": 176.666,
+      "orientation": 4.078,
+      "instanceMap": true
+    },
+    {
+      "id": 5209,
+      "name": "Violet Hold (entrance)",
+      "mapId": 608,
+      "x": 1808.82,
+      "y": 803.93,
+      "z": 44.364,
+      "orientation": 6.282,
+      "instanceMap": true
+    },
+    {
+      "id": 5211,
+      "name": "Violet Hold (exit)",
+      "mapId": 571,
+      "x": 5680.7,
+      "y": 487.323,
+      "z": 652.418,
+      "orientation": 0.882,
+      "instanceMap": false
+    },
+    {
+      "id": 5213,
+      "name": "Ahn'Kahet (exit)",
+      "mapId": 571,
+      "x": 3641.84,
+      "y": 2032.94,
+      "z": 2.47,
+      "orientation": 1.178,
+      "instanceMap": false
+    },
+    {
+      "id": 5215,
+      "name": "Ahn'Kahet (entrance)",
+      "mapId": 619,
+      "x": 333.351,
+      "y": -1109.94,
+      "z": 69.772,
+      "orientation": 0.553,
+      "instanceMap": true
+    },
+    {
+      "id": 5231,
+      "name": "Gundrak (exit south)",
+      "mapId": 571,
+      "x": 6702.47,
+      "y": -4660.55,
+      "z": 441.568,
+      "orientation": 0.75,
+      "instanceMap": false
+    },
+    {
+      "id": 5233,
+      "name": "Gundrak (exit - 4)",
+      "mapId": 571,
+      "x": 6970.02,
+      "y": -4402.09,
+      "z": 441.578,
+      "orientation": 3.845,
+      "instanceMap": false
+    },
+    {
+      "id": 5235,
+      "name": "Ahn'Kahet (exit)",
+      "mapId": 571,
+      "x": 3817.4,
+      "y": 2032.82,
+      "z": 11.0133,
+      "orientation": 3.61283,
+      "instanceMap": false
+    },
+    {
+      "id": 5241,
+      "name": "Chamber of Aspects, Obsidian Sanctum (exit)",
+      "mapId": 571,
+      "x": 3448,
+      "y": 261.545,
+      "z": -110.163,
+      "orientation": 0.097,
+      "instanceMap": false
+    },
+    {
+      "id": 5243,
+      "name": "Chamber of Aspects, Obsidian Sanctum (entrance)",
+      "mapId": 615,
+      "x": 3228.58,
+      "y": 385.86,
+      "z": 65.549,
+      "orientation": 1.578,
+      "instanceMap": true
+    },
+    {
+      "id": 5246,
+      "name": "The Oculus (entrance)",
+      "mapId": 578,
+      "x": 1055.93,
+      "y": 986.85,
+      "z": 361.07,
+      "orientation": 5.745,
+      "instanceMap": true
+    },
+    {
+      "id": 5258,
+      "name": "Vault of Archavon (Entrance)",
+      "mapId": 624,
+      "x": -505.96,
+      "y": -103.353,
+      "z": 157,
+      "orientation": 0,
+      "instanceMap": true
+    },
+    {
+      "id": 5262,
+      "name": "Vault of Archavon (Exit)",
+      "mapId": 571,
+      "x": 5480.88,
+      "y": 2840.47,
+      "z": 418.68,
+      "orientation": 3.14,
+      "instanceMap": false
+    },
+    {
+      "id": 5273,
+      "name": "Dalaran Well teleporter",
+      "mapId": 571,
+      "x": 5878.56,
+      "y": 666.423,
+      "z": 615.294,
+      "orientation": 4,
+      "instanceMap": false
+    },
+    {
+      "id": 5276,
+      "name": "Gundrak (exit - 3)",
+      "mapId": 571,
+      "x": 6702.47,
+      "y": -4660.55,
+      "z": 441.568,
+      "orientation": 0.75,
+      "instanceMap": false
+    },
+    {
+      "id": 5277,
+      "name": "Gundrak (exit north)",
+      "mapId": 571,
+      "x": 6970.02,
+      "y": -4402.09,
+      "z": 441.578,
+      "orientation": 3.845,
+      "instanceMap": false
+    },
+    {
+      "id": 5290,
+      "name": "The Eye of Eternity (entrance)",
+      "mapId": 616,
+      "x": 728.055,
+      "y": 1329.03,
+      "z": 275,
+      "orientation": 5.51524,
+      "instanceMap": true
+    },
+    {
+      "id": 5326,
+      "name": "Arena - Dalaran Arena - Teleport Target",
+      "mapId": 617,
+      "x": 1291.57,
+      "y": 792.965,
+      "z": 8.11463,
+      "orientation": 0,
+      "instanceMap": false
+    },
+    {
+      "id": 5328,
+      "name": "Arena - Dalaran Arena - Teleport Target",
+      "mapId": 617,
+      "x": 1291.57,
+      "y": 792.965,
+      "z": 8.11463,
+      "orientation": 0,
+      "instanceMap": false
+    },
+    {
+      "id": 5329,
+      "name": "Arena - Dalaran Arena - Teleport Target",
+      "mapId": 617,
+      "x": 1291.57,
+      "y": 792.965,
+      "z": 8.11463,
+      "orientation": 0,
+      "instanceMap": false
+    },
+    {
+      "id": 5330,
+      "name": "Arena - Dalaran Arena - Teleport Target",
+      "mapId": 617,
+      "x": 1291.57,
+      "y": 792.965,
+      "z": 8.11463,
+      "orientation": 0,
+      "instanceMap": false
+    },
+    {
+      "id": 5331,
+      "name": "Arena - Dalaran Arena - Teleport Target",
+      "mapId": 617,
+      "x": 1291.57,
+      "y": 792.965,
+      "z": 8.11463,
+      "orientation": 0,
+      "instanceMap": false
+    },
+    {
+      "id": 5338,
+      "name": "Naxxanar Top -> Down",
+      "mapId": 571,
+      "x": 3733.68,
+      "y": 3563.25,
+      "z": 290.812,
+      "orientation": 3.66519,
+      "instanceMap": false
+    },
+    {
+      "id": 5379,
+      "name": "Ulduar Raid entrance",
+      "mapId": 603,
+      "x": -914.041,
+      "y": -148.98,
+      "z": 463.137,
+      "orientation": 6.28,
+      "instanceMap": true
+    },
+    {
+      "id": 5381,
+      "name": "Ulduar Raid exit",
+      "mapId": 571,
+      "x": 9345.56,
+      "y": -1114.88,
+      "z": 1245.09,
+      "orientation": 3.11,
+      "instanceMap": false
+    },
+    {
+      "id": 5447,
+      "name": "Arena - Orgrimmar - Teleport Target 3",
+      "mapId": 618,
+      "x": 763.365,
+      "y": -284.29,
+      "z": 28.2767,
+      "orientation": 0,
+      "instanceMap": false
+    },
+    {
+      "id": 5503,
+      "name": "Trial of the Crusader (Entrance)",
+      "mapId": 649,
+      "x": 563.61,
+      "y": 80.6815,
+      "z": 395.2,
+      "orientation": 1.59,
+      "instanceMap": true
+    },
+    {
+      "id": 5505,
+      "name": "Trial of the Champion (Entrance)",
+      "mapId": 650,
+      "x": 805.227,
+      "y": 618.038,
+      "z": 412.393,
+      "orientation": 3.1456,
+      "instanceMap": true
+    },
+    {
+      "id": 5508,
+      "name": "Trial of the Crusader (Exit)",
+      "mapId": 571,
+      "x": 8515.46,
+      "y": 728.92,
+      "z": 558.3,
+      "orientation": 4.742,
+      "instanceMap": false
+    },
+    {
+      "id": 5510,
+      "name": "Trial of the Champion (Exit)",
+      "mapId": 571,
+      "x": 8577.4,
+      "y": 791.732,
+      "z": 558.235,
+      "orientation": 0,
+      "instanceMap": false
+    },
+    {
+      "id": 5635,
+      "name": "Forge of Souls (Entrance)",
+      "mapId": 632,
+      "x": 4922.86,
+      "y": 2175.63,
+      "z": 638.734,
+      "orientation": 2.00355,
+      "instanceMap": true
+    },
+    {
+      "id": 5636,
+      "name": "Halls of Reflection (Entrance)",
+      "mapId": 668,
+      "x": 5239.01,
+      "y": 1932.64,
+      "z": 707.695,
+      "orientation": 0.800565,
+      "instanceMap": true
+    },
+    {
+      "id": 5637,
+      "name": "Pit of Saron (Entrance)",
+      "mapId": 658,
+      "x": 435.743,
+      "y": 212.413,
+      "z": 528.709,
+      "orientation": 6.25646,
+      "instanceMap": true
+    },
+    {
+      "id": 5642,
+      "name": "Forge of Souls (Exit)",
+      "mapId": 571,
+      "x": 5667.72,
+      "y": 2007.19,
+      "z": 798.042,
+      "orientation": 2.31535,
+      "instanceMap": false
+    },
+    {
+      "id": 5643,
+      "name": "Pit of Saron (Exit)",
+      "mapId": 571,
+      "x": 5595.92,
+      "y": 2013.02,
+      "z": 798.041,
+      "orientation": 0.648728,
+      "instanceMap": false
+    },
+    {
+      "id": 5646,
+      "name": "Halls of Reflection (Exit)",
+      "mapId": 571,
+      "x": 5630.59,
+      "y": 1997.55,
+      "z": 798.049,
+      "orientation": 1.44042,
+      "instanceMap": false
+    },
+    {
+      "id": 5668,
+      "name": "IceCrown Citadel (Exit)",
+      "mapId": 571,
+      "x": 5790,
+      "y": 2071.48,
+      "z": 636.065,
+      "orientation": 0.459897,
+      "instanceMap": false
+    },
+    {
+      "id": 5670,
+      "name": "IceCrown Citadel (Entrance)",
+      "mapId": 631,
+      "x": 76.8638,
+      "y": 2211.37,
+      "z": 30,
+      "orientation": 3.14965,
+      "instanceMap": true
+    },
+    {
+      "id": 5683,
+      "name": "Pit of Saron (Exit)",
+      "mapId": 571,
+      "x": 5595.92,
+      "y": 2013.02,
+      "z": 798.041,
+      "orientation": 0.648728,
+      "instanceMap": false
+    },
+    {
+      "id": 5688,
+      "name": "Forge of Souls (Exit)",
+      "mapId": 571,
+      "x": 5667.72,
+      "y": 2007.19,
+      "z": 798.042,
+      "orientation": 2.31535,
+      "instanceMap": false
+    },
+    {
+      "id": 5869,
+      "name": "The Ruby Sanctum (Entrance)",
+      "mapId": 724,
+      "x": 3274,
+      "y": 533.531,
+      "z": 87.665,
+      "orientation": 3.16,
+      "instanceMap": true
+    },
+    {
+      "id": 5872,
+      "name": "The Ruby Sanctum (Exit)",
+      "mapId": 571,
+      "x": 3604.23,
+      "y": 192.083,
+      "z": -110.821,
+      "orientation": 2.195,
+      "instanceMap": false
+    }
+  ],
+  "files": {
+    "cells.idx": {
+      "bytes": 137848,
+      "sha256": "26c7f01c2caa118c6467672409acbc0a88576f33ab1e2c81fb8709be04be7e35"
+    },
+    "contacts.pack": {
+      "bytes": 21800,
+      "sha256": "03721e7a8d69c6bc07792f51f0d14e20c12ac9903c9043a9a733a5606a976744"
+    },
+    "items.pack": {
+      "bytes": 8289332,
+      "sha256": "3ac7586f8c9c8d4141962af6379e85819b9f6bd4b3238c0f476981ec73f9bbf7"
+    },
+    "npcs.pack": {
+      "bytes": 4606270,
+      "sha256": "db813f6eb5573a3998dd1105b685ee1714c77acf05846bb65f90c7866cbc4883"
+    },
+    "quests.pack": {
+      "bytes": 337024,
+      "sha256": "4c598a5bef156914b3f4afda005fbc93f48bb7c6ff650a2019fc3e3ff1455e40"
+    },
+    "spawns.pack": {
+      "bytes": 3162488,
+      "sha256": "48fcd57a6370a8b5717a2a6d8d5e279a9879ea4e853499fe5b8ed0f1d4cf3c98"
+    }
+  },
+  "fingerprint": 3977292054
+}

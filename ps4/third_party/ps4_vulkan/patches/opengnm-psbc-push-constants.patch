@@ -1,0 +1,48 @@
+--- a/libpsbc/psbc_compile.c
++++ b/libpsbc/psbc_compile.c
+@@ -332,6 +332,9 @@
+     }
+     if (ctx->rargs->ac.dynamic_descriptors.used)
+         numinputslots += 1;
++    if (ctx->rargs->ac.push_constants.used)
++        numinputslots += 1;
++    numinputslots += util_bitcount64(ctx->rargs->ac.inline_push_const_mask);
+ 
+     uint32_t shspecificsize = headershsize(ctx->psbc_stage);
+     shspecificsize += numinputslots * sizeof(GnmInputUsageSlot);
+@@ -779,6 +782,35 @@
+         offset += sizeof(s);
+     }
+ 
++    /* RADV compact pointers occupy ONE SGPR. Preserve spilled push data in
++     * metadata as well as inline dwords; silently omitting the former makes
++     * a model matrix load dereference a stale register. API 0xfe is reserved
++     * for this pointer (0xff remains the dynamic descriptor table). */
++    if (ctx->rargs->ac.push_constants.used) {
++        const GnmInputUsageSlot slot = {
++            .usagetype = GNM_SHINPUTUSAGE_PTR_CONSTBUFFERTABLE,
++            .apislot = 0xfe,
++            .startregister = ctx->rargs->ac.args[
++                ctx->rargs->ac.push_constants.arg_index].offset,
++        };
++        memcpy(buf + offset, &slot, sizeof(slot));
++        offset += sizeof(slot);
++    }
++    uint64_t push_mask = ctx->rargs->ac.inline_push_const_mask;
++    uint32_t push_arg = 0;
++    while (push_mask) {
++        const uint32_t dword = __builtin_ctzll(push_mask);
++        push_mask &= push_mask - 1;
++        const GnmInputUsageSlot slot = {
++            .usagetype = GNM_SHINPUTUSAGE_IMM_ALUFLOATCONST,
++            .apislot = dword,
++            .startregister = ctx->rargs->ac.args[
++                ctx->rargs->ac.inline_push_consts[push_arg++].arg_index].offset,
++        };
++        memcpy(buf + offset, &slot, sizeof(slot));
++        offset += sizeof(slot);
++    }
++
+     /* write input/export semantics */
+     switch (ctx->stage) {
+     case MESA_SHADER_VERTEX:

@@ -1,0 +1,53 @@
+--- a/libpsbc/psbc_compile.c
++++ b/libpsbc/psbc_compile.c
+@@ -339,9 +339,21 @@
+     uint32_t shspecificsize = headershsize(ctx->psbc_stage);
+     shspecificsize += numinputslots * sizeof(GnmInputUsageSlot);
+ 
+-    /* exclude position as it doesn't count as an export semantic in PSB */
+-    const uint32_t outputswritten =
+-        util_bitcount64(ctx->nir->info.outputs_written & ~VARYING_BIT_POS);
++    /* A VS/TES semantic table describes PARAM exports only. PointSize and
++     * position/clip side-band exports have no PARAM offset; publishing the
++     * undefined offset truncated it to 31 in the GNM bitfield. */
++    uint64_t param_outputs = ctx->nir->info.outputs_written & ~VARYING_BIT_POS;
++    if (ctx->stage == MESA_SHADER_VERTEX || ctx->stage == MESA_SHADER_TESS_EVAL) {
++        uint64_t pending = param_outputs;
++        while (pending) {
++            const unsigned location = __builtin_ctzll(pending);
++            pending &= pending - 1;
++            if (ctx->rinfo->outinfo.vs_output_param_offset[location] >
++                AC_EXP_PARAM_OFFSET_31)
++                param_outputs &= ~(UINT64_C(1) << location);
++        }
++    }
++    const uint32_t outputswritten = util_bitcount64(param_outputs);
+ 
+     switch (ctx->stage) {
+     case MESA_SHADER_VERTEX:
+@@ -831,7 +843,7 @@
+             memcpy(buf + offset, &input, sizeof(input));
+             offset += sizeof(input);
+         }
+-        uint64_t outputs = ctx->nir->info.outputs_written & ~VARYING_BIT_POS;
++        uint64_t outputs = param_outputs;
+         while (outputs) {
+             const unsigned location = __builtin_ctzll(outputs);
+             outputs &= outputs - 1;
+@@ -856,6 +868,16 @@
+             const unsigned index = ac_nir_get_io_driver_location(
+                 ctx->nir, location, true);
+             inputs[index].semantic = location;
++            /* RADV records non-flat modes in physical ATTR-index masks.
++             * load_input (flat, including integer varyings) has no bit in
++             * any interpolated/explicit mask. Preserve this in SPI state. */
++            const uint32_t nonflat = ctx->rinfo->ps.float32_shaded_mask |
++                ctx->rinfo->ps.float16_shaded_mask |
++                ctx->rinfo->ps.float16_hi_shaded_mask |
++                ctx->rinfo->ps.explicit_shaded_mask |
++                ctx->rinfo->ps.explicit_strict_shaded_mask;
++            inputs[index].isflatshaded = index < 32 &&
++                !(nonflat & (UINT32_C(1) << index));
+         }
+         memcpy(buf + offset, inputs, count * sizeof(*inputs));
+         offset += count * sizeof(*inputs);

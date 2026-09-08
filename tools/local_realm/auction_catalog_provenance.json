@@ -1,0 +1,205 @@
+{
+  "repository": "https://github.com/azerothcore/azerothcore-wotlk",
+  "commit": "4e80596cdaa21fa31830522f6f2d7ed8750bfffd",
+  "rows": 46096,
+  "sourceHashes": {
+    "item_template.sql": "bd4859be01946ca1521f7896f558f665e1e1d98890757a3df30e717b62768cc6",
+    "creature_loot_template.sql": "92ebbddabe4fa8baed2ca553dddf69c061bbdf79831c18da33a5ea526dc347a1",
+    "reference_loot_template.sql": "0018f3dc7fa45479e05fcc4e0f28d10e49d7d016121e709b66e8d31315c65b25"
+  },
+  "dropProbabilityPolicy": "Highest known positive ungrouped nonquest normal creature-loot chance; unknown/grouped/reference-only rates carry no probability premium",
+  "marketMounts": [
+    {
+      "id": 13335,
+      "name": "Deathcharger's Reins",
+      "drop": true,
+      "tcg": false
+    },
+    {
+      "id": 19029,
+      "name": "Horn of the Frostwolf Howler",
+      "drop": true,
+      "tcg": false
+    },
+    {
+      "id": 19872,
+      "name": "Swift Razzashi Raptor",
+      "drop": true,
+      "tcg": false
+    },
+    {
+      "id": 19902,
+      "name": "Swift Zulian Tiger",
+      "drop": true,
+      "tcg": false
+    },
+    {
+      "id": 21218,
+      "name": "Blue Qiraji Resonating Crystal",
+      "drop": true,
+      "tcg": false
+    },
+    {
+      "id": 21321,
+      "name": "Red Qiraji Resonating Crystal",
+      "drop": true,
+      "tcg": false
+    },
+    {
+      "id": 21323,
+      "name": "Green Qiraji Resonating Crystal",
+      "drop": true,
+      "tcg": false
+    },
+    {
+      "id": 21324,
+      "name": "Yellow Qiraji Resonating Crystal",
+      "drop": true,
+      "tcg": false
+    },
+    {
+      "id": 30480,
+      "name": "Fiery Warhorse's Reins",
+      "drop": true,
+      "tcg": false
+    },
+    {
+      "id": 32458,
+      "name": "Ashes of Al'ar",
+      "drop": true,
+      "tcg": false
+    },
+    {
+      "id": 32768,
+      "name": "Reins of the Raven Lord",
+      "drop": true,
+      "tcg": false
+    },
+    {
+      "id": 34060,
+      "name": "Flying Machine Control",
+      "drop": true,
+      "tcg": false
+    },
+    {
+      "id": 34061,
+      "name": "Turbo-Charged Flying Machine Control",
+      "drop": true,
+      "tcg": false
+    },
+    {
+      "id": 34092,
+      "name": "Merciless Nether Drake",
+      "drop": true,
+      "tcg": false
+    },
+    {
+      "id": 35513,
+      "name": "Swift White Hawkstrider",
+      "drop": true,
+      "tcg": false
+    },
+    {
+      "id": 43951,
+      "name": "Reins of the Bronze Drake",
+      "drop": true,
+      "tcg": false
+    },
+    {
+      "id": 43954,
+      "name": "Reins of the Twilight Drake",
+      "drop": true,
+      "tcg": false
+    },
+    {
+      "id": 43959,
+      "name": "Reins of the Grand Black War Mammoth",
+      "drop": true,
+      "tcg": false
+    },
+    {
+      "id": 43986,
+      "name": "Reins of the Black Drake",
+      "drop": true,
+      "tcg": false
+    },
+    {
+      "id": 44083,
+      "name": "Reins of the Grand Black War Mammoth",
+      "drop": true,
+      "tcg": false
+    },
+    {
+      "id": 44151,
+      "name": "Reins of the Blue Proto-Drake",
+      "drop": true,
+      "tcg": false
+    },
+    {
+      "id": 44168,
+      "name": "Reins of the Time-Lost Proto-Drake",
+      "drop": true,
+      "tcg": false
+    },
+    {
+      "id": 45693,
+      "name": "Mimiron's Head",
+      "drop": true,
+      "tcg": false
+    },
+    {
+      "id": 49282,
+      "name": "Big Battle Bear",
+      "drop": false,
+      "tcg": true
+    },
+    {
+      "id": 49283,
+      "name": "Reins of the Spectral Tiger",
+      "drop": false,
+      "tcg": true
+    },
+    {
+      "id": 49284,
+      "name": "Reins of the Swift Spectral Tiger",
+      "drop": false,
+      "tcg": true
+    },
+    {
+      "id": 49285,
+      "name": "X-51 Nether-Rocket",
+      "drop": false,
+      "tcg": true
+    },
+    {
+      "id": 49286,
+      "name": "X-51 Nether-Rocket X-TREME",
+      "drop": false,
+      "tcg": true
+    },
+    {
+      "id": 49290,
+      "name": "Magic Rooster Egg",
+      "drop": false,
+      "tcg": true
+    },
+    {
+      "id": 49636,
+      "name": "Reins of the Onyxian Drake",
+      "drop": true,
+      "tcg": false
+    },
+    {
+      "id": 50818,
+      "name": "Invincible's Reins",
+      "drop": true,
+      "tcg": false
+    },
+    {
+      "id": 54068,
+      "name": "Wooly White Rhino",
+      "drop": false,
+      "tcg": true
+    }
+  ]
+}

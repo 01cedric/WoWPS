@@ -1,0 +1,382 @@
+{
+  "Achievement": {
+    "Description": 21,
+    "ID": 0,
+    "IconID": 42,
+    "Points": 39,
+    "Title": 4
+  },
+  "AchievementCriteria": {
+    "AchievementID": 1,
+    "Description": 9,
+    "ID": 0,
+    "Quantity": 4
+  },
+  "AreaTable": {
+    "ExploreFlag": 3,
+    "ID": 0,
+    "MapID": 1,
+    "ParentAreaNum": 2
+  },
+  "CharHairGeosets": {
+    "GeosetID": 4,
+    "RaceID": 1,
+    "SexID": 2,
+    "Variation": 3
+  },
+  "CharSections": {
+    "BaseSection": 3,
+    "ColorIndex": 5,
+    "Flags": 9,
+    "RaceID": 1,
+    "SexID": 2,
+    "Texture1": 6,
+    "Texture2": 7,
+    "Texture3": 8,
+    "VariationIndex": 4
+  },
+  "CharTitles": {
+    "ID": 0,
+    "Title": 2,
+    "TitleBit": 36
+  },
+  "CharacterFacialHairStyles": {
+    "Geoset100": 6,
+    "Geoset200": 8,
+    "Geoset300": 7,
+    "RaceID": 0,
+    "SexID": 1,
+    "Variation": 2
+  },
+  "CreatureDisplayInfo": {
+    "CreatureModelScale": 4,
+    "ExtraDisplayId": 3,
+    "ID": 0,
+    "ModelID": 1,
+    "Skin1": 6,
+    "Skin2": 7,
+    "Skin3": 8
+  },
+  "CreatureDisplayInfoExtra": {
+    "BakeName": 20,
+    "EquipDisplay0": 8,
+    "EquipDisplay1": 9,
+    "EquipDisplay10": 18,
+    "EquipDisplay2": 10,
+    "EquipDisplay3": 11,
+    "EquipDisplay4": 12,
+    "EquipDisplay5": 13,
+    "EquipDisplay6": 14,
+    "EquipDisplay7": 15,
+    "EquipDisplay8": 16,
+    "EquipDisplay9": 17,
+    "FaceID": 4,
+    "FacialHairID": 7,
+    "HairColorID": 6,
+    "HairStyleID": 5,
+    "ID": 0,
+    "RaceID": 1,
+    "SexID": 2,
+    "SkinID": 3
+  },
+  "CreatureModelData": {
+    "ID": 0,
+    "ModelPath": 2,
+    "ModelScale": 4
+  },
+  "Emotes": {
+    "AnimID": 2,
+    "EmoteSpecProc": 4,
+    "ID": 0
+  },
+  "EmotesText": {
+    "Command": 1,
+    "EmoteRef": 2,
+    "ID": 0,
+    "OthersNoTargetTextID": 7,
+    "OthersTargetTextID": 3,
+    "SenderNoTargetTextID": 9,
+    "SenderTargetTextID": 5
+  },
+  "EmotesTextData": {
+    "ID": 0,
+    "Text": 1
+  },
+  "Faction": {
+    "ID": 0,
+    "Name": 23,
+    "ReputationBase0": 10,
+    "ReputationBase1": 11,
+    "ReputationBase2": 12,
+    "ReputationBase3": 13,
+    "ReputationRaceMask0": 2,
+    "ReputationRaceMask1": 3,
+    "ReputationRaceMask2": 4,
+    "ReputationRaceMask3": 5
+  },
+  "FactionTemplate": {
+    "Enemy0": 6,
+    "Enemy1": 7,
+    "Enemy2": 8,
+    "Enemy3": 9,
+    "EnemyGroup": 5,
+    "Faction": 1,
+    "FactionGroup": 3,
+    "FriendGroup": 4,
+    "ID": 0
+  },
+  "GameObjectDisplayInfo": {
+    "ID": 0,
+    "ModelName": 1
+  },
+  "ItemDisplayInfo": {
+    "GeosetGroup1": 7,
+    "GeosetGroup3": 9,
+    "ID": 0,
+    "InventoryIcon": 5,
+    "LeftModel": 1,
+    "LeftModelTexture": 3,
+    "RightModel": 2,
+    "RightModelTexture": 4,
+    "TextureArmLower": 16,
+    "TextureArmUpper": 15,
+    "TextureFoot": 22,
+    "TextureHand": 17,
+    "TextureLegLower": 21,
+    "TextureLegUpper": 20,
+    "TextureTorsoLower": 19,
+    "TextureTorsoUpper": 18
+  },
+  "ItemSet": {
+    "ID": 0,
+    "Item0": 18,
+    "Item1": 19,
+    "Item2": 20,
+    "Item3": 21,
+    "Item4": 22,
+    "Item5": 23,
+    "Item6": 24,
+    "Item7": 25,
+    "Item8": 26,
+    "Item9": 27,
+    "Name": 1,
+    "Spell0": 28,
+    "Spell1": 29,
+    "Spell2": 30,
+    "Spell3": 31,
+    "Spell4": 32,
+    "Spell5": 33,
+    "Spell6": 34,
+    "Spell7": 35,
+    "Spell8": 36,
+    "Spell9": 37,
+    "Threshold0": 38,
+    "Threshold1": 39,
+    "Threshold2": 40,
+    "Threshold3": 41,
+    "Threshold4": 42,
+    "Threshold5": 43,
+    "Threshold6": 44,
+    "Threshold7": 45,
+    "Threshold8": 46,
+    "Threshold9": 47
+  },
+  "LFGDungeons": {
+    "ID": 0,
+    "Name": 1
+  },
+  "Light": {
+    "ID": 0,
+    "InnerRadius": 5,
+    "LightParamsID": 7,
+    "LightParamsIDRain": 8,
+    "LightParamsIDUnderwater": 9,
+    "MapID": 1,
+    "OuterRadius": 6,
+    "X": 2,
+    "Y": 4,
+    "Z": 3
+  },
+  "LightFloatBand": {
+    "BlockIndex": 0,
+    "NumKeyframes": 1,
+    "TimeKey0": 2,
+    "Value0": 18
+  },
+  "LightIntBand": {
+    "BlockIndex": 0,
+    "NumKeyframes": 1,
+    "TimeKey0": 2,
+    "Value0": 18
+  },
+  "LightParams": {
+    "LightParamsID": 0
+  },
+  "Map": {
+    "ID": 0,
+    "InternalName": 1
+  },
+  "SkillLine": {
+    "Category": 1,
+    "Description": 20,
+    "ID": 0,
+    "Name": 3,
+    "SpellIcon": 37
+  },
+  "SkillLineAbility": {
+    "SkillLineID": 1,
+    "SpellID": 2
+  },
+  "Spell": {
+    "Attributes": 4,
+    "AttributesEx": 5,
+    "CasterAuraState": 20,
+    "CasterAuraStateNot": 22,
+    "CastingTimeIndex": 28,
+    "CategoryRecoveryTime": 30,
+    "Description": 170,
+    "DispelType": 2,
+    "DurationIndex": 40,
+    "Effect0": 71,
+    "Effect1": 72,
+    "Effect2": 73,
+    "EffectApplyAuraName0": 95,
+    "EffectApplyAuraName1": 96,
+    "EffectApplyAuraName2": 97,
+    "EffectBasePoints0": 80,
+    "EffectBasePoints1": 81,
+    "EffectBasePoints2": 82,
+    "EffectImplicitTargetA": 86,
+    "EffectItemType0": 107,
+    "EffectItemType1": 108,
+    "EffectItemType2": 109,
+    "EffectMiscValue0": 110,
+    "EffectMiscValue1": 111,
+    "EffectMiscValue2": 112,
+    "EffectMiscValueB0": 113,
+    "EffectMiscValueB1": 114,
+    "EffectMiscValueB2": 115,
+    "ID": 0,
+    "IconID": 133,
+    "ManaCost": 42,
+    "Name": 136,
+    "PowerType": 41,
+    "RangeIndex": 46,
+    "Rank": 153,
+    "Reagent0": 52,
+    "Reagent1": 53,
+    "Reagent2": 54,
+    "Reagent3": 55,
+    "Reagent4": 56,
+    "Reagent5": 57,
+    "Reagent6": 58,
+    "Reagent7": 59,
+    "ReagentCount0": 60,
+    "ReagentCount1": 61,
+    "ReagentCount2": 62,
+    "ReagentCount3": 63,
+    "ReagentCount4": 64,
+    "ReagentCount5": 65,
+    "ReagentCount6": 66,
+    "ReagentCount7": 67,
+    "RecoveryTime": 29,
+    "SchoolMask": 225,
+    "SpellVisualID": 131,
+    "TargetAuraState": 21,
+    "Targets": 16,
+    "Tooltip": 187
+  },
+  "SpellIcon": {
+    "ID": 0,
+    "Path": 1
+  },
+  "SpellItemEnchantment": {
+    "ID": 0,
+    "Name": 14
+  },
+  "SpellRange": {
+    "MaxRange": 4,
+    "MinRange": 2
+  },
+  "SpellShapeshiftForm": {
+    "BonusActionBar": 1,
+    "ID": 0,
+    "Name": 2
+  },
+  "SpellVisual": {
+    "CastKit": 2,
+    "ID": 0,
+    "ImpactKit": 3,
+    "MissileModel": 8,
+    "PrecastKit": 1
+  },
+  "SpellVisualEffectName": {
+    "FilePath": 2,
+    "ID": 0
+  },
+  "SpellVisualKit": {
+    "BaseEffect": 5,
+    "BreathEffect": 8,
+    "ChestEffect": 4,
+    "HeadEffect": 3,
+    "ID": 0,
+    "LeftHandEffect": 6,
+    "RightHandEffect": 7,
+    "SpecialEffect0": 11,
+    "SpecialEffect1": 12,
+    "SpecialEffect2": 13
+  },
+  "Talent": {
+    "Column": 3,
+    "ID": 0,
+    "PrereqRank0": 12,
+    "PrereqTalent0": 9,
+    "RankSpell0": 4,
+    "Row": 2,
+    "TabID": 1
+  },
+  "TalentTab": {
+    "BackgroundFile": 23,
+    "ClassMask": 20,
+    "ID": 0,
+    "Name": 1,
+    "OrderIndex": 22
+  },
+  "TaxiNodes": {
+    "ID": 0,
+    "MapID": 1,
+    "MountDisplayIdAlliance": 22,
+    "MountDisplayIdHorde": 23,
+    "Name": 5,
+    "X": 2,
+    "Y": 3,
+    "Z": 4
+  },
+  "TaxiPath": {
+    "Cost": 3,
+    "FromNode": 1,
+    "ID": 0,
+    "ToNode": 2
+  },
+  "TaxiPathNode": {
+    "ID": 0,
+    "MapID": 3,
+    "NodeIndex": 2,
+    "PathID": 1,
+    "X": 4,
+    "Y": 5,
+    "Z": 6
+  },
+  "WorldMapArea": {
+    "AreaID": 2,
+    "AreaName": 3,
+    "DisplayMapID": 8,
+    "ID": 0,
+    "LocBottom": 7,
+    "LocLeft": 4,
+    "LocRight": 5,
+    "LocTop": 6,
+    "MapID": 1,
+    "ParentWorldMapID": 10
+  }
+}

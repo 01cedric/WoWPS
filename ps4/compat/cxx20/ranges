@@ -1,0 +1,104 @@
+// The subset of <ranges> WoWee uses, for libc++ 11 (OpenOrbis). See README.md.
+//   std::ranges::equal(a, b)          std::views::reverse   std::views::transform(f)
+// Pipe syntax (`v | std::views::reverse`) is supported for lvalue and rvalue
+// ranges; views hold a reference to lvalues and a copy of rvalues.
+#pragma once
+#if __has_include_next(<ranges>) && !defined(WOWEE_FORCE_CXX20_SHIMS)
+#include_next <ranges>
+#else
+#include <algorithm>
+#include <iterator>
+#include <type_traits>
+#include <utility>
+
+namespace std {
+namespace ranges {
+
+template <class R1, class R2>
+bool equal(R1&& a, R2&& b) {
+    return std::equal(std::begin(a), std::end(a), std::begin(b), std::end(b));
+}
+template <class R1, class R2, class Pred>
+bool equal(R1&& a, R2&& b, Pred pred) {
+    return std::equal(std::begin(a), std::end(a), std::begin(b), std::end(b), pred);
+}
+
+} // namespace ranges
+
+namespace views {
+namespace detail {
+
+template <class R>
+struct stored_range {
+    // lvalue ranges are referenced, rvalues are moved in
+    using type = typename std::conditional<std::is_lvalue_reference<R>::value,
+                                           R, typename std::remove_reference<R>::type>::type;
+};
+
+template <class R>
+class reverse_view {
+    typename stored_range<R>::type r_;
+public:
+    explicit reverse_view(R&& r) : r_(std::forward<R>(r)) {}
+    auto begin() { return std::make_reverse_iterator(std::end(r_)); }
+    auto end() { return std::make_reverse_iterator(std::begin(r_)); }
+    auto begin() const { return std::make_reverse_iterator(std::end(r_)); }
+    auto end() const { return std::make_reverse_iterator(std::begin(r_)); }
+};
+
+template <class It, class F>
+class transform_iterator {
+    It it_;
+    const F* f_;
+public:
+    using iterator_category = std::input_iterator_tag;
+    using value_type = typename std::decay<decltype((*std::declval<const F&>())(*std::declval<It&>()))>::type;
+    using difference_type = std::ptrdiff_t;
+    using pointer = void;
+    using reference = decltype((*std::declval<const F&>())(*std::declval<It&>()));
+    transform_iterator(It it, const F* f) : it_(it), f_(f) {}
+    reference operator*() const { return (*f_)(*it_); }
+    transform_iterator& operator++() { ++it_; return *this; }
+    transform_iterator operator++(int) { auto c = *this; ++it_; return c; }
+    bool operator==(const transform_iterator& o) const { return it_ == o.it_; }
+    bool operator!=(const transform_iterator& o) const { return it_ != o.it_; }
+};
+
+template <class R, class F>
+class transform_view {
+    typename stored_range<R>::type r_;
+    F f_;
+public:
+    transform_view(R&& r, F f) : r_(std::forward<R>(r)), f_(std::move(f)) {}
+    auto begin() { return transform_iterator<decltype(std::begin(r_)), F>(std::begin(r_), &f_); }
+    auto end() { return transform_iterator<decltype(std::begin(r_)), F>(std::end(r_), &f_); }
+};
+
+struct reverse_fn {
+    template <class R>
+    auto operator()(R&& r) const { return reverse_view<R>(std::forward<R>(r)); }
+};
+template <class R>
+auto operator|(R&& r, const reverse_fn& fn) { return fn(std::forward<R>(r)); }
+
+template <class F>
+struct transform_fn {
+    F f;
+    template <class R>
+    auto operator()(R&& r) const { return transform_view<R, F>(std::forward<R>(r), f); }
+};
+template <class R, class F>
+auto operator|(R&& r, const transform_fn<F>& fn) { return fn(std::forward<R>(r)); }
+
+} // namespace detail
+
+inline constexpr detail::reverse_fn reverse{};
+
+template <class F>
+detail::transform_fn<typename std::decay<F>::type> transform(F&& f) {
+    return {std::forward<F>(f)};
+}
+
+} // namespace views
+} // namespace std
+#endif

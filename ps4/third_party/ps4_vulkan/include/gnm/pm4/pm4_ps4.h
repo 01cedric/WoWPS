@@ -1,0 +1,6 @@
+#ifndef OPENGNM_GNM_COMPAT_PM4_PS4_H
+#define OPENGNM_GNM_COMPAT_PM4_PS4_H
+
+#include <pm4/pm4_ps4.h>
+
+#endif /* OPENGNM_GNM_COMPAT_PM4_PS4_H */

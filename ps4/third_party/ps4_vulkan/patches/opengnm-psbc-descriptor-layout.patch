@@ -1,0 +1,186 @@
+--- a/libpsbc/psbc_compile.c
++++ b/libpsbc/psbc_compile.c
+@@ -276 +276 @@
+-    bool direct_descriptor_table;
++    uint32_t descriptor_set_count;
+@@ -329,2 +329,3 @@
+-    if (ctx->rargs->descriptors[0].used) {
+-        numinputslots += 1;
++    for (uint32_t set = 0; set < ctx->descriptor_set_count; ++set) {
++        if (ctx->rargs->descriptors[set].used)
++            numinputslots += 1;
+@@ -331,0 +333,2 @@
++    if (ctx->rargs->ac.dynamic_descriptors.used)
++        numinputslots += 1;
+@@ -755 +758,3 @@
+-    if (ctx->rargs->descriptors[0].used) {
++    for (uint32_t set = 0; set < ctx->descriptor_set_count; ++set) {
++        if (!ctx->rargs->descriptors[set].used)
++            continue;
+@@ -757,3 +762,2 @@
+-            .usagetype = ctx->direct_descriptor_table
+-                ? GNM_SHINPUTUSAGE_PTR_RESOURCETABLE
+-                : GNM_SHINPUTUSAGE_PTR_INDIRECTRESOURCETABLE,
++            .usagetype = GNM_SHINPUTUSAGE_PTR_INDIRECTRESOURCETABLE,
++            .apislot = set,
+@@ -761,3 +765,12 @@
+-                ctx->rargs->ac
+-                    .args[ctx->rargs->descriptors[0].arg_index]
+-                    .offset,
++                ctx->rargs->ac.args[
++                    ctx->rargs->descriptors[set].arg_index].offset,
++        };
++        memcpy(buf + offset, &s, sizeof(s));
++        offset += sizeof(s);
++    }
++    if (ctx->rargs->ac.dynamic_descriptors.used) {
++        const GnmInputUsageSlot s = {
++            .usagetype = GNM_SHINPUTUSAGE_PTR_CONSTBUFFERTABLE,
++            .apislot = PSBC_DYNAMIC_DESCRIPTOR_API_SLOT,
++            .startregister = ctx->rargs->ac.args[
++                ctx->rargs->ac.dynamic_descriptors.arg_index].offset,
+@@ -1039,7 +1052,3 @@
+-    compiler_info.hw.address32_hi = opts->ps4_combined_sampler_set0_binding0
+-        ? opts->descriptor_address32_hi : 0;
+-    if (opts->ps4_combined_sampler_set0_binding0) {
+-        /* OpenGNM's combined descriptor is exactly GnmTexture + GnmSampler.
+-         * These values are consumed both by SPIR-V translation and by RADV's
+-         * descriptor lowering, so leaving them zero folds texture sampling
+-         * into an all-zero descriptor. */
++    compiler_info.hw.address32_hi = opts->descriptor_address32_hi;
++    if (opts->descriptor_set_count > 0) {
++        /* OpenGNM descriptors use RADV's native GFX7 byte layout. */
+@@ -1068,2 +1077,10 @@
+-    /* Build the one descriptor layout supported by the PS4 runtime.  Keeping
+-     * this opt-in preserves standalone PSBC behaviour for all other users. */
++    if (opts->descriptor_set_count > PSBC_MAX_DESCRIPTOR_SETS ||
++        (opts->descriptor_set_count && !opts->descriptor_sets)) {
++        psbc_shutdown();
++        return PSBC_RESULT_UNSUPPORTED_STAGE;
++    }
++
++    /* Materialize the exact Vulkan pipeline layout for RADV's descriptor
++     * lowering.  Binding numbers may be sparse, therefore RADV's array is
++     * indexed by the highest Vulkan binding number rather than declaration
++     * order. */
+@@ -1072,0 +1090 @@
++                      PSBC_MAX_DESCRIPTOR_BINDINGS *
+@@ -1074 +1092 @@
+-    } fixed_set_storage = {0};
++    } set_storage[PSBC_MAX_DESCRIPTOR_SETS] = {0};
+@@ -1076,3 +1094,6 @@
+-    if (opts->ps4_combined_sampler_set0_binding0) {
+-        if (mesa_stage != MESA_SHADER_FRAGMENT ||
+-            opts->target == PSBC_TARGET_PS5) {
++    layout.num_sets = opts->descriptor_set_count;
++    uint32_t dynamic_offset_start = 0;
++    for (uint32_t set = 0; set < opts->descriptor_set_count; ++set) {
++        const PsbcDescriptorSetLayout *src = &opts->descriptor_sets[set];
++        if (src->binding_count > PSBC_MAX_DESCRIPTOR_BINDINGS ||
++            (src->binding_count && !src->bindings)) {
+@@ -1083,10 +1104,29 @@
+-            (struct radv_descriptor_set_layout *)fixed_set_storage.bytes;
+-        set_layout->binding_count = 1;
+-        set_layout->size = 48;
+-        set_layout->binding[0].type =
+-            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+-        set_layout->binding[0].array_size = 1;
+-        set_layout->binding[0].offset = 0;
+-        set_layout->binding[0].size = 48;
+-        layout.num_sets = 1;
+-        layout.set[0].layout = set_layout;
++            (struct radv_descriptor_set_layout *)set_storage[set].bytes;
++        uint32_t max_binding = 0;
++        for (uint32_t i = 0; i < src->binding_count; ++i) {
++            const PsbcDescriptorBinding *binding = &src->bindings[i];
++            if (binding->binding >= PSBC_MAX_DESCRIPTOR_BINDINGS ||
++                binding->array_size == 0 || binding->stride == 0) {
++                psbc_shutdown();
++                return PSBC_RESULT_UNSUPPORTED_STAGE;
++            }
++            if (binding->binding > max_binding)
++                max_binding = binding->binding;
++            struct radv_descriptor_set_binding_layout *dst =
++                &set_layout->binding[binding->binding];
++            dst->type = (VkDescriptorType)binding->descriptor_type;
++            dst->array_size = binding->array_size;
++            dst->offset = binding->offset;
++            dst->size = binding->stride;
++            dst->dynamic_offset_offset =
++                (uint16_t)binding->dynamic_offset_offset;
++            if (vk_descriptor_type_is_dynamic(dst->type))
++                dst->dynamic_offset_count = (uint16_t)binding->array_size;
++        }
++        set_layout->binding_count = src->binding_count ? max_binding + 1 : 0;
++        set_layout->size = src->table_size;
++        set_layout->dynamic_offset_count =
++            (uint16_t)src->dynamic_offset_count;
++        layout.set[set].layout = set_layout;
++        layout.set[set].dynamic_offset_start = dynamic_offset_start;
++        dynamic_offset_start += src->dynamic_offset_count;
+@@ -1093,0 +1134,2 @@
++    layout.dynamic_offset_count = dynamic_offset_start;
++    layout.use_dynamic_descriptors = dynamic_offset_start != 0;
+@@ -1130,19 +1171,0 @@
+-    /* Fail closed if a caller requests the compact PS4 contract for any
+-     * descriptor other than the single non-arrayed combined sampler that the
+-     * runtime allocates.  This prevents an out-of-bounds layout lookup from
+-     * becoming another valid-looking black shader. */
+-    if (opts->ps4_combined_sampler_set0_binding0) {
+-        nir_foreach_variable_with_modes(var, nir,
+-                                        nir_var_uniform | nir_var_image) {
+-            const struct glsl_type *type = glsl_without_array(var->type);
+-            if (!glsl_type_is_sampler(type) && !glsl_type_is_image(type))
+-                continue;
+-            if (var->data.descriptor_set != 0 || var->data.binding != 0 ||
+-                type != var->type) {
+-                ralloc_free(nir);
+-                psbc_shutdown();
+-                return PSBC_RESULT_UNSUPPORTED_STAGE;
+-            }
+-        }
+-    }
+-
+@@ -1269,2 +1292 @@
+-        .direct_descriptor_table =
+-            opts->ps4_combined_sampler_set0_binding0,
++        .descriptor_set_count = opts->descriptor_set_count,
+--- a/libpsbc/psbc_compile.h
++++ b/libpsbc/psbc_compile.h
+@@ -58,0 +59,23 @@
++#define PSBC_MAX_DESCRIPTOR_SETS 4u
++#define PSBC_MAX_DESCRIPTOR_BINDINGS 64u
++#define PSBC_DYNAMIC_DESCRIPTOR_API_SLOT 0xffu
++
++/* Vulkan-compatible pipeline-layout description supplied by the runtime.
++ * Descriptor type values intentionally match VkDescriptorType without making
++ * libpsbc's public header depend on the Vulkan SDK. */
++typedef struct {
++    uint32_t binding;
++    uint32_t descriptor_type;
++    uint32_t array_size;
++    uint32_t offset;
++    uint32_t stride;
++    uint32_t dynamic_offset_offset;
++} PsbcDescriptorBinding;
++
++typedef struct {
++    uint32_t binding_count;
++    uint32_t table_size;
++    uint32_t dynamic_offset_count;
++    const PsbcDescriptorBinding* bindings;
++} PsbcDescriptorSetLayout;
++
+@@ -64,7 +87,5 @@
+-    /* Standalone PSBC normally has no Vulkan pipeline layout.  Enable this
+-     * narrowly-scoped contract when set 0 / binding 0 is exactly one
+-     * VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER laid out as a 32-byte image
+-     * descriptor followed by a 16-byte sampler descriptor. */
+-    bool        ps4_combined_sampler_set0_binding0;
+-    /* High dword used by GFX7/8 when reconstructing 64-bit addresses from
+-     * the direct one-SGPR descriptor-set pointer. */
++    /* Exact Vulkan pipeline layout used for descriptor lowering. */
++    uint32_t    descriptor_set_count;
++    const PsbcDescriptorSetLayout* descriptor_sets;
++    /* High dword used by GFX7/8 to reconstruct the runtime's 32-bit
++     * descriptor-table pointers. */

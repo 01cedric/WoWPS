@@ -1,0 +1,28 @@
+Local realm content for WoWPS
+
+The bundled world.json and catalog files are modified, bounded conversions of
+AzerothCore world database tables. They are not a complete AzerothCore server.
+
+Upstream: https://github.com/azerothcore/azerothcore-wotlk
+Revision: 4e80596cdaa21fa31830522f6f2d7ed8750bfffd
+Input: data/sql/base/db_world/*.sql
+Attribution: AUTHORS-AZEROTHCORE.txt
+License: LICENSE-AC-GPL-2.0.txt
+
+The corresponding source distribution includes:
+  tools/local_realm/source_rows.json.gz       selected starting-region rows
+  tools/local_realm/world_source_sql.tar.gz   exact catalog input SQL tables
+  tools/local_realm/import_azerothcore.py     starting-region conversion
+  tools/local_realm/import_world_catalog.py   indexed catalog conversion
+  tools/local_realm/vendor_source_sql.tar.gz  exact npc_vendor/conditions input
+  tools/local_realm/import_vendor_catalog.py  per-NPC shop/price conversion
+  tools/local_realm/VENDOR_IMPORT_REPORT.json merchant coverage and exclusions
+
+The conversion selects rows, bounds gameplay values, excludes unsupported
+objectives, and adapts eligible quest rewards. The converters document and
+implement these modifications. Runtime row counts and input hashes are retained
+in the data and catalog manifest. See the root README.md for reproduction.
+
+No Blizzard client MPQ archives are included in this content pack. Client
+terrain, models, textures, sounds and DBC files are supplied separately by users.
+Upstream C++ and SmartAI encounter scripts are not executed by this catalog.

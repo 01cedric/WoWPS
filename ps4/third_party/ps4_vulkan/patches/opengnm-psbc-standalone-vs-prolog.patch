@@ -1,0 +1,396 @@
+diff --git a/Makefile b/Makefile
+index 21c97d3..b78c3dd 100644
+--- a/Makefile
++++ b/Makefile
+@@ -180,6 +180,11 @@ AMD_COMMON_SRCS = $(filter-out \
+ 	src/amd/common/ac_surface.c \
+ 	src/amd/common/ac_surface_meta_address_test.c \
+ 	src/amd/common/ac_surface_modifier_test.c \
++	src/amd/common/ac_cmdbuf.c \
++	src/amd/common/ac_cmdbuf_cp.c \
++	src/amd/common/ac_cmdbuf_sdma.c \
++	src/amd/common/ac_cmdbuf_video.c \
++	src/amd/common/ac_gather_context_rolls.c \
+ 	src/amd/common/ac_vcn_dec.c \
+ 	src/amd/common/amdgpu_devices.c \
+ 	src/amd/common/ac_ib_parser.c \
+diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
+index bacbc6a..ce998e9 100644
+--- a/libpsbc/psbc_compile.c
++++ b/libpsbc/psbc_compile.c
+@@ -30,6 +30,7 @@
+ #include "radv_shader.h"
+ #include "radv_shader_args.h"
+ #include "radv_shader_info.h"
++#include "radv_descriptor_set.h"
+ #include "radv_aco_shader_info.h"
+ #include "radv_pipeline.h"
+ #include "sid.h"
+@@ -175,6 +176,61 @@ static unsigned get_num_pos_exports(const struct radv_shader_info *info,
+     return num;
+ }
+ 
++/* Standalone PSBC does not own a complete RADV graphics-pipeline stage
++ * array, so it cannot call radv_link_shaders_info().  That link pass normally
++ * assigns every pre-raster output a hardware PARAM export.  Without the
++ * assignment, ACO still emits POS0 but silently drops generic varyings even
++ * though the container metadata advertises them.  A fragment shader then
++ * interpolates stale VGPR contents (observed as random atlas UVs on PS4).
++ *
++ * Mirror the explicit-output portion of radv_set_vs_output_param() here.  The
++ * standalone contract has no implicit consumer-driven PrimitiveId export;
++ * all declared per-vertex and per-primitive generic outputs retain the same
++ * ordering used by RADV's linker. */
++static void setup_standalone_prerast_output_params(
++    enum amd_gfx_level gfx_level, const nir_shader *nir,
++    struct radv_shader_info *info) {
++    struct radv_vs_output_info *outinfo = &info->outinfo;
++    const uint64_t special_mask =
++        VARYING_BIT_PRIMITIVE_COUNT |
++        VARYING_BIT_PRIMITIVE_INDICES |
++        VARYING_BIT_CULL_PRIMITIVE;
++    const uint64_t per_primitive =
++        nir->info.outputs_written & nir->info.per_primitive_outputs &
++        ~special_mask;
++    const uint64_t per_vertex =
++        nir->info.outputs_written & ~nir->info.per_primitive_outputs &
++        ~special_mask;
++
++    memset(outinfo->vs_output_param_offset, AC_EXP_PARAM_UNDEFINED,
++           sizeof(outinfo->vs_output_param_offset));
++
++    unsigned total = 0;
++    for (unsigned idx = 0; idx < 64 && idx < VARYING_SLOT_MAX; ++idx) {
++        if (!(per_vertex & (UINT64_C(1) << idx)))
++            continue;
++        if (idx >= VARYING_SLOT_VAR0 || idx == VARYING_SLOT_LAYER ||
++            idx == VARYING_SLOT_PRIMITIVE_ID ||
++            idx == VARYING_SLOT_VIEWPORT) {
++            outinfo->vs_output_param_offset[idx] = total++;
++        }
++    }
++    outinfo->param_exports = total;
++
++    const unsigned primitive_base =
++        total == 0 && gfx_level >= GFX11 ? 1 : 0;
++    for (unsigned idx = 0; idx < 64 && idx < VARYING_SLOT_MAX; ++idx) {
++        if (!(per_primitive & (UINT64_C(1) << idx)))
++            continue;
++        if (idx >= VARYING_SLOT_VAR0 || idx == VARYING_SLOT_LAYER ||
++            idx == VARYING_SLOT_PRIMITIVE_ID ||
++            idx == VARYING_SLOT_VIEWPORT) {
++            outinfo->vs_output_param_offset[idx] = primitive_base + total++;
++        }
++    }
++    outinfo->prim_param_exports = total - outinfo->param_exports;
++}
++
+ /*
+  * Compute db_shader_control register value for PS.
+  * Ported from the inline computation in radv_precompute_registers_hw_ps().
+@@ -217,6 +273,7 @@ typedef struct {
+     const uint32_t* spirv_data;
+     size_t spirv_size;
+     bool neo;
++    bool direct_descriptor_table;
+ } BuildContext;
+ 
+ /* Build the shader binary into a memory buffer instead of a file. */
+@@ -253,8 +310,10 @@ static PsbcResult buildshaderbinary(
+      * portion of a merged pipeline. For standalone HS/GS compilation,
+      * these args are declared because previous_stage=VERTEX, but the
+      * slots should not be emitted in the HS/GS shader binary.
+-     * The descriptor table (PTR_INDIRECTRESOURCETABLE) is shared by
+-     * all stages and should always be emitted when used. */
++     * A descriptor pointer is shared by all stages and should always be
++     * emitted when used.  The explicit PS4 combined-sampler contract uses a
++     * direct resource-table pointer; legacy callers retain the historical
++     * indirect metadata. */
+     const bool is_vs_family =
+         ctx->stage == MESA_SHADER_VERTEX ||
+         ctx->psbc_stage == PSBC_STAGE_EXPORT ||
+@@ -695,7 +754,9 @@ static PsbcResult buildshaderbinary(
+     }
+     if (ctx->rargs->descriptors[0].used) {
+         const GnmInputUsageSlot s = {
+-            .usagetype = GNM_SHINPUTUSAGE_PTR_INDIRECTRESOURCETABLE,
++            .usagetype = ctx->direct_descriptor_table
++                ? GNM_SHINPUTUSAGE_PTR_RESOURCETABLE
++                : GNM_SHINPUTUSAGE_PTR_INDIRECTRESOURCETABLE,
+             .startregister =
+                 ctx->rargs->ac
+                     .args[ctx->rargs->descriptors[0].arg_index]
+@@ -850,58 +911,68 @@ static PsbcResult buildshaderbinary(
+ 
+ /* === GPU target setup === */
+ 
+-static void setup_ac_info(struct ac_compiler_info* ac_info, enum amd_gfx_level gfxlevel) {
++static void setup_ac_info(struct ac_compiler_info* ac_info,
++                          enum amd_gfx_level gfxlevel,
++                          enum radeon_family family) {
+     ac_info->gfx_level = gfxlevel;
+ 
+     if (gfxlevel >= GFX10_3) {
+         ac_info->max_waves_per_simd = 16;
+-        ac_info->num_physical_sgprs_per_simd = 128 * 16;
+-        ac_info->num_physical_wave64_vgprs_per_simd = 256;
+-        ac_info->num_simd_per_compute_unit = 2;
+-        ac_info->min_sgpr_alloc = 1;
+-        ac_info->max_sgpr_alloc = 128;
+-        ac_info->sgpr_alloc_granularity = 1;
+-        ac_info->min_wave64_vgpr_alloc = 4;
+-        ac_info->max_vgpr_alloc = 256;
+-        ac_info->wave64_vgpr_alloc_granularity = 4;
+-        ac_info->has_packed_math_16bit = true;
+-        ac_info->has_fma_mix = true;
+     } else if (gfxlevel == GFX10) {
+         ac_info->max_waves_per_simd = 20;
+-        ac_info->num_physical_sgprs_per_simd = 128 * 20;
+-        ac_info->num_physical_wave64_vgprs_per_simd = 256;
+-        ac_info->num_simd_per_compute_unit = 2;
+-        ac_info->min_sgpr_alloc = 1;
+-        ac_info->max_sgpr_alloc = 128;
+-        ac_info->sgpr_alloc_granularity = 1;
+-        ac_info->min_wave64_vgpr_alloc = 4;
+-        ac_info->max_vgpr_alloc = 256;
+-        ac_info->wave64_vgpr_alloc_granularity = 4;
+-        ac_info->has_packed_math_16bit = true;
+-    } else if (gfxlevel == GFX8) {
+-        ac_info->max_waves_per_simd = 10;
+-        ac_info->num_physical_sgprs_per_simd = 16 * 10;
+-        ac_info->num_physical_wave64_vgprs_per_simd = 128;
+-        ac_info->num_simd_per_compute_unit = 1;
+-        ac_info->min_sgpr_alloc = 1;
+-        ac_info->max_sgpr_alloc = 16;
+-        ac_info->sgpr_alloc_granularity = 1;
+-        ac_info->min_wave64_vgpr_alloc = 4;
+-        ac_info->max_vgpr_alloc = 128;
+-        ac_info->wave64_vgpr_alloc_granularity = 4;
+     } else {
+-        /* GFX7 */
+         ac_info->max_waves_per_simd = 10;
+-        ac_info->num_physical_sgprs_per_simd = 12 * 10;
+-        ac_info->num_physical_wave64_vgprs_per_simd = 64;
+-        ac_info->num_simd_per_compute_unit = 1;
+-        ac_info->min_sgpr_alloc = 1;
+-        ac_info->max_sgpr_alloc = 12;
+-        ac_info->sgpr_alloc_granularity = 1;
+-        ac_info->min_wave64_vgpr_alloc = 4;
+-        ac_info->max_vgpr_alloc = 64;
+-        ac_info->wave64_vgpr_alloc_granularity = 4;
+     }
++
++    /* Keep these limits byte-for-byte equivalent to Mesa's
++     * ac_fill_compiler_info().  The previous standalone defaults exposed only
++     * 12 SGPRs on GFX7 and 16 on GFX8.  A descriptor-bearing pixel shader then
++     * entered ACO's spill path with no legal temporary register and aborted in
++     * aco_spill.cpp before the first frame. */
++    if (gfxlevel >= GFX10) {
++        ac_info->num_physical_sgprs_per_simd =
++            108 * ac_info->max_waves_per_simd;
++        ac_info->min_sgpr_alloc = 108;
++        ac_info->max_sgpr_alloc = 108;
++        ac_info->sgpr_alloc_granularity = 108;
++    } else if (family == CHIP_TONGA || family == CHIP_ICELAND) {
++        /* SGPRInitBug: these chips must always allocate 96 SGPRs. */
++        ac_info->num_physical_sgprs_per_simd = 800;
++        ac_info->min_sgpr_alloc = 96;
++        ac_info->max_sgpr_alloc = 96;
++        ac_info->sgpr_alloc_granularity = 96;
++    } else if (gfxlevel >= GFX8) {
++        ac_info->num_physical_sgprs_per_simd = 800;
++        ac_info->min_sgpr_alloc = 16;
++        ac_info->max_sgpr_alloc = 102;
++        ac_info->sgpr_alloc_granularity = 16;
++    } else {
++        ac_info->num_physical_sgprs_per_simd = 512;
++        ac_info->min_sgpr_alloc = 8;
++        ac_info->max_sgpr_alloc = 104;
++        ac_info->sgpr_alloc_granularity = 8;
++    }
++
++    ac_info->num_physical_wave64_vgprs_per_simd =
++        gfxlevel >= GFX10 ? 512 : 256;
++    ac_info->wave64_vgpr_alloc_granularity =
++        gfxlevel >= GFX10_3
++            ? ac_info->num_physical_wave64_vgprs_per_simd / 64
++            : 4;
++    ac_info->min_wave64_vgpr_alloc =
++        ac_info->wave64_vgpr_alloc_granularity;
++    ac_info->max_vgpr_alloc = 256;
++    ac_info->num_simd_per_compute_unit = gfxlevel >= GFX10 ? 2 : 4;
++    ac_info->lds_size_per_workgroup = 64 * 1024;
++
++    ac_info->has_fma_mix = gfxlevel >= GFX10;
++    ac_info->has_mad32 = gfxlevel < GFX10_3;
++    ac_info->has_packed_math_16bit = gfxlevel >= GFX9;
++    ac_info->has_fmask = gfxlevel <= GFX10_3;
++    ac_info->has_3d_cube_border_color_mipmap = true;
++    ac_info->has_vtx_format_alpha_adjust_bug =
++        gfxlevel <= GFX8 && family != CHIP_STONEY;
++    ac_info->has_smem_oob_access_bug = gfxlevel <= GFX7;
+ }
+ 
+ static void setup_target(PsbcTarget target,
+@@ -960,12 +1031,28 @@ PsbcResult psbc_compile_shader(
+ 
+     /* Construct ac_compiler_info for the target GPU */
+     struct ac_compiler_info ac_info = {0};
+-    setup_ac_info(&ac_info, gfxlevel);
++    setup_ac_info(&ac_info, gfxlevel, chipfamily);
+ 
+     /* Construct radv_compiler_info */
+     struct radv_compiler_info compiler_info = {0};
+     compiler_info.ac = &ac_info;
+-    compiler_info.hw.address32_hi = 0;
++    compiler_info.hw.address32_hi = opts->ps4_combined_sampler_set0_binding0
++        ? opts->descriptor_address32_hi : 0;
++    if (opts->ps4_combined_sampler_set0_binding0) {
++        /* OpenGNM's combined descriptor is exactly GnmTexture + GnmSampler.
++         * These values are consumed both by SPIR-V translation and by RADV's
++         * descriptor lowering, so leaving them zero folds texture sampling
++         * into an all-zero descriptor. */
++        compiler_info.sampled_image_desc_size = 32;
++        compiler_info.combined_image_sampler_desc_size = 48;
++        compiler_info.combined_image_sampler_offset = 32;
++        compiler_info.sampler_descriptor_size = 16;
++        compiler_info.sampler_descriptor_alignment = 16;
++        compiler_info.image_descriptor_size = 32;
++        compiler_info.image_descriptor_alignment = 16;
++        compiler_info.buffer_descriptor_size = 16;
++        compiler_info.buffer_descriptor_alignment = 16;
++    }
+     compiler_info.key.ge_wave_size = 64;
+     compiler_info.key.ps_wave_size = (gfxlevel >= GFX10_3) ? 32 : 64;
+     compiler_info.key.cs_wave_size = (gfxlevel >= GFX10_3) ? 32 : 64;
+@@ -978,6 +1065,33 @@ PsbcResult psbc_compile_shader(
+     /* Initialize NIR options for all stages */
+     radv_get_nir_options(&compiler_info);
+ 
++    /* Build the one descriptor layout supported by the PS4 runtime.  Keeping
++     * this opt-in preserves standalone PSBC behaviour for all other users. */
++    union {
++        max_align_t alignment;
++        uint8_t bytes[sizeof(struct radv_descriptor_set_layout) +
++                      sizeof(struct radv_descriptor_set_binding_layout)];
++    } fixed_set_storage = {0};
++    struct radv_shader_layout layout = {0};
++    if (opts->ps4_combined_sampler_set0_binding0) {
++        if (mesa_stage != MESA_SHADER_FRAGMENT ||
++            opts->target == PSBC_TARGET_PS5) {
++            psbc_shutdown();
++            return PSBC_RESULT_UNSUPPORTED_STAGE;
++        }
++        struct radv_descriptor_set_layout *set_layout =
++            (struct radv_descriptor_set_layout *)fixed_set_storage.bytes;
++        set_layout->binding_count = 1;
++        set_layout->size = 48;
++        set_layout->binding[0].type =
++            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
++        set_layout->binding[0].array_size = 1;
++        set_layout->binding[0].offset = 0;
++        set_layout->binding[0].size = 48;
++        layout.num_sets = 1;
++        layout.set[0].layout = set_layout;
++    }
++
+     /* Construct radv_shader_stage */
+     struct radv_shader_stage stage = {0};
+     stage.stage = mesa_stage;
+@@ -996,6 +1110,7 @@ PsbcResult psbc_compile_shader(
+     stage.spirv.size = spirv_size;
+     stage.entrypoint = opts->entrypoint ? opts->entrypoint : "main";
+     stage.key.optimisations_disabled = !opts->optimise;
++    stage.layout = layout;
+ 
+     /* SPIR-V to NIR */
+     const struct radv_spirv_to_nir_options spirv_options = {
+@@ -1012,6 +1127,25 @@ PsbcResult psbc_compile_shader(
+         return PSBC_RESULT_COMPILE_NIR;
+     }
+ 
++    /* Fail closed if a caller requests the compact PS4 contract for any
++     * descriptor other than the single non-arrayed combined sampler that the
++     * runtime allocates.  This prevents an out-of-bounds layout lookup from
++     * becoming another valid-looking black shader. */
++    if (opts->ps4_combined_sampler_set0_binding0) {
++        nir_foreach_variable_with_modes(var, nir,
++                                        nir_var_uniform | nir_var_image) {
++            const struct glsl_type *type = glsl_without_array(var->type);
++            if (!glsl_type_is_sampler(type) && !glsl_type_is_image(type))
++                continue;
++            if (var->data.descriptor_set != 0 || var->data.binding != 0 ||
++                type != var->type) {
++                ralloc_free(nir);
++                psbc_shutdown();
++                return PSBC_RESULT_UNSUPPORTED_STAGE;
++            }
++        }
++    }
++
+     /* Optimize NIR */
+     radv_optimize_nir(nir, !opts->optimise);
+ 
+@@ -1022,17 +1156,32 @@ PsbcResult psbc_compile_shader(
+     /* Shader info + args + postprocess */
+     radv_nir_shader_info_init(stage.stage, stage.next_stage, &stage.info);
+ 
+-    struct radv_shader_layout layout = {0};
+     struct radv_graphics_state_key gfx_state = {0};
++    /* Standalone PSBC has no Vulkan vertex-input state at shader compile
++     * time.  Match RADV's graphics-pipeline-library path and compile vertex
++     * shaders with the generic VS prolog ABI.  The runtime fetch shader then
++     * supplies each declared location through the vs_inputs VGPR arguments.
++     * Without this, attributes_valid is empty and radv_nir_lower_vs_inputs()
++     * legally replaces every vertex input with zero. */
++    if (mesa_stage == MESA_SHADER_VERTEX)
++        gfx_state.vs.has_prolog = true;
+     gfx_state.ps.epilog.spi_shader_col_format = V_028714_SPI_SHADER_FP16_ABGR;
+     gfx_state.ps.epilog.color_is_int8 = 0xff;
+     gfx_state.ps.has_epilog = false;
+ 
+     radv_nir_shader_info_pass(
+-        &compiler_info, nir, &layout, &stage.key, &gfx_state,
++        &compiler_info, nir, &stage.layout, &stage.key, &gfx_state,
+         RADV_PIPELINE_GRAPHICS, false, &stage.info
+     );
+ 
++    if (mesa_stage == MESA_SHADER_VERTEX ||
++        mesa_stage == MESA_SHADER_TESS_EVAL ||
++        mesa_stage == MESA_SHADER_GEOMETRY ||
++        mesa_stage == MESA_SHADER_MESH) {
++        setup_standalone_prerast_output_params(
++            gfxlevel, nir, &stage.info);
++    }
++
+     /* Determine previous stage for shader args declaration.
+      * HS/GS need previous_stage=VERTEX so that the merged-pipeline args
+      * (prolog_inputs, vertex_buffers, etc.) are declared for the NIR
+@@ -1117,6 +1266,8 @@ PsbcResult psbc_compile_shader(
+         .spirv_data = spirv,
+         .spirv_size = spirv_size,
+         .neo = neo,
++        .direct_descriptor_table =
++            opts->ps4_combined_sampler_set0_binding0,
+     };
+ 
+     uint8_t* output_data = NULL;
+diff --git a/libpsbc/psbc_compile.h b/libpsbc/psbc_compile.h
+index 000e7e1..037280e 100644
+--- a/libpsbc/psbc_compile.h
++++ b/libpsbc/psbc_compile.h
+@@ -61,6 +61,14 @@ typedef struct {
+     PsbcStage   stage;
+     const char* entrypoint;  /* Default: "main" */
+     bool        optimise;    /* Default: true */
++    /* Standalone PSBC normally has no Vulkan pipeline layout.  Enable this
++     * narrowly-scoped contract when set 0 / binding 0 is exactly one
++     * VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER laid out as a 32-byte image
++     * descriptor followed by a 16-byte sampler descriptor. */
++    bool        ps4_combined_sampler_set0_binding0;
++    /* High dword used by GFX7/8 when reconstructing 64-bit addresses from
++     * the direct one-SGPR descriptor-set pointer. */
++    uint32_t    descriptor_address32_hi;
+ } PsbcCompileOptions;
+ 
+ /* === API === */

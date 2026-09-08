@@ -1,0 +1,14 @@
+--- a/detail/func_common.inl
++++ b/detail/func_common.inl
+@@ -204,7 +204,10 @@
+ 	{
+ 		GLM_FUNC_QUALIFIER static vec<L, T, Q> call(vec<L, T, Q> const& x)
+ 		{
+-			return detail::functor1<vec, L, T, T, Q>::call(round, x);
++			return detail::functor1<vec, L, T, T, Q>::call(
++				+[](T value) -> T {
++					return static_cast<T>(::round(static_cast<double>(value)));
++				}, x);
+ 		}
+ 	};
+ 

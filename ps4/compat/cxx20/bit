@@ -1,0 +1,15 @@
+// libc++ 11's <bit> lacks std::bit_cast (OpenOrbis). See README.md.
+#pragma once
+#include_next <bit>
+#include <type_traits>
+#if !defined(__cpp_lib_bit_cast)
+namespace std {
+template <class To, class From>
+constexpr typename enable_if<sizeof(To) == sizeof(From) && is_trivially_copyable<To>::value &&
+                                 is_trivially_copyable<From>::value, To>::type
+bit_cast(const From& from) noexcept {
+    return __builtin_bit_cast(To, from);
+}
+}
+#define __cpp_lib_bit_cast 201806L
+#endif

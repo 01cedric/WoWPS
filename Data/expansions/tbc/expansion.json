@@ -1,0 +1,13 @@
+{
+  "id": "tbc",
+  "name": "The Burning Crusade",
+  "shortName": "TBC",
+  "version": { "major": 2, "minor": 4, "patch": 3 },
+  "build": 8606,
+  "protocolVersion": 5,
+  "maxLevel": 70,
+  "races": [1, 2, 3, 4, 5, 6, 7, 8, 10, 11],
+  "classes": [1, 2, 3, 4, 5, 7, 8, 9, 11],
+  "assetManifest": "overlay/manifest.json"
+
+}

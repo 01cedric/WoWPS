@@ -1,0 +1,657 @@
+#pragma once
+
+#include "core/coordinates.hpp"
+#include "rendering/terrain_preparation_budget.hpp"
+#ifdef WOWEE_PS4
+#include "rendering/ps4_world_budget.hpp"
+#endif
+#include "pipeline/adt_loader.hpp"
+#include "pipeline/terrain_mesh.hpp"
+#include "pipeline/m2_loader.hpp"
+#include "pipeline/wmo_loader.hpp"
+#include "pipeline/blp_loader.hpp"
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <memory>
+#include <optional>
+#include <thread>
+#include <mutex>
+#include <atomic>
+#include <queue>
+#include <list>
+#include <vector>
+#include <condition_variable>
+#include <deque>
+#include <chrono>
+#include <glm/glm.hpp>
+#include <array>
+
+namespace wowee {
+
+namespace pipeline { class AssetManager; }
+namespace audio { class AmbientSoundManager; }
+namespace rendering { class TerrainRenderer; class Camera; class WaterRenderer; class M2Renderer; class WMORenderer; }
+
+namespace rendering {
+
+/**
+ * Terrain tile coordinates
+ */
+struct TileCoord {
+    int x;
+    int y;
+
+    bool operator==(const TileCoord& other) const {
+        return x == other.x && y == other.y;
+    }
+
+    struct Hash {
+        size_t operator()(const TileCoord& coord) const {
+            return std::hash<int>()(coord.x) ^ (std::hash<int>()(coord.y) << 1);
+        }
+    };
+};
+
+// One MODF placement may be referenced by several ADTs. Its building,
+// liquids, and child doodads have a shared lifetime across those tiles.
+// Tile references and worker preparation pins share the same lifetime.
+// The registry retires unreferenced instances exclusively on the main thread,
+// so cancelling a worker never destroys GPU resources on that worker.
+struct SharedTerrainWmo {
+    uint32_t uniqueId = 0;
+    uint32_t instanceId = 0;
+    bool assemblyComplete = false; // Set only after liquids and all child phases finish.
+    bool retiring = false; // No new references while main-thread renderer cleanup runs.
+    std::vector<uint32_t> doodadInstanceIds;
+};
+
+struct SharedTerrainDoodad {
+    uint32_t uniqueId = 0;
+    uint32_t instanceId = 0;
+};
+using SharedTerrainDoodads = std::unordered_map<uint32_t, std::shared_ptr<SharedTerrainDoodad>>;
+
+/**
+ * Loaded terrain tile data
+ */
+struct TerrainTile {
+    TileCoord coord;
+    pipeline::ADTTerrain terrain;
+    pipeline::TerrainMesh mesh;
+    bool loaded = false;
+    bool objectsIncomplete = false;
+    std::chrono::steady_clock::time_point nextObjectRetry{};
+
+    // Tile bounds in world coordinates
+    float minX, minY, maxX, maxY;
+
+    // Instance IDs for cleanup on unload
+    std::vector<uint32_t> wmoInstanceIds;
+    std::vector<uint32_t> wmoUniqueIds;  // For WMO dedup cleanup on unload
+    std::vector<uint32_t> m2InstanceIds;
+    std::vector<uint32_t> doodadUniqueIds;  // For dedup cleanup on unload
+    std::vector<std::shared_ptr<SharedTerrainWmo>> sharedWmos;
+    SharedTerrainDoodads sharedDoodads;
+};
+
+/**
+ * Pre-processed tile data ready for GPU upload (produced by background thread)
+ */
+struct PendingTile {
+    // First member is destroyed last, after every decoded model/texture.
+    TerrainPreparationBudget::Lease preparationLease;
+    bool objectsOnly = false;
+    bool objectsIncomplete = false;
+    TileCoord coord;
+    pipeline::ADTTerrain terrain;
+    pipeline::TerrainMesh mesh;
+
+    // Pre-loaded M2 data
+    struct M2Ready {
+        uint32_t modelId;
+        pipeline::M2Model model;
+        std::string path;
+    };
+    std::vector<M2Ready> m2Models;
+
+    // M2 instance placement data (references modelId from m2Models)
+    struct M2Placement {
+        uint32_t modelId;
+        uint32_t uniqueId;
+        glm::vec3 position;
+        glm::vec3 rotation;
+        float scale;
+    };
+    std::vector<M2Placement> m2Placements;
+
+    // Live WMO placements pinned before any archive read. This avoids parsing
+    // an entire city again in each adjacent ADT while its old owner can unload.
+    std::vector<std::shared_ptr<SharedTerrainWmo>> sharedWmoPins;
+
+    // Pre-loaded WMO data
+    struct WMOReady {
+        uint32_t modelId;
+        uint32_t uniqueId;
+        pipeline::WMOModel model;
+        glm::vec3 position;
+        glm::vec3 rotation;
+        float scale = 1.0f;
+    };
+    std::vector<WMOReady> wmoModels;
+
+    // WMO doodad M2 models (M2s placed inside WMOs)
+    struct WMODoodadReady {
+        uint32_t modelId;
+        uint32_t parentWmoUniqueId = 0;
+        pipeline::M2Model model;
+        glm::vec3 worldPosition;   // For frustum culling
+        glm::mat4 modelMatrix;     // Pre-computed world transform
+    };
+    std::vector<WMODoodadReady> wmoDoodads;
+
+    // Ambient sound emitters (detected from doodads)
+    struct AmbientEmitter {
+        glm::vec3 position;
+        uint32_t type;  // Maps to AmbientSoundManager::AmbientType
+    };
+    std::vector<AmbientEmitter> ambientEmitters;
+
+    // Pre-loaded terrain texture BLP data (loaded on background thread to avoid
+    // blocking file I/O on the main thread during finalizeTile)
+    std::unordered_map<std::string, pipeline::BLPImage> preloadedTextures;
+
+    // Pre-decoded M2 model textures (decoded on background thread)
+    std::unordered_map<std::string, pipeline::BLPImage> preloadedM2Textures;
+
+    // Pre-decoded WMO textures (decoded on background thread)
+    std::unordered_map<std::string, pipeline::BLPImage> preloadedWMOTextures;
+    // CPU-generated normal/height pixels for those WMO textures. Keeping this
+    // work on terrain workers avoids multi-second main-thread backfill stalls.
+    std::unordered_map<std::string, pipeline::BLPImage> preloadedWMONormalMaps;
+    std::unordered_map<std::string, float> preloadedWMONormalMapVariances;
+};
+
+/**
+ * Phases for incremental tile finalization (one bounded unit of work per call)
+ */
+enum class FinalizationPhase {
+    TERRAIN,        // Upload terrain mesh + textures + water
+    M2_MODELS,      // Upload ONE M2 model per call
+    M2_INSTANCES,   // Create all M2 instances (lightweight struct allocation)
+    WMO_MODELS,     // Upload ONE WMO model per call
+    WMO_INSTANCES,  // Create all WMO instances + load WMO liquids
+    WMO_DOODADS,    // Upload ONE WMO doodad M2 per call
+    WATER,          // Generate water ambient emitters
+    AMBIENT,        // Register ambient emitters + commit tile
+    DONE            // Fully finalized
+};
+
+/**
+ * In-progress tile finalization state - tracks progress across frames
+ */
+struct FinalizingTile {
+    std::shared_ptr<PendingTile> pending;
+    FinalizationPhase phase = FinalizationPhase::TERRAIN;
+
+    // Progress indices within current phase
+    size_t m2ModelIndex     = 0;   // Next M2 model to upload
+    size_t m2InstanceIndex  = 0;   // Next M2 placement to instantiate
+    size_t wmoModelIndex    = 0;   // Next WMO model to upload
+    size_t wmoInstanceIndex = 0;   // Next WMO placement to instantiate
+    size_t wmoDoodadIndex   = 0;   // Next WMO doodad to upload
+    size_t wmoLiquidGroupIndex = 0; // Next liquid group within current WMO instance
+
+    // Incremental terrain upload state (splits TERRAIN phase across frames)
+    bool terrainPreloaded = false;  // True after preloaded textures uploaded
+    // Retains one detached texture across an upload attempt, without copying
+    // its decoded pixels. PS4 drains the prepared texture set incrementally.
+    std::unordered_map<std::string, pipeline::BLPImage> terrainTextureUpload;
+    int terrainChunkNext = 0;       // Next chunk index to upload (0-255, row-major)
+    bool terrainMeshDone = false;   // True when all chunks uploaded
+
+    // Accumulated results (built up across phases)
+    std::vector<uint32_t> m2InstanceIds;
+    std::vector<uint32_t> wmoInstanceIds;
+    std::vector<uint32_t> tileUniqueIds;
+    std::vector<uint32_t> tileWmoUniqueIds;
+    std::unordered_set<uint32_t> uploadedM2ModelIds;
+    std::vector<std::shared_ptr<SharedTerrainWmo>> sharedWmos;
+    SharedTerrainDoodads sharedDoodads;
+};
+
+/**
+ * Terrain manager for multi-tile terrain streaming
+ *
+ * Handles loading and unloading terrain tiles based on camera position
+ */
+class TerrainManager {
+public:
+    TerrainManager();
+    ~TerrainManager();
+
+    /**
+     * Initialize terrain manager
+     * @param assetManager Asset manager for loading files
+     * @param terrainRenderer Terrain renderer for GPU upload
+     */
+    bool initialize(pipeline::AssetManager* assetManager, TerrainRenderer* terrainRenderer);
+
+    /**
+     * Update terrain streaming based on camera position
+     * @param camera Current camera
+     * @param deltaTime Time since last update
+     */
+    void update(const Camera& camera, float deltaTime);
+
+    /**
+     * Set map name
+     * @param mapName Map name (e.g., "Azeroth", "Kalimdor")
+     */
+    void setMapName(const std::string& mapName) { this->mapName = mapName; }
+    [[nodiscard]] bool isCustomZone() const { return isCustomZone_; }
+    void setCustomZone(bool custom) { isCustomZone_ = custom; }
+
+
+    /**
+     * Enqueue a tile for async loading (returns false if previously failed).
+     */
+    bool enqueueTile(int x, int y);
+
+    /**
+     * Unload a tile
+     * @param x Tile X coordinate
+     * @param y Tile Y coordinate
+     */
+    void unloadTile(int x, int y);
+
+    void stopWorkers();  // Stop worker threads without restarting (for shutdown)
+    void softReset();  // Join workers, clear old-map state, restart the pool.
+
+    /**
+     * Precache a set of tiles (for taxi routes, etc.)
+     * @param tiles Vector of (x, y) tile coordinates to preload
+     */
+    void precacheTiles(const std::vector<std::pair<int, int>>& tiles);
+
+    /**
+     * Set streaming parameters
+     */
+    void setLoadRadius(int radius) {
+#ifdef WOWEE_PS4
+        loadRadius = glm::clamp(radius, 1, ps4budget::kLoadRadius);
+#else
+        loadRadius = radius;
+#endif
+    }
+    void setUnloadRadius(int radius) {
+#ifdef WOWEE_PS4
+        unloadRadius = glm::clamp(radius, loadRadius + 1, ps4budget::kUnloadRadius);
+#else
+        unloadRadius = radius;
+#endif
+    }
+    void setStreamingEnabled(bool enabled) { streamingEnabled = enabled; }
+    void setUpdateInterval(float seconds) { updateInterval = seconds; }
+    void setTaxiStreamingMode(bool enabled) { taxiStreamingMode_ = enabled; }
+    void setGroundClutterDensityScale(float scale) { groundClutterDensityScale_ = glm::clamp(scale, 0.0f, 1.5f); }
+    [[nodiscard]] float getGroundClutterDensityScale() const { return groundClutterDensityScale_; }
+
+    /** Density for a ground-effect id, or 0 if it grows nothing or is unknown.
+     *
+     * The one question grass asks of this table. Exposed rather than handing
+     * out the table, so callers cannot start depending on its shape - and so
+     * the grass generator can take a plain callback and stay testable without
+     * a TerrainManager at all.
+     */
+    [[nodiscard]] uint32_t getGroundEffectDensity(uint32_t effectId) const;
+
+    /** The detail doodads a ground effect plants, and their weights.
+     *
+     * Their model names are what says whether a patch of ground is meadow,
+     * scrub or scree, so grass derives its whole appearance from them rather
+     * than from a table of zones. Doodad ids that resolved to no model are
+     * left out, along with their weights.
+     */
+    void getGroundEffectDoodads(uint32_t effectId, std::vector<std::string>& outModels,
+                                std::vector<uint32_t>& outWeights) const;
+    void setWaterRenderer(WaterRenderer* renderer) { waterRenderer = renderer; }
+    void setM2Renderer(M2Renderer* renderer) { m2Renderer = renderer; }
+    void setWMORenderer(WMORenderer* renderer) { wmoRenderer = renderer; }
+    void setAmbientSoundManager(audio::AmbientSoundManager* manager) { ambientSoundManager = manager; }
+
+    /**
+     * Get terrain height at GL coordinates
+     * @param glX GL X position
+     * @param glY GL Y position
+     * @return Height (GL Z) if terrain loaded at that position, empty otherwise
+     */
+    [[nodiscard]] std::optional<float> getHeightAt(float glX, float glY) const;
+
+    /**
+     * True when the MCNK chunk containing this position is cut by terrain holes.
+     * getHeightAt interpolates straight across a hole and reports a surface that
+     * is not there, so anything reasoning about "below the terrain" has to know
+     * the heightfield is fiction here - hole-cut chunks are how cave mouths and
+     * below-ground entrances are opened up. Answered per chunk rather than per
+     * quad: this only ever gates a safety net, and being coarse in the safe
+     * direction beats depending on the hole bit's axis order.
+     */
+    [[nodiscard]] bool chunkHasHoles(float glX, float glY) const;
+
+    /**
+     * True when the single terrain quad under this position is cut away.
+     * chunkHasHoles answers for a whole 33x33-yard chunk, which is far too
+     * coarse to decide whether the player is standing on ground: a chunk
+     * containing one cave mouth would report every yard of it as empty. This
+     * is the per-quad question, matched to the quads the mesh builder skips.
+     */
+    [[nodiscard]] bool isHoleAt(float glX, float glY) const;
+
+    /**
+     * Whether the tile covering a world position has finished streaming in.
+     *
+     * getHeightAt answers nothing both for a hole, which the character should
+     * fall through, and for a tile that has not arrived yet, which it should
+     * not. Physics cannot tell those apart from the height alone, and on a
+     * slow device the second one is what happens at every login: the character
+     * enters the world before the ground does and falls until the server kills
+     * it.
+     */
+    [[nodiscard]] bool isTileLoadedAt(float glX, float glY) const;
+
+    /**
+     * The chunk under a world position, plus the offsets within it that
+     * getHeightAt samples and isHoleAt reads a quad from. Shared so those two
+     * cannot drift: the first copy of this search that was written by hand
+     * omitted the full-scan fallback and answered "no hole" for chunks the
+     * index guess missed.
+     */
+    const pipeline::MapChunk* findChunkAt(float glX, float glY,
+                                          float& fracX, float& fracY,
+                                          const TerrainTile** outTile = nullptr) const;
+
+    /** The tones a terrain texture is painted in, cached by path.
+     *
+     * These textures already depict their region's own grass and foliage -
+     * Elwynn's greens, Westfall's dry golds - so the grass growing out of one
+     * takes its colours from it rather than from a palette of ours. Shadow
+     * and highlight are luminance percentiles of the decoded base level, not
+     * a mean: a mean of a grass texture is the average of its blades and the
+     * earth between them, and grass wants the blades.
+     *
+     * Wrong answers here are a tint, not a hole, so failures return greys.
+     */
+    struct TerrainTextureTones {
+        glm::vec3 shadow{0.35f};
+        glm::vec3 highlight{0.65f};
+    };
+    [[nodiscard]] TerrainTextureTones getTerrainTextureTones(const std::string& texturePath);
+
+    /** Get the precise MCNK AreaTable ID at a world position. */
+    [[nodiscard]] std::optional<uint32_t> getAreaIdAt(float glX, float glY) const;
+
+
+    /**
+     * Get dominant terrain texture name at a GL position.
+     * Returns empty if terrain is not loaded at that position.
+     */
+    [[nodiscard]] std::optional<std::string> getDominantTextureAt(float glX, float glY) const;
+
+    /**
+     * Get statistics
+     */
+    [[nodiscard]] int getLoadedTileCount() const { return static_cast<int>(loadedTiles.size()); }
+    [[nodiscard]] int getPendingTileCount() const {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        return static_cast<int>(pendingTiles.size());
+    }
+    [[nodiscard]] int getReadyQueueCount() const {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        return static_cast<int>(readyQueue.size());
+    }
+    // Blocking preload keeps its bounded scheduling policy. Shared WMO pins
+    // also permit reuse during moving-world streaming without owner races.
+    void setStationaryPreload(bool active) { stationaryPreload_.store(active); }
+    /** Main-thread only: includes payloads already taken out of readyQueue. */
+    [[nodiscard]] bool hasFinalizationWork() const {
+        return !finalizingTiles_.empty() || getReadyQueueCount() > 0;
+    }
+    void collectPendingM2Models(std::unordered_set<uint32_t>& ids) const;
+    /** Total unfinished tiles (worker threads + ready queue + finalizing) */
+    [[nodiscard]] int getRemainingTileCount() const {
+        // Pending membership lasts through worker, ready and finalizing
+        // phases. Counting queues again both races workers and counts twice.
+        return getPendingTileCount();
+    }
+    [[nodiscard]] TileCoord getCurrentTile() const { return currentTile; }
+
+    /** Process one ready tile (for loading screens with per-tile progress updates) */
+    void processOneReadyTile();
+
+    /** Process a bounded batch of ready tiles with async GPU upload (no sync wait) */
+    void processReadyTiles();
+
+    /** Unload a bounded batch of distant tiles queued by streamTiles() (no frame-spike) */
+    void processPendingUnloads();
+
+private:
+    /**
+     * Get tile coordinates from GL world position
+     */
+    [[nodiscard]] TileCoord worldToTile(float worldX, float worldY) const;
+
+    /**
+     * Get world bounds for a tile
+     */
+    bool retainStreamTile(const TileCoord& coord) const;
+    glm::vec3 streamPosition_{0.f};
+    glm::vec3 lastStreamPosition_{1e10f};
+    float streamViewDistance_ = 533.f;
+
+    void getTileBounds(const TileCoord& coord, float& minX, float& minY,
+                       float& maxX, float& maxY) const;
+
+    /**
+     * Build ADT file path
+     */
+    [[nodiscard]] std::string getADTPath(const TileCoord& coord) const;
+
+    /**
+     * Load tiles in radius around current tile
+     */
+    void streamTiles();
+
+    /**
+     * Background thread: prepare tile data (CPU work only, no OpenGL)
+     */
+    std::shared_ptr<PendingTile> prepareTile(int x, int y, bool objectsOnly = false);
+
+    /**
+     * Advance incremental finalization of a tile (one bounded unit of work).
+     * Returns true when the tile is fully finalized (phase == DONE).
+     */
+    bool advanceFinalization(FinalizingTile& ft);
+
+    // PS4 evicts the farthest tile outside the required load ring before
+    // publishing another resident tile. Returns false when all residents are
+    // required; nearby collision is never sacrificed for an optional upload.
+    bool makeResidentRoom(const TileCoord& incoming);
+    bool pinPreparedWmo(PendingTile& pending, uint32_t uniqueId);
+    void completeSharedWmos(FinalizingTile& ft);
+    void collectUnusedSharedWmos(); // Main-thread GPU retirement, including cancelled preparation pins.
+    void retainSharedWmos(FinalizingTile& ft);
+    void releaseSharedWmos(std::vector<std::shared_ptr<SharedTerrainWmo>>& references,
+                          std::vector<uint32_t>& wmoIds,
+                          std::vector<uint32_t>& uniqueIds);
+    void retainSharedDoodads(FinalizingTile& ft);
+    void releaseSharedDoodads(SharedTerrainDoodads& references,
+                             std::vector<uint32_t>& instanceIds, std::vector<uint32_t>& uniqueIds);
+
+    /**
+     * Background worker thread loop
+     */
+    void workerLoop();
+    bool startWorkers();
+
+    void ensureGroundEffectTablesLoaded();
+    void generateGroundClutterPlacements(std::shared_ptr<PendingTile>& pending,
+                                         std::unordered_set<uint32_t>& preparedModelIds);
+
+    pipeline::AssetManager* assetManager = nullptr;
+    TerrainRenderer* terrainRenderer = nullptr;
+    WaterRenderer* waterRenderer = nullptr;
+    M2Renderer* m2Renderer = nullptr;
+    WMORenderer* wmoRenderer = nullptr;
+    audio::AmbientSoundManager* ambientSoundManager = nullptr;
+
+    std::string mapName = "Azeroth";
+
+    // Loaded tiles (keyed by coordinate)
+    std::unordered_map<TileCoord, std::unique_ptr<TerrainTile>, TileCoord::Hash> loadedTiles;
+
+    // Tiles that failed to load (don't retry)
+    std::unordered_map<TileCoord, bool, TileCoord::Hash> failedTiles;
+
+    // Current tile (where camera is)
+    TileCoord currentTile = {.x = -1, .y = -1};
+    TileCoord lastStreamTile = {.x = -1, .y = -1};
+
+    // Streaming parameters
+    bool streamingEnabled = true;
+#ifdef WOWEE_PS4
+    int loadRadius = ps4budget::kLoadRadius;
+    /// Whether streaming is currently held back for memory. Kept so the
+    /// admission decision has hysteresis: without it the cap would flap
+    /// between two values every time a tile was freed and immediately refilled.
+    bool streamHolding_ = false;
+    int unloadRadius = ps4budget::kUnloadRadius;
+#else
+    int loadRadius = 6;      // Load tiles within this radius (13x13 grid = 169 tiles)
+    int unloadRadius = 9;    // Unload tiles beyond this radius
+#endif
+    float updateInterval = 0.033f;  // Check streaming every 33ms (~30 fps)
+    float timeSinceLastUpdate = 0.0f;
+    float proactiveStreamTimer_ = 0.0f;
+    bool taxiStreamingMode_ = false;
+    bool isCustomZone_ = false;
+
+    // Collision data for custom zones (loaded from WOC files)
+    struct CollisionData {
+        struct Triangle { glm::vec3 v0, v1, v2; uint8_t flags; };
+        std::vector<Triangle> triangles;
+        glm::vec3 boundsMin{1e30f}, boundsMax{-1e30f};
+        bool loaded = false;
+    };
+    std::unordered_map<uint64_t, CollisionData> collisionTiles_;
+    [[nodiscard]] uint64_t tileKey(int x, int y) const { return (static_cast<uint64_t>(x) << 32) | static_cast<uint32_t>(y); }
+
+    // Tile size constants (WoW ADT specifications)
+    // A tile (ADT) = 16x16 chunks = 533.33 units across
+    // A chunk = 8x8 vertex quads = 33.33 units across
+    static constexpr float TILE_SIZE = core::coords::TILE_SIZE;
+    static constexpr float CHUNK_SIZE = 33.33333f;          // One chunk = 33.33 units
+
+    // Background loading worker pool
+    std::vector<std::thread> workerThreads;
+    int workerCount = 0;
+    // THREAD-SAFE: guards loadQueue, readyQueue, and pendingTiles.
+    // Workers wait on queueCV; main thread signals when new tiles are enqueued
+    // or when readyQueue drains below maxReadyQueueSize_.
+    mutable std::mutex queueMutex;
+    std::unordered_set<TileCoord, TileCoord::Hash> objectRepairRequests_; // guarded by queueMutex
+    std::condition_variable queueCV;
+    // Declared before queues/caches/finalizing holders, so it outlives their leases.
+    TerrainPreparationBudget preparationBudget_; // admissions guarded by queueMutex
+    std::deque<TileCoord> loadQueue;              // THREAD-SAFE: protected by queueMutex
+    std::queue<std::shared_ptr<PendingTile>> readyQueue; // THREAD-SAFE: protected by queueMutex
+    // Maximum number of prepared-but-not-finalized tiles in readyQueue.
+    // Each prepared tile can hold 100–500 MB of decoded textures in RAM.
+    // Workers sleep when this limit is reached, letting the main thread
+    // finalize (GPU-upload + free) before more tiles are prepared.
+    static constexpr size_t maxReadyQueueSize_ = 3;
+
+    // In-RAM tile cache (LRU) to avoid re-reading from disk
+    struct CachedTile {
+        std::shared_ptr<PendingTile> tile;
+        size_t bytes = 0;
+        std::list<TileCoord>::iterator lruIt;
+    };
+    // THREAD-SAFE: protected by tileCacheMutex_.
+    std::unordered_map<TileCoord, CachedTile, TileCoord::Hash> tileCache_;
+    std::list<TileCoord> tileCacheLru_;
+    size_t tileCacheBudgetBytes_ = 8ull * 1024 * 1024 * 1024; // Dynamic, set at init based on RAM
+    std::mutex tileCacheMutex_;
+
+    std::shared_ptr<PendingTile> getCachedTile(const TileCoord& coord);
+    void logMissingAdtOnce(const std::string& adtPath);
+    std::atomic<bool> workerRunning{false};
+
+    // Track tiles currently queued or being processed to avoid duplicates
+    std::unordered_map<TileCoord, bool, TileCoord::Hash> pendingTiles; // THREAD-SAFE: protected by queueMutex
+    std::unordered_set<std::string> missingAdtWarnings_; // THREAD-SAFE: protected by missingAdtWarningsMutex_
+    std::mutex missingAdtWarningsMutex_;
+
+    // Thread-safe set of M2 model IDs already uploaded to GPU
+    // (checked by workers to skip redundant file I/O + parsing)
+    std::unordered_set<uint32_t> uploadedM2Ids_;
+    std::mutex uploadedM2IdsMutex_;
+
+    // Cross-tile dedup for WMO doodad preparation on background workers
+    // (prevents re-parsing thousands of doodads when same WMO spans multiple tiles)
+    std::unordered_set<uint32_t> preparedWmoUniqueIds_;
+    std::mutex preparedWmoUniqueIdsMutex_;
+
+    // MAIN-THREAD-ONLY: tiles beyond unloadRadius, queued by streamTiles() and drained a
+    // time-budgeted batch at a time by processPendingUnloads() each frame. Unloading them
+    // all synchronously in one call (e.g. ~100 tiles right after a taxi landing snaps the
+    // radius down) caused multi-second main-thread stalls - live-confirmed via "SLOW
+    // terrainManager->update: 1943.71ms" immediately after "Unloaded 103 distant tiles" in
+    // a real flight-landing log.
+    //
+    // This was originally a fixed per-frame *count* cap (8 tiles/frame) rather than a time
+    // budget. That prevented the single-frame catastrophic stall but doesn't scale with
+    // actual frame cost: streamTiles() discovers newly-out-of-range tiles at a roughly
+    // constant real-world rate during a long, fast (taxi) flight, but a count-based drain
+    // processes fewer tiles per *second* whenever frame rate drops for any reason - and once
+    // the backlog (and therefore loadedTiles_/streamTiles()'s own per-call scan cost) starts
+    // growing, frame rate drops further, which throttles the count-based drain further still.
+    // Live-reproduced: a long cross-continent taxi flight (the first sustained-large-radius
+    // tile churn any test had done) snowballed from ~50ms terrain-update frames early on to
+    // 600ms+ later in the same flight. A time budget (matching processReadyTiles()/
+    // advanceFinalization()'s existing pattern) scales unload throughput with whatever time
+    // is actually available each frame instead of a fixed count, so it can't fall behind
+    // real-world churn the way the count cap could.
+    std::deque<TileCoord> pendingUnloadQueue_;
+
+    // MAIN-THREAD-ONLY: checked and modified in processReadyTiles() and unloadDistantTiles(),
+    // both of which run exclusively on the main thread.
+    std::unordered_set<uint32_t> placedDoodadIds;
+
+    // MAIN-THREAD-ONLY: same contract as placedDoodadIds.
+    std::unordered_set<uint32_t> placedWmoIds;
+    // Registry owns one reference; tile/worker references keep instances live.
+    // Access is protected by preparedWmoUniqueIdsMutex_.
+    std::unordered_map<uint32_t, std::shared_ptr<SharedTerrainWmo>> sharedWmos_;
+    std::unordered_map<uint32_t, std::weak_ptr<SharedTerrainDoodad>> sharedDoodads_;
+
+    uint64_t finalizeOverrunCount_ = 0;
+    float finalizeOverrunWorstMs_ = 0;
+    // Tiles currently being incrementally finalized across frames
+    std::deque<FinalizingTile> finalizingTiles_;
+    std::atomic<bool> stationaryPreload_{false};
+
+    struct GroundEffectEntry {
+        std::array<uint32_t, 4> doodadIds{{0, 0, 0, 0}};
+        std::array<uint32_t, 4> weights{{0, 0, 0, 0}};
+        uint32_t density = 0;
+    };
+    bool groundEffectsLoaded_ = false;
+    std::unordered_map<uint32_t, GroundEffectEntry> groundEffectById_; // effectId -> config
+    std::unordered_map<uint32_t, std::string> groundDoodadModelById_;  // doodadId -> model path
+    float groundClutterDensityScale_ = 1.0f;
+    std::unordered_map<std::string, TerrainTextureTones> terrainTextureTones_;
+};
+
+} // namespace rendering
+} // namespace wowee
