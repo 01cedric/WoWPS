@@ -218,6 +218,8 @@ public:
     bool toggleGameMenu();
 private:
     static int command(lua_State* L);
+    static int partyCommand(lua_State* L);
+    static int socialCommand(lua_State* L);
     bool act(const std::string& name, uint32_t id, uint32_t quantity = 0);
     void publish();
     std::string itemIcon(uint32_t displayId) const;
@@ -245,8 +247,11 @@ private:
     std::function<void(uint64_t)> greeting_;
     game::LocalUiChanges changes_;
     uint64_t npc_=0, lastTarget_=0, revision_=0;
-    enum class DialoguePhase { None, Gossip, Detail, Progress, Reward, Merchant };
+    uint64_t partyRevision_=0, partyRosterRevision_=0, socialRevision_=UINT64_MAX;
+    uint32_t partyInvite_=0;
+    enum class DialoguePhase { None, Gossip, Detail, Progress, Reward, Merchant, Bank, Trainer, Mail };
     DialoguePhase phase_=DialoguePhase::None;
+    uint32_t craftSkill_=0;
     uint32_t selected_=0, pendingQuest_=0;
     bool pendingTurnIn_=false;
     float missingNpcSeconds_=0, pendingQuestSeconds_=0, merchantRefreshSeconds_=0;
@@ -257,6 +262,7 @@ private:
     /// so the synthetic mouse must not also hold a button down at the same
     /// control - that pairing is the accidental drag this contract replaces.
     bool padCrossHandled_=false;
+    bool targetShouldersReleased_=false;
     bool enabled_=false, installed_=false, closing_=false;
     double snapshotTime_=0;
     uint32_t focus_=0;

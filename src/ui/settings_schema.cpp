@@ -1,6 +1,7 @@
 #include "ui/settings_schema.hpp"
 
 #include "ui/graphics_defaults.hpp"
+#include "ui/interface_layout.hpp"
 
 namespace wowee {
 namespace ui {
@@ -256,20 +257,12 @@ constexpr SettingDesc kSchema[] = {
     {"windowuiscale", "Window scale", SettingKind::Float, 0.75f, 3.0f, 0.05f, "Interface", "",
      "Fonts, controls and spacing in this client's own windows. Not the\n"
      "interface's scale, which is in the game's own Video panel.", "", 1},
-    // A television magnifies the picture and loses whatever falls outside its
-    // panel, so the corners are where a set clips the action bar, the chat
-    // frame and the minimap. The original client only ever ran on monitors,
-    // which is why there is no shipped setting to inherit and why the default
-    // is zero on a desktop.
+    // Use the same default for startup and Reset to Defaults. Users whose
+    // television crops the signal can explicitly add an inset.
     {"safearea", "TV safe area", SettingKind::Int, 0, 10, 1, "Interface", "",
      "Keeps the interface this far in from each screen edge, as a percentage.\n"
-     "Televisions crop the outside of the picture by a few percent, which is\n"
-     "where the action bar and minimap sit. Zero on a monitor.", "",
-#if defined(WOWEE_PS4)
-     4},
-#else
-     0},
-#endif
+     "Increase this if your television crops the edges of the picture.\n"
+     "Zero uses the full screen.", "", kDefaultSafeAreaPercent},
     {"latencymeter", "Latency meter", SettingKind::Bool, 0, 0, 0, "Interface", "",
      "The round trip to the server, beside the minimap.", "", 1},
     {"micromenu", "Micro menu buttons", SettingKind::Bool, 0, 0, 0, "Interface", "",

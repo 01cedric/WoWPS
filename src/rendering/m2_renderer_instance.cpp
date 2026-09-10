@@ -213,6 +213,7 @@ void M2Renderer::removeInstance(uint32_t instanceId) {
     destroyInstanceBones(inst, /*defer=*/true);
 
     // Swap-remove: move last element to the hole and pop_back to avoid O(n) shift
+    shadowInstanceOrder_.invalidate();
     instanceIndexById.erase(instanceId);
     if (idx < instances.size() - 1) {
         uint32_t movedId = instances.back().id;
@@ -278,6 +279,7 @@ void M2Renderer::removeInstances(const std::vector<uint32_t>& instanceIds) {
             destroyInstanceBones(inst, /*defer=*/true);
         }
     }
+    shadowInstanceOrder_.invalidate();
     instances.erase(std::remove_if(instances.begin(), instances.end(),
                    [&toRemove](const M2Instance& inst) {
                        return toRemove.find(inst.id) != toRemove.end();
@@ -373,6 +375,8 @@ void M2Renderer::clear() {
     }
     models.clear();
     pinnedModelIds_.clear();
+    shadowInstanceOrder_.release();
+    std::vector<const M2Instance*>{}.swap(shadowCasters_);
     instances.clear();
     spatialGrid.clear();
     instanceIndexById.clear();
@@ -452,6 +456,8 @@ void M2Renderer::clear() {
 void M2Renderer::clearInstances() {
     if (vkCtx_) vkDeviceWaitIdle(vkCtx_->getDevice());
     for (auto& inst : instances) destroyInstanceBones(inst);
+    shadowInstanceOrder_.release();
+    shadowCasters_.clear();
     instances.clear();
     spatialGrid.clear();
     instanceIndexById.clear();

@@ -89,10 +89,14 @@ struct PortraitModel {
 [[nodiscard]] inline PortraitFraming portraitFraming(const PortraitModel& m) {
     PortraitFraming out;
     const auto finite = [](float v) { return v == v && v > -1e18f && v < 1e18f; };
-    const float height = (m.boundMaxZ - m.boundMinZ) > 0.1f ? (m.boundMaxZ - m.boundMinZ) : 0.1f;
+    const bool validBounds=finite(m.boundMinZ) && finite(m.boundMaxZ) &&
+        finite(m.boundMaxZ-m.boundMinZ) && m.boundMaxZ>m.boundMinZ;
+    const float minZ=validBounds?m.boundMinZ:0.f;
+    const float maxZ=validBounds?m.boundMaxZ:2.f;
+    const float height=(maxZ-minZ)>0.1f?(maxZ-minZ):0.1f;
 
     if (m.hasPortraitCamera && finite(m.cameraTargetZ) && finite(m.cameraDistance) &&
-        finite(m.cameraFovRadians) && m.cameraDistance > 0.0f && m.cameraFovRadians > 0.0f) {
+        finite(m.cameraFovRadians) && m.cameraDistance > 0.0f && m.cameraFovRadians > 0.001f && m.cameraFovRadians < 3.14059265f) {
         out.source = PortraitFraming::Source::PortraitCamera;
         out.focusZ = m.cameraTargetZ;
         out.distance = m.cameraDistance;
@@ -106,7 +110,7 @@ struct PortraitModel {
         return out;
     }
 
-    if (finite(m.headZ) && m.headZ >= 0.0f && m.headZ < m.boundMaxZ) {
+    if (finite(m.headZ) && validBounds && m.headZ >= minZ && m.headZ < maxZ) {
         out.source = PortraitFraming::Source::HeadAttachment;
         // What stands above the helm pivot is the head - and, on a character
         // model, whatever else the file carries up there. The bounds are taken
@@ -122,8 +126,8 @@ struct PortraitModel {
         // is the right way for a fallback to be wrong - the face stays centred
         // and stays in the picture, where a fraction of the box is not aimed at
         // it at all.
-        const float above = m.boundMaxZ - m.headZ;
-        const float cap = (m.headZ - m.boundMinZ) * 0.30f;
+        const float above = maxZ - m.headZ;
+        const float cap = (m.headZ - minZ) * 0.30f;
         const float head = (cap > 0.0f && above > cap) ? cap : above;
         out.focusZ = m.headZ + head * 0.35f;
         const float window = head * 2.0f;
@@ -132,13 +136,13 @@ struct PortraitModel {
         // offset to the camera's distance from the model origin so its actual
         // distance from the face still fits the requested window.
         const float halfFov = out.fovDegrees * 0.5f / 57.2957795f;
-        out.distance = window * 0.5f / std::tan(halfFov) + m.headForward;
+        out.distance = window * 0.5f / std::tan(halfFov) + (finite(m.headForward)?m.headForward:0.f);
         if (!(out.distance > 0.35f)) out.distance = 0.35f;
         return out;
     }
 
     out.source = PortraitFraming::Source::Bounds;
-    out.focusZ = m.boundMinZ + height * 0.82f;
+    out.focusZ = minZ + height * 0.82f;
     out.distance = height * 0.70f > 1.15f ? height * 0.70f : 1.15f;
     return out;
 }

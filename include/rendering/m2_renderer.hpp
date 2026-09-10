@@ -4,6 +4,7 @@
 #include "rendering/spatial_grid.hpp"
 #include "rendering/shadow_params.hpp"
 #include "rendering/shadow_ranges.hpp"
+#include "rendering/shadow_instances.hpp"
 #include "rendering/shadow_texture_cache.hpp"
 
 #include "pipeline/m2_loader.hpp"
@@ -896,6 +897,7 @@ private:
     // Shadow-pass texture descriptor cache (reused each frame, cleared via pool reset)
     ShadowTextureCache shadowTextureCache_;
     uint32_t shadowPerfFrames_ = 0;
+    ShadowInstanceOrder shadowInstanceOrder_;
     std::vector<const M2Instance*> shadowCasters_;
 
     // Ribbon draw-call list (reused each frame)

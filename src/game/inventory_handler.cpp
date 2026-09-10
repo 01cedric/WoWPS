@@ -1,4 +1,5 @@
 #include "game/inventory_handler.hpp"
+#include "game/local_realm.hpp"
 #include "addons/lua_api_registrations.hpp"
 #include "game/spell_classification.hpp"
 #include "game/item_text.hpp"
@@ -2858,7 +2859,11 @@ void InventoryHandler::acceptSockets() {
 // Mail
 // ============================================================
 
+#include "local_mail_inventory.inc"
+
 void InventoryHandler::openMailbox(uint64_t guid) {
+    if(auto* realm=owner_.localServiceRealm();realm && (!realm->mailAccess(guid) || localMailPending_))return;
+    localMailRevision_=UINT64_MAX;
     mailboxGuid_ = guid;
     mailboxOpen_ = true;
     // Through the setter, which is the only thing that says so. Assigning the
@@ -2892,6 +2897,7 @@ void InventoryHandler::selectDefaultStationery() {
 }
 
 void InventoryHandler::closeMailbox() {
+    localMailLootQueue_.clear();
     mailboxOpen_ = false;
     mailboxGuid_ = 0;
     showMailCompose_ = false;
@@ -2900,6 +2906,7 @@ void InventoryHandler::closeMailbox() {
 }
 
 void InventoryHandler::refreshMailList() {
+    if(owner_.localServiceRealm()){pumpLocalMail();return;}
     if (!mailboxOpen_ || mailboxGuid_ == 0) return;
     if (owner_.getState() != WorldState::IN_WORLD || !owner_.getSocket()) return;
     auto packet = GetMailListPacket::build(mailboxGuid_);
@@ -2943,6 +2950,20 @@ void InventoryHandler::refuseSend(const std::string& reason, const char* logLine
 
 void InventoryHandler::sendMail(const std::string& recipient, const std::string& subject,
                                 const std::string& body, uint64_t money, uint64_t cod) {
+    if(auto* realm=owner_.localServiceRealm()){
+        if(localMailPending_)return;
+        if(!mailboxOpen_ || money>1000000000 || cod>1000000000){refuseSend("Invalid mailbox or amount.","local mail validation");return;}
+        std::vector<LocalTradeItem> attachments;
+        for(const auto& a:mailAttachments_)if(a.occupied()){
+            if(a.item.stackCount>65535 || a.srcSlot<Inventory::NUM_EQUIP_SLOTS){refuseSend("Attachment changed.","local attachment");return;}
+            attachments.push_back({a.item.itemId,uint16_t(a.item.stackCount),uint16_t(a.item.stackCount),uint8_t(a.srcSlot-Inventory::NUM_EQUIP_SLOTS)});
+        }
+        localMailResult_=realm->mailResultRevision();localMailPending_=uint8_t(LocalAction::MailSend);
+        if(!realm->sendMail(mailboxGuid_,recipient,subject,body,uint32_t(money),uint32_t(cod),attachments) && realm->mailResultRevision()==localMailResult_){
+            localMailPending_=0;refuseSend("Letter could not be queued. Check text length and recipient.","local mail queue");
+        }
+        pumpLocalMail();return;
+    }
     if (owner_.getState() != WorldState::IN_WORLD) {
         refuseSend("Cannot send mail right now.", "not in world");
         return;
@@ -3019,6 +3040,16 @@ void InventoryHandler::noteMailAttachRefundable(int attachIndex) {
 }
 
 bool InventoryHandler::attachItemFromBackpack(int backpackIndex) {
+    if(owner_.localServiceRealm()){
+        if(!mailboxOpen_ || localMailPending_)return false;
+        uint64_t guid=0;const auto* slot=owner_.localBagSlot(backpackIndex,&guid);if(!slot || slot->empty() || !guid)return false;
+        for(const auto& a:mailAttachments_)if(a.itemGuid==guid)return false;
+        for(auto& a:mailAttachments_)if(!a.occupied()){
+            a.itemGuid=guid;a.item=slot->item;a.srcBag=0xFF;a.srcSlot=uint8_t(Inventory::NUM_EQUIP_SLOTS+backpackIndex);
+            notifyMailComposeChanged();return true;
+        }
+        return false;
+    }
     if (backpackIndex < 0 || backpackIndex >= owner_.inventoryRef().getBackpackSize()) return false;
     const auto& slot = owner_.inventoryRef().getBackpackSlot(backpackIndex);
     if (slot.empty()) return false;
@@ -3039,6 +3070,7 @@ bool InventoryHandler::attachItemFromBackpack(int backpackIndex) {
 }
 
 bool InventoryHandler::attachItemFromBag(int bagIndex, int slotIndex) {
+    if(owner_.localServiceRealm())return false;
     if (bagIndex < 0 || bagIndex >= owner_.inventoryRef().NUM_BAG_SLOTS) return false;
     if (slotIndex < 0 || slotIndex >= owner_.inventoryRef().getBagSize(bagIndex)) return false;
     const auto& slot = owner_.inventoryRef().getBagSlot(bagIndex, slotIndex);
@@ -3065,6 +3097,7 @@ bool InventoryHandler::attachItemFromBag(int bagIndex, int slotIndex) {
 }
 
 bool InventoryHandler::detachMailAttachment(int attachIndex) {
+    if(owner_.localServiceRealm() && localMailPending_)return false;
     if (attachIndex < 0 || attachIndex >= MAIL_MAX_ATTACHMENTS) return false;
     mailAttachments_[attachIndex] = MailAttachSlot{};
     notifyMailComposeChanged();
@@ -3072,6 +3105,7 @@ bool InventoryHandler::detachMailAttachment(int attachIndex) {
 }
 
 void InventoryHandler::clearMailAttachments() {
+    if(owner_.localServiceRealm() && localMailPending_)return;
     for (auto& a : mailAttachments_) a = MailAttachSlot{};
     notifyMailComposeChanged();
 }
@@ -3092,18 +3126,21 @@ int InventoryHandler::getMailAttachmentCount() const {
 }
 
 void InventoryHandler::mailTakeMoney(uint32_t mailId) {
+    if(owner_.localServiceRealm()){localMailAction(uint8_t(LocalAction::MailTakeMoney),mailId);return;}
     if (owner_.getState() != WorldState::IN_WORLD || !owner_.getSocket() || mailboxGuid_ == 0) return;
     auto packet = MailTakeMoneyPacket::build(mailboxGuid_, mailId);
     owner_.getSocket()->send(packet);
 }
 
 void InventoryHandler::mailTakeItem(uint32_t mailId, uint32_t itemGuidLow) {
+    if(owner_.localServiceRealm()){if(itemGuidLow)localMailAction(uint8_t(LocalAction::MailTakeItem),mailId,itemGuidLow-1);return;}
     if (owner_.getState() != WorldState::IN_WORLD || !owner_.getSocket() || mailboxGuid_ == 0) return;
     auto packet = MailTakeItemPacket::build(mailboxGuid_, mailId, itemGuidLow);
     owner_.getSocket()->send(packet);
 }
 
 void InventoryHandler::mailReturnToSender(uint32_t mailId) {
+    if(owner_.localServiceRealm()){localMailAction(uint8_t(LocalAction::MailReturn),mailId);return;}
     if (owner_.getState() != WorldState::IN_WORLD || !owner_.getSocket() || mailboxGuid_ == 0) return;
     auto packet = MailReturnToSenderPacket::build(mailboxGuid_, mailId);
     owner_.getSocket()->send(packet);
@@ -3115,6 +3152,7 @@ void InventoryHandler::mailReturnToSender(uint32_t mailId) {
 }
 
 void InventoryHandler::mailDelete(uint32_t mailId) {
+    if(owner_.localServiceRealm()){localMailAction(uint8_t(LocalAction::MailDelete),mailId);return;}
     if (owner_.getState() != WorldState::IN_WORLD || !owner_.getSocket() || mailboxGuid_ == 0) return;
     auto packet = MailDeletePacket::build(mailboxGuid_, mailId, 0);
     owner_.getSocket()->send(packet);
@@ -3126,6 +3164,7 @@ void InventoryHandler::mailDelete(uint32_t mailId) {
 }
 
 void InventoryHandler::mailMarkAsRead(uint32_t mailId) {
+    if(owner_.localServiceRealm()){localMailAction(uint8_t(LocalAction::MailRead),mailId);return;}
     if (owner_.getState() != WorldState::IN_WORLD || !owner_.getSocket() || mailboxGuid_ == 0) return;
     auto packet = MailMarkAsReadPacket::build(mailboxGuid_, mailId);
     owner_.getSocket()->send(packet);

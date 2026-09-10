@@ -2071,8 +2071,8 @@ void GameHandler::registerRemainingOpcodes() {
         }
         uint8_t idx  = packet.readUInt8();
         uint8_t type = packet.readUInt8();
-        if (idx < 6) {
-            playerRunes_[idx].type = static_cast<RuneType>(type & 0x3);
+        if (idx < 6 && type < 4) {
+            playerRunes_[idx].type = static_cast<RuneType>(type);
             // Stored and never announced: the rune bar redraws a rune on this
             // event and on nothing else, so a rune converted to Death kept the
             // colour it was drawn with at login.
@@ -2099,15 +2099,21 @@ void GameHandler::registerRemainingOpcodes() {
             return;
         }
         const uint32_t count = packet.readUInt32();
-        for (uint32_t i = 0; i < count && i < playerRunes_.size(); ++i) {
-            if (!packet.hasRemaining(2)) break;
-            const uint8_t type    = packet.readUInt8();
-            const uint8_t elapsed = packet.readUInt8();
-            playerRunes_[i].type = static_cast<RuneType>(type & 0x3);
-            playerRunes_[i].readyFraction = elapsed / 255.0f;
-            playerRunes_[i].ready = (elapsed >= 255);
-            fireRuneUpdate(i);
+        if (count>playerRunes_.size() || !packet.hasRemaining(count*2)) {
+            LOG_WARNING("[RUNE_UI] rejected incomplete/oversized resync count=",count);
+            packet.skipAll();return;
         }
+        auto next=playerRunes_;
+        for (uint32_t i=0;i<count;++i) {
+            const uint8_t type=packet.readUInt8(),elapsed=packet.readUInt8();
+            if (type>=4) {LOG_WARNING("[RUNE_UI] rejected resync type=",int(type));packet.skipAll();return;}
+            next[i].type=static_cast<RuneType>(type);
+            next[i].readyFraction=elapsed/255.0f;
+            next[i].ready=(elapsed==255);
+        }
+        // Publish all entries before callbacks can query another rune slot.
+        playerRunes_=next;
+        for (uint32_t i=0;i<count;++i) fireRuneUpdate(i);
         packet.skipAll();
     };
     // uint32 runeMask (bit i=1 → rune i just became ready)

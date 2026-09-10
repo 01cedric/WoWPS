@@ -6,6 +6,10 @@
 #include <string>
 #include <vector>
 #include "game/local_bots.hpp"
+#include "game/local_party.hpp"
+#include "game/local_chat.hpp"
+#include "game/local_social.hpp"
+#include "game/local_mail.hpp"
 #include "game/local_gameplay.hpp"
 
 namespace wowee::game {
@@ -60,9 +64,6 @@ public:
     /// characters nobody logged in.
     void setPlayerbots(bool enabled, size_t count = 6);
     [[nodiscard]] bool playerbotsEnabled() const;
-    // Host configuration; guests receive authoritative listing prices.
-    void setAuctionPriceMultiplier(uint32_t multiplier);
-    [[nodiscard]] uint32_t auctionPriceMultiplier() const;
     /// The auction house, as the interface needs to read it.
     const std::vector<LocalAuction>& auctions() const;
     /// Buy, bid and list. Host-authoritative like every other action here.
@@ -73,6 +74,15 @@ public:
     bool listAuctionStacks(uint32_t itemId, uint16_t count, uint16_t stacks,
                            uint32_t bid, uint32_t buyout, uint32_t minutes, uint64_t npcGuid = 0);
     bool cancelAuction(uint32_t auctionId, uint64_t npcGuid = 0);
+    std::vector<LocalMail> inbox() const;
+    uint64_t mailRevision() const;
+    uint64_t mailResultRevision() const;
+    bool mailResultSuccess() const;
+    bool mailAccess(uint64_t service) const;
+    void requestMail(uint64_t service);
+    bool sendMail(uint64_t service,const std::string& recipient,const std::string& subject,
+                  const std::string& body,uint32_t money,uint32_t cod,const std::vector<LocalTradeItem>& items);
+    bool mailAction(LocalAction action,uint64_t service,uint32_t mail,uint32_t slot=0);
     bool startSinglePlayer(const std::string& saveDirectory, const std::string& name);
     bool startHost(const std::string& saveDirectory, const std::string& name,
                    uint16_t port = DefaultPort, size_t playerLimit = DefaultPlayers);
@@ -105,11 +115,12 @@ public:
     bool attack(uint64_t targetGuid);
     bool stopAttack();
     bool castSpell(uint32_t spellId, uint64_t targetGuid);
+    bool cancelStatAura(uint32_t spellId);
     bool cancelCast();
     // Complete or skip this owner's first-world intro; persists with the hero.
     bool completeIntro();
     bool acceptQuest(uint32_t questId, uint64_t npcGuid);
-    bool turnInQuest(uint32_t questId, uint64_t npcGuid);
+    bool turnInQuest(uint32_t questId, uint64_t npcGuid, uint32_t rewardChoice = 0);
     bool abandonQuest(uint32_t questId);
     bool loot(uint64_t npcGuid);
     bool equipItem(uint32_t itemId, uint8_t slot = 255);
@@ -120,6 +131,25 @@ public:
     bool interact(uint64_t npcGuid);
     bool enterPortal(uint32_t portalId, bool privateInstance = false);
     bool leaveInstance();
+    // Local parties are session membership, not saved instance/loot/XP rules.
+    bool partyCommand(LocalPartyAction action, uint64_t target = 0, uint32_t inviteId = 0);
+    uint64_t partyPlayerByName(const std::string& name) const;
+    const LocalPartyView& partyView() const;
+    uint64_t partyRevision() const;
+    uint64_t partyRosterRevision() const;
+    bool sendChat(LocalChatChannel channel, const std::string& text, const std::string& target = "");
+    std::vector<LocalChatLine> takeChatMessages();
+    bool startReadyCheck();
+    bool answerReadyCheck(uint32_t check, bool ready);
+    const LocalReadyCheck& readyCheck() const;
+    double readyTimeLeft() const;
+    const LocalTrade& tradeView() const;
+    uint64_t socialRevision() const;
+    bool tradeAction(LocalAction action,uint32_t trade,uint32_t revision,uint64_t value=0,
+                     uint32_t bag=0,uint32_t slot=0,uint32_t expectedItem=0,uint16_t expectedCount=0);
+    bool changeIgnore(const std::string& name,bool add);
+    const std::vector<std::string>& ignoredNames() const;
+    bool isIgnored(const std::string& name) const;
     std::vector<LocalRealmPortal> availablePortals() const;
 
     // --- Instances ----------------------------------------------------------
@@ -139,6 +169,7 @@ public:
     const std::vector<LocalSkillLine>& skillLines() const;
     /// The merchant, blacksmith, trainer or innkeeper the player is standing
     /// at, or nullptr. Each is the same eight-yard reach as any conversation.
+    const LocalRealmNpc* nearbyBanker(uint64_t npcGuid = 0) const;
     const LocalRealmNpc* nearbyVendor(uint64_t npcGuid = 0) const;
     const LocalRealmNpc* nearbyRepairer(uint64_t npcGuid = 0) const;
     const LocalRealmNpc* nearbyClassTrainer() const;
@@ -148,19 +179,39 @@ public:
     /// from the item's own catalog value; see local_services.hpp.
     std::vector<uint32_t> vendorStock(uint64_t npcGuid = 0) const;
     int32_t vendorRemaining(uint32_t itemId, uint64_t npcGuid = 0) const;
+    // Select/refresh one merchant's authority-owned stock and owner buyback.
+    // Passing zero closes the subscription; no background all-world stock feed.
+    void refreshMerchant(uint64_t npcGuid);
+    std::vector<LocalMerchantBuyback> vendorBuyback(uint64_t npcGuid = 0) const;
+    bool buybackItem(uint32_t entryId, uint64_t npcGuid = 0);
     uint32_t vendorBuyPrice(uint32_t itemId, uint16_t count) const;
     uint32_t vendorSellPrice(uint32_t itemId, uint16_t count) const;
     /// Abilities the nearby class trainer can teach this character right now.
-    std::vector<uint32_t> trainableSpells() const;
+    std::vector<uint32_t> trainableSpells(uint64_t npcGuid = 0) const;
     /// Host-authoritative like every other action here: each sends a command
     /// and the authority finds the NPC the player is standing at.
     bool sellToVendor(uint32_t itemId, uint16_t count, uint64_t npcGuid = 0);
     bool buyFromVendor(uint32_t itemId, uint16_t count, uint64_t npcGuid = 0);
     bool repairEquipment(uint64_t npcGuid = 0);
-    bool learnSpell(uint32_t spellId);
-    bool learnProfession(uint32_t skillId);
-    bool trainProfessionRank(uint32_t skillId);
-    bool setHome();
+    bool learnSpell(uint32_t spellId, uint64_t npcGuid = 0);
+    bool learnTalent(uint32_t id,uint32_t rank);
+    bool resetTalents();
+    bool trainRiding(uint16_t rank, uint64_t npcGuid);
+    bool discoverTaxi(uint64_t npcGuid);
+    bool depositBankItem(uint32_t itemId, uint16_t count, uint64_t npcGuid);
+    bool depositBankFromSlot(uint32_t bagSlot, uint16_t count, LocalItemStack expectedSource, uint64_t npcGuid);
+    bool depositBankSlot(uint32_t bagSlot, uint32_t bankSlot, uint16_t count,
+                         LocalItemStack expectedSource, LocalItemStack expectedDestination, uint64_t npcGuid);
+    bool withdrawBankItem(uint32_t slot, uint16_t count, uint32_t expectedItem, uint64_t npcGuid, uint16_t expectedCount = 0);
+    bool moveBankItem(uint32_t sourceSlot, uint32_t destinationSlot, uint16_t count,
+                      LocalItemStack expectedSource, LocalItemStack expectedDestination, uint64_t npcGuid);
+    bool craftRecipe(uint32_t recipeId, uint32_t count = 1);
+    bool moveBackpackItem(uint32_t source,uint32_t destination,uint16_t count,LocalItemStack expectedSource,LocalItemStack expectedDestination,uint64_t banker=0,bool fromBank=false);
+    bool unlearnProfession(uint32_t skillId);
+    bool learnRecipe(uint32_t recipeId, uint64_t npcGuid = 0);
+    bool learnProfession(uint32_t skillId, uint64_t npcGuid = 0);
+    bool trainProfessionRank(uint32_t skillId, uint64_t npcGuid = 0);
+    bool setHome(uint64_t npcGuid = 0);
     bool returnHome();
 
     // --- Travel -----------------------------------------------------------

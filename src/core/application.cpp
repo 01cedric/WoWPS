@@ -1544,8 +1544,17 @@ void Application::run() {
                         renderer->getCamera()->setAspectRatio(static_cast<float>(newWidth) / newHeight);
                     }
                     // Notify addons so UI layouts can adapt to the new size
-                    if (addonManager_)
+                    if (addonManager_) {
+                        // The event handlers query GetScreenWidth/Height and
+                        // UIParent immediately (bag columns in particular).
+                        // Publish the new geometry before they reposition.
+                        if (newWidth > 0 && newHeight > 0) {
+                            if (auto* engine = addonManager_->getLuaEngine())
+                                engine->widgets().layout(static_cast<float>(newWidth),
+                                                         static_cast<float>(newHeight));
+                        }
                         addonManager_->fireEvent("DISPLAY_SIZE_CHANGED");
+                    }
                 }
                 // Sound in Background. Off in the real client and off here:
                 // losing the window silences the client rather than playing
@@ -4213,6 +4222,7 @@ void Application::update(float deltaTime) {
         }
     }
     // Local sessions are started here, after the menu render has finished.
+    updateCheckpoint = "local authority/snapshots";
     {
         const auto start = std::chrono::steady_clock::now();
         updateLocalRealm(deltaTime);
@@ -4288,34 +4298,30 @@ void Application::update(float deltaTime) {
     updateCheckpoint = "renderer update";
     if (renderer && state == AppState::IN_GAME) {
         auto rendererUpdateStart = std::chrono::steady_clock::now();
+        bool rendererUpdateSucceeded = false;
         try {
             renderer->update(deltaTime);
+            rendererUpdateSucceeded = true;
         } catch (const std::bad_alloc& e) {
-            // A frame that could not be built is a dropped frame, not a dead
-            // client. Everything renderer->update does is per-frame work the
-            // next frame redoes from scratch, so trimming what is optional and
-            // carrying on is strictly better than taking the session with it -
-            // and two of the three crash logs from the console ended exactly
-            // here, with the throw escaping past every path that could have
-            // degraded instead.
-            //
-            // Not forever, though. A client that cannot build any frame at all
-            // is not playing, and spinning silently would hide that; after a
-            // run of them the throw goes through and the session ends with a
-            // reason rather than a hang.
-            LOG_ERROR("OOM during Application::update stage 'renderer->update': ", e.what());
+            // Reclaim disposable cache and finish the unwound upload batch.
+            // Persistent streaming work keeps owned partial state for retry;
+            // it must not be submitted or retired a second time. Diagnostics
+            // here must not allocate from the heap that just failed.
+            std::fprintf(stderr, "[RENDERER_MEMORY] renderer update allocation failure: %s\n", e.what());
             if (assetManager) assetManager->trimFileCache();
+            if (renderer->getVkContext())
+                renderer->getVkContext()->finishInterruptedUploadBatch();
             constexpr unsigned kGiveUpAfterConsecutiveOomFrames = 30;
             if (++rendererUpdateOomFrames_ >= kGiveUpAfterConsecutiveOomFrames) {
-                LOG_ERROR("renderer->update has been out of memory for ",
-                          rendererUpdateOomFrames_, " frames; giving up");
+                std::fprintf(stderr, "[RENDERER_MEMORY] giving up after %u consecutive allocation failures\n",
+                             rendererUpdateOomFrames_);
                 throw;
             }
         } catch (const std::exception& e) {
             LOG_ERROR("Exception during Application::update stage 'renderer->update': ", e.what());
             throw;
         }
-        if (rendererUpdateOomFrames_) {
+        if (rendererUpdateSucceeded && rendererUpdateOomFrames_) {
             LOG_WARNING("renderer->update recovered after ", rendererUpdateOomFrames_,
                         " frame(s) out of memory");
             rendererUpdateOomFrames_ = 0;
@@ -4417,7 +4423,12 @@ void Application::render() {
         }
 #endif
         auto stageStart = std::chrono::steady_clock::now();
-        fn();
+        try { fn(); }
+        catch (const std::bad_alloc&) {
+            std::fprintf(stderr,"[RENDER_OOM] stage=%s state=%d\n",stageName,static_cast<int>(state));
+            std::fflush(stderr);
+            throw;
+        }
 #ifdef WOWEE_PS4
         if (ps4TraceStages) {
             char stage[96];

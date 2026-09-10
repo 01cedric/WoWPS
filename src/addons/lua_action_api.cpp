@@ -580,7 +580,7 @@ static int lua_PickupAction(lua_State* L) {
         // plain pick-up.
         setCursorType(L, (existing.type == game::ActionBarSlot::SPELL) ? CursorType::SPELL :
                        (existing.type == game::ActionBarSlot::ITEM)  ? CursorType::ITEM :
-                       CursorType::ACTION);
+                       CursorType::MACRO);
         s_cursorId = existing.id;
         s_cursorSlot = slot;
         // Which button, not which slot of which bag - a fourth numbering, and
@@ -870,12 +870,12 @@ static bool cursorWireSlot(uint8_t& bag, uint8_t& slot) {
 static void clearCursorItem(lua_State* L) {
     s_cursorMoney = 0;
     s_cursorSplit = 0;
-    setCursorType(L, CursorType::NONE);
     s_cursorId = 0;
     s_cursorSlot = 0;
     s_cursorBag = -1;
     wowee::ui::frameXmlSetCursorItem(std::string());
     cursorItemSlot() = {};
+    setCursorType(L, CursorType::NONE);
 }
 
 static bool droppedItemFromNowhere(lua_State* L) {

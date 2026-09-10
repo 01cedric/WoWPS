@@ -19,6 +19,7 @@
 #include "core/version.hpp"
 #include "core/config_paths.hpp"
 #include "ui/settings_schema.hpp"
+#include "ui/interface_layout.hpp"
 #include "imgui.h"
 #include "addons/lua_api_helpers.hpp"
 #include "addons/chat_window_background.hpp"
@@ -531,6 +532,8 @@ static std::string cvarStorePath() {
 /// box is ticked, the box writes equipmentManager, and the paperdoll reads that
 /// on VARIABLES_LOADED - so it came back off on every login, and so did every
 /// other option the player had set.
+static void saveStoredCVars();
+
 static void loadStoredCVars() {
     std::ifstream in(cvarStorePath());
     if (!in.is_open()) return;
@@ -545,12 +548,22 @@ static void loadStoredCVars() {
         ++loaded;
     }
     LOG_INFO("CVars: loaded ", loaded, " from ", cvarStorePath());
+    const int version = std::atoi(cvarStore()["wowps_interface_layout_version"].c_str());
+    if (version < ui::kInterfaceLayoutVersion) {
+        auto it = cvarStore().find("extsafearea");
+        if (it != cvarStore().end() && std::atof(it->second.c_str()) == 4.0)
+            it->second = "0";
+        cvarStore()["wowps_interface_layout_version"] = std::to_string(ui::kInterfaceLayoutVersion);
+        in.close();
+        saveStoredCVars();
+    }
 }
 
 /// Write them back. Called on every change rather than at shutdown: the file is
 /// a few hundred bytes, and a setting that survives only a clean exit is not
 /// one a player can rely on.
 static void saveStoredCVars() {
+    cvarStore()["wowps_interface_layout_version"] = std::to_string(ui::kInterfaceLayoutVersion);
     const std::string path = cvarStorePath();
     std::error_code ec;
     std::filesystem::create_directories(
@@ -774,18 +787,9 @@ static void pushCvarDefault(lua_State* L, const std::string& n) {
     else if (n == "sound_outputquality") lua_pushstring(L, "2");
     else if (n == "uiscale") lua_pushstring(L, "1");
     else if (n == "useuiscale") lua_pushstring(L, "1");
-    // Title-safe margin, as a percentage of each screen edge. A television
-    // magnifies the picture and loses whatever falls outside its panel, so a
-    // console starts with a margin and a monitor with none - the original
-    // client only ever ran on the latter, which is why there is no shipped
-    // value to inherit. Four percent is the conservative end of the range
-    // broadcast has used for decades; the slider reaches ten.
+    // Overscan is an explicit setting; the default uses the complete display.
     else if (n == "extsafearea") {
-#ifdef WOWEE_PS4
-        lua_pushstring(L, "4");
-#else
         lua_pushstring(L, "0");
-#endif
     }
     else if (n == "screenwidth" || n == "gxresolution") {
         auto* svc = getLuaServices(L);
@@ -1760,17 +1764,13 @@ void applyStoredCVarSideEffects(lua_State* L) {
     for (const auto& [key, value] : cvarStore()) {
         applyCVarSideEffects(L, key, value);
     }
-    // Settings whose default is not "do nothing" have to be applied even when
-    // the player has never touched them, because this loop only replays what
-    // was stored. The title-safe margin is one: a console needs it from the
-    // first frame, and a stored value of its own overrides it above.
+    // A reload starts from the full display unless a margin was selected.
     if (cvarStore().find("extsafearea") == cvarStore().end()) {
         if (auto* tree = getWidgetTree(L)) {
-#ifdef WOWEE_PS4
-            tree->setSafeAreaInset(0.04f);
-#else
-            tree->setSafeAreaInset(0.0f);
-#endif
+            float margin = 0.0f;
+            if (auto* svc = getLuaServices(L); svc && svc->getClientSetting)
+                margin = static_cast<float>(std::atof(svc->getClientSetting("safearea").c_str())) / 100.0f;
+            tree->setSafeAreaInset(margin);
         }
     }
     // The graphics setting, for the same reason and with one difference: the

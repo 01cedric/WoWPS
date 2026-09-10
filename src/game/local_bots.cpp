@@ -1,4 +1,5 @@
 #include "game/local_bots.hpp"
+#include "game/local_inventory_layout.hpp"
 #include "game/local_auction_catalog.hpp"
 #include "game/local_mount.hpp"
 
@@ -18,6 +19,11 @@ constexpr const char* kBotNames[] = {
 };
 constexpr size_t kBotNameCount = sizeof(kBotNames) / sizeof(kBotNames[0]);
 
+bool humanRecipient(uint64_t guid) {
+    return guid && (guid & 0xffff000000000000ULL) != kLocalBotGuidPrefix &&
+        !LocalBotDirector::isMarketSeller(guid);
+}
+
 float distanceSq(const LocalRealmPlayer& a, float x, float y, float z) {
     const float dx = a.x - x, dy = a.y - y, dz = a.z - z;
     return dx * dx + dy * dy + dz * dz;
@@ -35,6 +41,7 @@ uint16_t carried(const LocalRealmPlayer& player, uint32_t itemId) {
 /// Take `count` of an item out of a player's bags. Returns what was actually
 /// removed, which is what a caller must credit rather than what it asked for.
 uint16_t removeCarried(LocalRealmPlayer& player, uint32_t itemId, uint16_t count) {
+    normalizeLocalInventory(player);
     uint16_t removed = 0;
     for (auto it = player.inventory.begin(); it != player.inventory.end() && removed < count;) {
         if (it->itemId != itemId) { ++it; continue; }
@@ -52,6 +59,7 @@ uint16_t removeCarried(LocalRealmPlayer& player, uint32_t itemId, uint16_t count
 /// delivery would take the buyer's gold for half an order.
 bool giveCarried(LocalRealmPlayer& player, const LocalItemDefinition& item, uint16_t count) {
     auto candidate = player.inventory;
+    const auto layout=localInventoryLayout(player);for(size_t i=0;i<candidate.size();++i)candidate[i].bagSlot=layout[i];
     uint16_t remaining = count;
     const uint16_t stackSize = std::max<uint16_t>(1, item.stack);
     for (auto& stack : candidate) {
@@ -69,6 +77,7 @@ bool giveCarried(LocalRealmPlayer& player, const LocalItemDefinition& item, uint
         remaining = static_cast<uint16_t>(remaining - put);
     }
     player.inventory = std::move(candidate);
+    normalizeLocalInventory(player);
     return true;
 }
 
@@ -97,7 +106,7 @@ uint32_t LocalAuctionPricing::buyoutFor(const LocalItemDefinition& item, uint16_
     if (!unit) return 0; // unsellable/quest items must not acquire a fabricated vendor value
     constexpr uint32_t qualityBp[] = {10000, 10000, 15000, 30000, 60000, 100000, 100000};
     const auto quality = metadata ? std::min<unsigned>(metadata->quality, 6) : 1u;
-    uint64_t base = unit * uint64_t(count) * std::clamp(multiplier, 4u, 10u);
+    uint64_t base = unit * uint64_t(count) * std::clamp(multiplier, MinMultiplier, MaxMultiplier);
     // Clamp between factors, keeping every multiplication within uint64_t.
     base = std::min<uint64_t>(base, MoneyCap);
     base = std::min<uint64_t>(base * qualityBp[quality] / 10000u, MoneyCap);
@@ -135,6 +144,11 @@ float LocalBotDirector::randomUnit(uint32_t& state) {
     return static_cast<float>(nextRandom(state) >> 8) / 16777216.0f;
 }
 
+uint32_t LocalBotDirector::randomPriceMultiplier(uint32_t& state) {
+    constexpr auto choices = LocalAuctionPricing::MaxMultiplier - LocalAuctionPricing::MinMultiplier + 1u;
+    return LocalAuctionPricing::MinMultiplier + nextRandom(state) % choices;
+}
+
 void LocalBotDirector::setBotCount(size_t count) {
     botCount_ = std::min(count, MaxBots);
 }
@@ -145,11 +159,6 @@ bool LocalBotDirector::isBot(uint64_t guid) const {
 
 bool LocalBotDirector::isMarketSeller(uint64_t guid) {
     return (guid & 0xffff000000000000ULL) == 0x0A11000000000000ULL;
-}
-
-void LocalBotDirector::setAuctionPriceMultiplier(uint32_t multiplier) {
-    auctionMultiplier_ = std::clamp(multiplier, 4u, 10u);
-    marketTimer_ = 0; // reprice only unbid market listings; player prices are owned by players
 }
 
 bool LocalBotDirector::refreshMarket(const LocalWorldContent& content) {
@@ -168,29 +177,22 @@ bool LocalBotDirector::refreshMarket(const LocalWorldContent& content) {
     static const Pools pools;
     size_t marketCount = 0, materials = 0, mounts = 0;
     bool changed = false;
-    for (auto& listing : auctions_) {
-        if (!isMarketSeller(listing.seller)) continue;
+    for (const auto& listing : auctions_) {
+        if (!isMarketSeller(listing.seller) && !isBot(listing.seller)) continue;
         ++marketCount;
         const auto* data = localAuctionMetadata(listing.itemId);
         if (data && data->has(LocalAuctionItemMetadata::Material)) ++materials;
         if (data && data->has(LocalAuctionItemMetadata::Mount)) ++mounts;
-        if (!data || listing.highestBid) continue;
-        // Metadata suffices for price changes; no item I/O, models or world
-        // actors are needed to keep sellers competing.
-        LocalItemDefinition item;
-        item.id = data->id; item.value = data->sellPrice;
-        const uint32_t price = LocalAuctionPricing::buyoutFor(item, listing.count,
-            randomUnit(marketRandom_), auctionMultiplier_);
-        if (price && price != listing.buyout) {
-            listing.buyout = price; listing.bid = LocalAuctionPricing::bidFor(price); changed = true;
-        }
     }
-    // At most four supply candidate reads per restock, never a full MPQ/catalog
+    // Posted prices stay fixed for the life of a listing, including saved
+    // listings and auctions with bids. Competition comes from each new seller's
+    // independent price, not rerolling the whole board on every refill pass.
+    // At most twelve supply candidate reads per restock, never a full MPQ/catalog
     // sweep. The first board fills over several seconds; later updates are one
     // minute apart and leave at least 32 slots for player-owned auctions.
-    for (unsigned attempt = 0; attempt < 4 && marketCount < MaxMarketAuctions &&
+    for (unsigned attempt = 0; attempt < 12 && marketCount < MaxMarketAuctions &&
          auctions_.size() < MaxAuctions && nextAuctionId_ != UINT32_MAX; ++attempt) {
-        const bool material = materials < 40 || (nextRandom(marketRandom_) % 4u != 0);
+        const bool material = materials < 48 || (nextRandom(marketRandom_) % 2u == 0);
         const std::vector<const LocalAuctionItemMetadata*>* pool = material ? &pools.materials : &pools.other;
         const uint32_t rareRoll = nextRandom(marketRandom_) % 100u;
         if (marketCount >= 48 && mounts < 2 && rareRoll < 3 && !pools.drops.empty()) pool = &pools.drops;
@@ -199,7 +201,7 @@ bool LocalBotDirector::refreshMarket(const LocalWorldContent& content) {
         const auto* data = (*pool)[nextRandom(marketRandom_) % pool->size()];
         // Competing sellers sometimes restock an existing commodity. Limit
         // duplicates so one popular item cannot crowd out the whole market.
-        if (material && !auctions_.empty() && nextRandom(marketRandom_) % 3u == 0) {
+        if (data->has(LocalAuctionItemMetadata::Material) && !auctions_.empty() && nextRandom(marketRandom_) % 3u == 0) {
             const auto& rival = auctions_[nextRandom(marketRandom_) % auctions_.size()];
             if (const auto* candidate = localAuctionMetadata(rival.itemId);
                 candidate && candidate->has(LocalAuctionItemMetadata::Material) && candidate->has(LocalAuctionItemMetadata::Supply))
@@ -217,7 +219,11 @@ bool LocalBotDirector::refreshMarket(const LocalWorldContent& content) {
         const bool isMaterial = data->has(LocalAuctionItemMetadata::Material);
         listing.count = uint16_t(isMaterial ? std::min<unsigned>(item->stack, 20u) : 1u);
         if (!listing.count) continue;
-        listing.buyout = LocalAuctionPricing::buyoutFor(*item, listing.count, randomUnit(marketRandom_), auctionMultiplier_);
+        // Draw separately in a defined order; sharing the RNG in two function
+        // arguments would make their evaluation order compiler-dependent.
+        const auto multiplier = randomPriceMultiplier(marketRandom_);
+        const auto variation = randomUnit(marketRandom_);
+        listing.buyout = LocalAuctionPricing::buyoutFor(*item, listing.count, variation, multiplier);
         if (!listing.buyout) continue;
         listing.bid = LocalAuctionPricing::bidFor(listing.buyout);
         const auto seller = nextRandom(marketRandom_) % kBotNameCount;
@@ -233,16 +239,19 @@ bool LocalBotDirector::refreshMarket(const LocalWorldContent& content) {
     // Virtual buyers can buy sensibly priced player listings, so selling is
     // useful even with no other consoles or walking bots online. Their item
     // exits the market and proceeds/refunds use the same durable escrow.
-    if (nextRandom(marketRandom_) % 4u == 0 && deliveries_.size() <= 1022) {
+    if (nextRandom(marketRandom_) % 4u == 0) {
+        const auto buyerMultiplier = randomPriceMultiplier(marketRandom_);
         for (auto it = auctions_.begin(); it != auctions_.end(); ++it) {
-            if (isMarketSeller(it->seller) || isBot(it->seller) || !it->buyout) continue;
+            if (!humanRecipient(it->seller) || !it->buyout || it->remainingSeconds <= 0) continue;
+            const size_t needed = 1 + size_t(humanRecipient(it->highestBidder));
+            if (needed > MaxDeliveries - deliveries_.size()) continue;
             const auto* item = content.item(it->itemId);
             if (!item) continue;
-            const auto fair = LocalAuctionPricing::buyoutFor(*item, it->count, .5f, auctionMultiplier_);
+            const auto fair = LocalAuctionPricing::buyoutFor(*item, it->count, .5f, buyerMultiplier);
             if (!fair || uint64_t(it->buyout) > uint64_t(fair) * 105u / 100u) continue;
-            deliveries_.reserve(deliveries_.size() + 2);
+            deliveries_.reserve(deliveries_.size() + needed);
             deliveries_.push_back({it->seller, 0, it->buyout, 0});
-            if (it->highestBidder) deliveries_.push_back({it->highestBidder, 0, it->highestBid, 0});
+            if (humanRecipient(it->highestBidder)) deliveries_.push_back({it->highestBidder, 0, it->highestBid, 0});
             auctions_.erase(it); changed = true; break;
         }
     }
@@ -265,6 +274,8 @@ void LocalBotDirector::populate(const LocalWorldContent& content,
         return;
     }
     (void)content;
+    // A dungeon coordinate is not a valid open-world spawn location.
+    if (reference.instanceId || reference.flight.active || reference.dead) return;
 
     // Trim first: lowering the count must remove bots rather than leave
     // orphans wandering with no state behind them.
@@ -327,7 +338,10 @@ void LocalBotDirector::populate(const LocalWorldContent& content,
 void LocalBotDirector::listFromBot(LocalBotState& bot, LocalRealmPlayer& player,
                                    const LocalWorldContent& content) {
     if (auctions_.size() >= MaxAuctions || nextAuctionId_==UINT32_MAX) return;
-    if (player.inventory.empty()) return;
+    if (player.dead || player.attackTarget || player.castingSpellId || player.flight.active || player.instanceId) return;
+    const size_t simulated = size_t(std::count_if(auctions_.begin(), auctions_.end(),
+        [](const LocalAuction& a) { return !humanRecipient(a.seller); }));
+    if (simulated >= MaxMarketAuctions || player.inventory.empty()) return;
 
     // Pick one stack the bot is carrying. Only what it actually farmed goes up:
     // a bot listing items it never had is a shop, not a player.
@@ -337,7 +351,7 @@ void LocalBotDirector::listFromBot(LocalBotState& bot, LocalRealmPlayer& player,
     if (!item) return;
     if (const auto* data = localAuctionMetadata(stack.itemId); data &&
         (!data->tradeable() || (data->has(LocalAuctionItemMetadata::Mount) && !localMountSupported(content,stack.itemId)))) return;
-    if (!LocalAuctionPricing::buyoutFor(*item, 1, .5f, auctionMultiplier_)) return;
+    if (!LocalAuctionPricing::buyoutFor(*item, 1, .5f)) return;
     // Equipment the bot is wearing is not for sale.
     for (uint32_t worn : player.equipment) {
         if (worn == stack.itemId) return;
@@ -353,8 +367,9 @@ void LocalBotDirector::listFromBot(LocalBotState& bot, LocalRealmPlayer& player,
     listing.id = nextAuctionId_++;
     listing.itemId = stack.itemId;
     listing.count = removed;
-    listing.buyout = LocalAuctionPricing::buyoutFor(*item, removed,
-                                                    randomUnit(bot.randomState), auctionMultiplier_);
+    const auto multiplier = randomPriceMultiplier(bot.randomState);
+    const auto variation = randomUnit(bot.randomState);
+    listing.buyout = LocalAuctionPricing::buyoutFor(*item, removed, variation, multiplier);
     listing.bid = LocalAuctionPricing::bidFor(listing.buyout);
     listing.seller = player.guid;
     listing.sellerName = player.name;
@@ -369,12 +384,15 @@ bool LocalBotDirector::tick(float seconds, const LocalWorldContent& content,
     if (!std::isfinite(seconds) || seconds < 0) return false;
     for (auto it = auctions_.begin(); it != auctions_.end();) {
         it->remainingSeconds = std::max(0.0f, it->remainingSeconds - seconds);
-        if (it->remainingSeconds > 0 || deliveries_.size() > 1022) { ++it; continue; }
-        deliveries_.reserve(deliveries_.size() + 2);
         const auto& a = *it;
-        if (a.highestBidder || !isMarketSeller(a.seller))
-            deliveries_.push_back({a.highestBidder ? a.highestBidder : a.seller, a.itemId, 0, a.count});
-        if (a.highestBidder && !isMarketSeller(a.seller)) deliveries_.push_back({a.seller, 0, a.highestBid, 0});
+        const auto recipient = a.highestBidder ? a.highestBidder : a.seller;
+        const bool itemDelivery = humanRecipient(recipient);
+        const bool proceeds = a.highestBidder && humanRecipient(a.seller);
+        const size_t needed = size_t(itemDelivery) + size_t(proceeds);
+        if (a.remainingSeconds > 0 || needed > MaxDeliveries - deliveries_.size()) { ++it; continue; }
+        deliveries_.reserve(deliveries_.size() + needed);
+        if (itemDelivery) deliveries_.push_back({recipient, a.itemId, 0, a.count});
+        if (proceeds) deliveries_.push_back({a.seller, 0, a.highestBid, 0});
         it = auctions_.erase(it);
         changed = true;
     }
@@ -389,8 +407,8 @@ bool LocalBotDirector::tick(float seconds, const LocalWorldContent& content,
         if (it == players.end()) continue;
         LocalRealmPlayer& player = *it;
 
-        if (player.dead) {
-            // The realm's own respawn timer owns this; the bot simply waits.
+        if (player.dead || player.castingSpellId || player.flight.active || player.instanceId) {
+            // Respawn, casting and travel belong to the realm; the bot waits.
             bot.activity = LocalBotActivity::Idle;
             continue;
         }
@@ -431,6 +449,7 @@ bool LocalBotDirector::tick(float seconds, const LocalWorldContent& content,
             }
         }
 
+        if (player.attackTarget) continue; // never sell inventory during combat
         bot.auctionTimer -= seconds;
         if (bot.auctionTimer <= 0.0f) {
             bot.auctionTimer = 60.0f + randomUnit(bot.randomState) * 180.0f;
@@ -446,7 +465,7 @@ bool LocalBotDirector::listItem(LocalRealmPlayer& seller, uint32_t itemId, uint1
                                 const LocalWorldContent& content, std::string& result) {
     const auto* item = content.item(itemId);
     if (!item) { result = "Unknown item"; return false; }
-    const auto price = LocalAuctionPricing::buyoutFor(*item, count, 0.5f, auctionMultiplier_);
+    const auto price = LocalAuctionPricing::buyoutFor(*item, count, 0.5f);
     return listItemPriced(seller, itemId, count, LocalAuctionPricing::bidFor(price), price,
                          720, content, result);
 }
@@ -502,15 +521,17 @@ bool LocalBotDirector::buyout(uint32_t auctionId, LocalRealmPlayer& buyer,
     if (const auto* metadata = localAuctionMetadata(it->itemId); metadata && metadata->has(LocalAuctionItemMetadata::Mount) && !localMountSupported(content,it->itemId)) {
         result = "Mount purchases are unavailable until local mount riding is supported"; return false;
     }
-    if (deliveries_.size() > 1022) { result = "Auction delivery queue is full"; return false; }
-    LocalRealmPlayer candidate = buyer;
-    if (!giveCarried(candidate, *item, it->count)) { result = "Your bags are full"; return false; }
-    deliveries_.reserve(deliveries_.size() + 2);
-    result = "Bought " + item->name;
-    if (!isMarketSeller(it->seller)) deliveries_.push_back({it->seller, 0, it->buyout, 0});
-    if (it->highestBidder && it->highestBidder != buyer.guid)
+    const bool proceeds = humanRecipient(it->seller);
+    const bool refund = humanRecipient(it->highestBidder) && it->highestBidder != buyer.guid;
+    const size_t needed = 1 + size_t(proceeds) + size_t(refund);
+    if (needed > MaxDeliveries - deliveries_.size()) { result = "Auction delivery queue is full"; return false; }
+    deliveries_.reserve(deliveries_.size() + needed);
+    result = "Bought " + item->name + "; collect your mail at an innkeeper";
+    deliveries_.push_back({buyer.guid,it->itemId,0,it->count});
+    if (proceeds) deliveries_.push_back({it->seller, 0, it->buyout, 0});
+    if (refund)
         deliveries_.push_back({it->highestBidder, 0, it->highestBid, 0});
-    buyer.inventory.swap(candidate.inventory); buyer.money -= due;
+    buyer.money -= due;
     auctions_.erase(it);
     return true;
 }
@@ -546,10 +567,11 @@ bool LocalBotDirector::placeBid(uint32_t auctionId, LocalRealmPlayer& bidder,
     }
     const uint32_t held = it->highestBidder == bidder.guid ? it->highestBid : 0;
     if (bidder.money < amount - held) { result = "You cannot afford that bid"; return false; }
-    if (deliveries_.size() >= 1024) { result = "Auction delivery queue is full"; return false; }
-    deliveries_.reserve(deliveries_.size() + 1);
+    const bool refund = humanRecipient(it->highestBidder) && it->highestBidder != bidder.guid;
+    if (refund && deliveries_.size() >= MaxDeliveries) { result = "Auction delivery queue is full"; return false; }
+    deliveries_.reserve(deliveries_.size() + size_t(refund));
     result = "Bid placed";
-    if (it->highestBidder && it->highestBidder != bidder.guid)
+    if (refund)
         deliveries_.push_back({it->highestBidder, 0, it->highestBid, 0});
     bidder.money -= amount - held;
     it->highestBid = amount; it->highestBidder = bidder.guid;
@@ -561,14 +583,14 @@ bool LocalBotDirector::cancelAuction(uint32_t id, LocalRealmPlayer& seller, std:
     if (it == auctions_.end() || it->seller != seller.guid || it->highestBidder) {
         result = "Only your own unbid auction can be cancelled"; return false;
     }
-    if (deliveries_.size() >= 1024) {result = "Auction delivery queue is full"; return false;}
+    if (deliveries_.size() >= MaxDeliveries) {result = "Auction delivery queue is full"; return false;}
     result = "Auction cancelled; item returned when there is bag space";
     deliveries_.push_back({seller.guid, it->itemId, 0, it->count});
     auctions_.erase(it); return true;
 }
 
 bool LocalBotDirector::restoreDeliveries(const std::vector<LocalAuctionDelivery>& entries) {
-    if (entries.size() > 1024) return false;
+    if (entries.size() > MaxDeliveries) return false;
     for (const auto& d : entries)
         if (!d.recipient || (!d.itemId && !d.money) || (bool(d.itemId) != bool(d.count)) || d.money > 1000000000u)
             return false;
@@ -581,7 +603,15 @@ bool LocalBotDirector::deliver(LocalRealmPlayer& player, const LocalWorldContent
         // Bot auctions are a bounded local economy; retired bot proceeds do
         // not need to keep an offline human's delivery queue occupied.
         if (isBot(it->recipient) || isMarketSeller(it->recipient)) {it = deliveries_.erase(it); changed = true; continue;}
-        if (it->recipient != player.guid || uint64_t(player.money) + it->money > 1000000000u) {++it; continue;}
+        if (it->recipient != player.guid || player.money > LocalAuctionPricing::MoneyCap) {++it; continue;}
+        // Money-only escrow can drain as wallet space becomes available. Keep
+        // the exact unpaid remainder; mixed item/money records remain atomic.
+        const uint32_t room = LocalAuctionPricing::MoneyCap - player.money;
+        if (!it->itemId && it->money > room) {
+            if (room) { player.money += room; it->money -= room; changed = true; }
+            ++it; continue;
+        }
+        if (it->money > room) {++it; continue;}
         if (it->itemId) {
             const auto* item = content.item(it->itemId);
             if (!item || !giveCarried(player, *item, it->count)) {++it; continue;}
@@ -590,6 +620,14 @@ bool LocalBotDirector::deliver(LocalRealmPlayer& player, const LocalWorldContent
         it = deliveries_.erase(it); changed = true;
     }
     return changed;
+}
+
+bool LocalBotDirector::restoreAuctionSequence(uint32_t next, std::string& error) {
+    if (!next || next < nextAuctionId_) {
+        error = "Invalid saved auction sequence"; return false;
+    }
+    nextAuctionId_ = next;
+    error.clear(); return true;
 }
 
 bool LocalBotDirector::restoreAuctions(const std::vector<LocalAuction>& auctions,

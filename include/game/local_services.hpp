@@ -23,7 +23,7 @@ struct LocalServiceNpcRecord {
     uint32_t entry = 0;
     uint32_t npcFlags = 0;
     /// The SkillLine this NPC trains, resolved from its subname, or 0 when the
-    /// subname named something this realm does not model (Riding, Pet, Portal).
+    /// subname named something this realm does not model (Pet, Portal).
     uint16_t trainerSkill = 0;
     /// The class this NPC trains, 1-11, or 0.
     uint8_t trainerClass = 0;
@@ -37,6 +37,9 @@ const LocalServiceNpcRecord* localServiceNpcRecord(uint32_t entry);
 /// carries the field therefore overrides every row of the built-in table,
 /// including a row that disagrees with it.
 uint32_t localEffectiveNpcFlags(const LocalNpcDefinition& definition);
+
+const std::vector<LocalMailboxSite>& localMailboxSites(const LocalWorldContent& content,const LocalRealmPlayer& player);
+const LocalMailboxSite* nearbyLocalMailbox(const LocalWorldContent& content,const LocalRealmPlayer& player,uint64_t guid=0);
 
 // --- Merchants -------------------------------------------------------------
 
@@ -63,6 +66,9 @@ uint32_t localVendorBuyCount(uint32_t itemId);
 
 /// Service categories only: they identify a merchant, never determine stock.
 uint8_t localVendorCategories(uint32_t npcFlags);
+// Wide total for authority affordability checks; display APIs retain their
+// bounded 32-bit price. A price above the wallet limit must never be discounted.
+uint64_t localVendorBuyTotal(const LocalItemDefinition& item, uint32_t count);
 uint32_t localVendorBuyPrice(const LocalItemDefinition& item, uint32_t count);
 uint32_t localVendorSellPrice(const LocalItemDefinition& item, uint32_t count);
 
@@ -79,8 +85,12 @@ public:
                  uint32_t buyCount, double now);
     void clear() { depleted_.clear(); }
     size_t retainedOffers() const { return depleted_.size(); }
+    std::vector<LocalVendorStockRecord> snapshot(double now) const;
+    // Validates every row before replacing current state, including when the
+    // character menu reads a save without loading the world catalog.
+    bool restore(const std::vector<LocalVendorStockRecord>& records, double now);
 private:
-    struct Stock { uint32_t remaining = 0, maximum = 0, bundle = 1, interval = 1; double since = 0; };
+    struct Stock { uint32_t remaining = 0, maximum = 0, bundle = 1, interval = 1; double since = 0; uint32_t entry = 0; };
     static uint32_t restocked(const Stock& stock, double now);
     std::map<std::pair<uint64_t, uint32_t>, Stock> depleted_;
 };
@@ -135,6 +145,12 @@ uint32_t localCraftSkillChance(const LocalRecipe& recipe, uint16_t skill);
 /// npc_trainer holds the real ones and this console does not have it.
 inline constexpr uint32_t kLocalRecipeCostPerSkill = 20;
 uint32_t localRecipeCost(const LocalRecipe& recipe);
+
+bool localRecipeAllows(const LocalRecipe& recipe, const LocalRealmPlayer& player);
+// Inventory copies available as reagents, excluding equipment and one retained
+// copy of an exact required tool. Shared by authority and original TradeSkill UI.
+uint32_t localRecipeReagentCount(const LocalRecipe& recipe, const LocalRealmPlayer& player, uint32_t itemId);
+bool localRecipeHasTools(const LocalRecipe& recipe, const LocalRealmPlayer& player);
 
 // --- Class trainers --------------------------------------------------------
 

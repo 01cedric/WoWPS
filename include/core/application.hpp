@@ -1,5 +1,6 @@
 #pragma once
 #include "core/intro_stream_warmup.hpp"
+#include "core/retained_guid_set.hpp"
 
 #include "core/window.hpp"
 #include "ui/unit_portrait.hpp"
@@ -122,7 +123,6 @@ public:
     /// of a world rather than a setting to flip inside one.
     void setLocalPlayerbotsEnabled(bool enabled) { localPlayerbotsEnabled_ = enabled; }
     [[nodiscard]] bool localPlayerbotsEnabled() const { return localPlayerbotsEnabled_; }
-    void setLocalAuctionPriceMultiplier(uint32_t value) { localAuctionPriceMultiplier_ = value < 4 ? 4 : value > 10 ? 10 : value; }
     void cancelLocalRealm();
 
     // Single player and LAN host go through the character screens, as the
@@ -316,21 +316,24 @@ private:
     struct LocalSlotCharacter { uint8_t slot; uint64_t guid; std::string name; uint8_t race, classId, gender; };
     std::vector<LocalSlotCharacter> localSlotCharacters_;
     void localRealmStatus(const std::string& message, bool isError);
-    std::unordered_set<uint64_t> localRealmRemoteGuids_;
-    std::unordered_set<uint64_t> localRealmNpcGuids_;
+    RetainedGuidSet localRealmRemoteGuids_;
+    RetainedGuidSet localRealmNpcGuids_;
+    RetainedGuidSet localRealmPresentScratch_;
+    RetainedGuidSet localRealmMeleeScratch_;
+    std::shared_ptr<game::LocalRealmPlayer> localRealmPresentationSnapshot_;
     /// Transports the local realm currently has on screen, by guid.
     ///
     /// These are the same TransportManager objects a real server drives in
     /// online play: the local realm works out where each hull is and pushes it
     /// through updateServerTransport, exactly as the packet path does. The set
     /// is what tells a hull that has left the player's map to be despawned.
-    std::unordered_set<uint64_t> localRealmTransportGuids_;
+    RetainedGuidSet localRealmTransportGuids_;
     bool localPlayerbotsEnabled_ = false;
-    uint32_t localAuctionPriceMultiplier_ = 10;
     /// Consecutive frames renderer->update has failed to allocate in. Reset by
     /// the first frame that builds; a long enough run gives up rather than
     /// spinning on a client that cannot draw anything.
     unsigned rendererUpdateOomFrames_ = 0;
+    unsigned localPresentationOomFrames_ = 0;
     uint32_t localRealmPositionRevision_ = 0;
     uint32_t localRealmInstanceId_ = 0;
     bool localRealmWmoOnly_ = false;

@@ -56,7 +56,7 @@ static void testCodec() {
     LocalRealmPlayer player;player.classId=6;player.resourceType=LocalResourceType::RunicPower;
     player.mana=15;player.money=456;player.knownSpells={45477};player.inventory={{117,3}};
     player.runeCooldownMs={10000,9500,0,2500,1,0};
-    Writer wire;writeProgress(wire,player);
+    Writer wire;writeProgress(wire,player,9);
     LocalRealmPlayer loaded;Reader read(wire.bytes.data(),wire.bytes.size());
     assert(readProgress(read,loaded,9) && read.done());
     assert(loaded.runeCooldownMs==player.runeCooldownMs && loaded.money==456 && loaded.inventory[0].count==3);
@@ -69,7 +69,7 @@ static void testCodec() {
     Reader invalid(corrupt.data(),corrupt.size());assert(!readProgress(invalid,loaded,9));
     auto truncated=wire.bytes;truncated.pop_back();Reader shortRead(truncated.data(),truncated.size());
     assert(!readProgress(shortRead,loaded,9));
-    static_assert(MaxOwnerProgressBytes<=1400);
+    static_assert(HeaderSize+10+ProgressChunkBytes<=MaxPacket);
     player.name="SixteenLettersAa";player.mountSpellId=6648;
     Writer cast;writeCast(cast,player);assert(cast.bytes.size()==CastWireBytes);
     LocalRealmPlayer mounted;Reader castRead(cast.bytes.data(),cast.bytes.size());

@@ -6,7 +6,7 @@ local function wrap(name,fn)
     local online=_G[name]
     _G[name]=function(...) if state() then return fn(...) end if online then return online(...) end end
 end
-local function cmd(name,id) return __WoWPSLocalCommand(name,id or 0) end
+local function cmd(name,id,choice) return __WoWPSLocalCommand(name,id or 0,choice or 0) end
 local logSelection,abandon,watch=1,0,{}
 local function quest(id) return state().quests[id or state().selected] end
 local function logQuest(index) return quest(state().log[index or logSelection] or 0) end
@@ -49,7 +49,13 @@ wrap('CloseQuest',function()cmd('close_quest')end)
 wrap('DeclineQuest',function()cmd('close')end)
 wrap('AcceptQuest',function()cmd('accept',state().selected)end)
 wrap('CompleteQuest',function()cmd('reward',state().selected)end)
-wrap('GetQuestReward',function()cmd('turnin',state().selected)end)
+wrap('GetQuestReward',function(choice)
+    local q=quest();local count=q and q.choices and #q.choices or 0
+    choice=choice or 0
+    if type(choice)~='number' or choice~=choice or choice%1~=0 or
+       (count>0 and (choice<1 or choice>count)) or (count==0 and choice~=0) then return false end
+    return cmd('turnin',state().selected,choice)
+end)
 wrap('IsQuestCompletable',function()local q=quest();return q and q.complete or false end)
 wrap('GetTitleText',function()local q=quest();return q and q.title or '' end)
 wrap('GetQuestText',function()local q=quest();return text(q and q.description) end)
@@ -58,15 +64,21 @@ wrap('GetProgressText',function()return objectives(quest())end)
 wrap('GetRewardText',function()local q=quest();return text(q and q.description)end)
 wrap('GetRewardMoney',function()local q=quest();return q and q.money or 0 end)
 wrap('GetRewardXP',function()local q=quest();return q and q.xp or 0 end)
-wrap('GetNumQuestRewards',function()local q=quest();return q and q.reward and 1 or 0 end)
+local function fixed(q) return q and (q.rewards or (q.reward and {q.reward})) or {} end
+local function choices(q) return q and q.choices or {} end
+wrap('GetNumQuestRewards',function()return #fixed(quest()) end)
+wrap('GetNumQuestChoices',function()return #choices(quest()) end)
 -- The question mark is the fallback for an item whose display entry names no
 -- artwork, not the answer for every item: the bridge publishes the real path.
 local function icon(v) local path=v and v.icon;if path and path~='' then return path end return 'Interface\\Icons\\INV_Misc_QuestionMark' end
-local function reward(q) local r=q and q.reward;if r then return r.name,icon(r),r.count,1,true end end
-wrap('GetQuestItemInfo',function(kind,i)if kind=='reward' and i==1 then return reward(quest())end end)
-wrap('GetQuestItemLink',function(kind,i)local q=quest();if kind=='reward' and i==1 and q and q.reward then return 'item:'..q.reward.id end end)
-for _,n in ipairs({'GetNumQuestChoices','GetNumQuestItems','GetQuestMoneyToGet','GetRewardHonor','GetRewardTalents','GetRewardArenaPoints',
-    'GetNumQuestLogChoices','GetQuestLogRequiredMoney','GetQuestLogRewardHonor','GetQuestLogRewardTalents','GetQuestLogRewardArenaPoints','GetNumQuestLogRewardFactions'}) do wrap(n,function()return 0 end)end
+local function reward(r) if r then return r.name,icon(r),r.count,1,true end end
+local function rewardAt(q,kind,i)
+    if kind=='reward' then return fixed(q)[i] elseif kind=='choice' then return choices(q)[i] end
+end
+wrap('GetQuestItemInfo',function(kind,i)return reward(rewardAt(quest(),kind,i))end)
+wrap('GetQuestItemLink',function(kind,i)local r=rewardAt(quest(),kind,i);if r then return 'item:'..r.id end end)
+for _,n in ipairs({'GetNumQuestItems','GetQuestMoneyToGet','GetRewardHonor','GetRewardTalents','GetRewardArenaPoints',
+    'GetQuestLogRequiredMoney','GetQuestLogRewardHonor','GetQuestLogRewardTalents','GetQuestLogRewardArenaPoints','GetNumQuestLogRewardFactions'}) do wrap(n,function()return 0 end)end
 for _,n in ipairs({'GetRewardSpell','GetQuestRewardSpell','GetQuestRewardTitle','GetQuestLogRewardSpell','GetQuestLogRewardTitle'}) do wrap(n,function()end)end
 wrap('GetNumQuestLogEntries',function()return #state().log,#state().log end)
 wrap('GetQuestLogTitle',function(i)local q=logQuest(i);if q then return q.title,q.level,nil,0,false,false,q.complete and 1 or nil,false,q.id,false end end)
@@ -77,8 +89,11 @@ wrap('GetNumQuestLeaderBoards',function(i)local q=logQuest(i);return q and #q.ob
 wrap('GetQuestLogLeaderBoard',function(i,index)local q=logQuest(index);local o=q and q.objectives[i];if o then return o.text..': '..o.done..' / '..o.count,o.type,o.done>=o.count end end)
 wrap('GetQuestLogRewardMoney',function()local q=logQuest();return q and q.money or 0 end)
 wrap('GetQuestLogRewardXP',function()local q=logQuest();return q and q.xp or 0 end)
-wrap('GetNumQuestLogRewards',function()local q=logQuest();return q and q.reward and 1 or 0 end)
-wrap('GetQuestLogRewardInfo',function(i)if i==1 then return reward(logQuest())end end)
+wrap('GetNumQuestLogRewards',function()return #fixed(logQuest()) end)
+wrap('GetQuestLogRewardInfo',function(i)return reward(fixed(logQuest())[i])end)
+wrap('GetNumQuestLogChoices',function()return #choices(logQuest()) end)
+wrap('GetQuestLogChoiceInfo',function(i)return reward(choices(logQuest())[i])end)
+wrap('GetQuestLogItemLink',function(kind,i)local r=rewardAt(logQuest(),kind,i);if r then return 'item:'..r.id end end)
 wrap('GetQuestLogPushable',function()return false end)
 wrap('SetAbandonQuest',function()local q=logQuest();abandon=q and q.id or 0 end)
 wrap('GetAbandonQuestName',function()local q=quest(abandon);return q and q.title or '' end)
@@ -118,7 +133,7 @@ wrap('GetQuestLogSpecialItemCooldown',function()return 0,0,0 end)
 wrap('GetQuestLink',function(i)local q=logQuest(i);if q then return '|cffffff00|Hquest:'..q.id..':'..q.level..'|h['..q.title..']|h|r' end end)
 WoWPS_RefreshLocalQuestTracking()
 wrap('GetContainerNumSlots',function(b)return b==0 and 24 or 0 end)
-wrap('GetContainerNumFreeSlots',function(b)return b==0 and math.max(0,24-#state().bags) or 0,0 end)
+wrap('GetContainerNumFreeSlots',function(b)local used=0;for _,v in pairs(state().bags)do if v then used=used+1 end end;return b==0 and math.max(0,24-used) or 0,0 end)
 local function bag(b,i)return b==0 and state().bags[i] or nil end
 wrap('GetContainerItemInfo',function(b,i)local v=bag(b,i);if v then return icon(v),v.count,false,1,false,false,'item:'..v.id end end)
 wrap('GetContainerItemLink',function(b,i)local v=bag(b,i);if v then return 'item:'..v.id end end)

@@ -69,6 +69,27 @@ int main() {
     assert(inventory.consume(1,*limited,1,1,9000));
     assert(inventory.available(1,*limited,1,17999) == 0);
 
+    // A restart rebases the remaining fraction onto the new simulation clock.
+    const auto saved = inventory.snapshot(10000.125);
+    assert(saved.size() == 1 && saved[0].remaining == 0 && saved[0].elapsedMs == 1000125);
+    LocalVendorInventory restarted;
+    assert(restarted.restore(saved, 0));
+    assert(restarted.available(1,*limited,1,7999.874) == 0);
+    assert(restarted.available(1,*limited,1,7999.875) == 1);
+    assert(restarted.snapshot(7999.875).empty()); // Full stock takes no save space.
+    const auto unchanged = restarted.snapshot(0);
+    auto invalid = saved;
+    invalid.push_back(saved.front()); assert(!restarted.restore(invalid, 0));
+    invalid = saved; invalid[0].npcGuid = 0; assert(!restarted.restore(invalid, 0));
+    invalid = saved; invalid[0].entry = 999999; assert(!restarted.restore(invalid, 0));
+    invalid = saved; invalid[0].remaining = 1; assert(!restarted.restore(invalid, 0));
+    invalid = saved; invalid[0].elapsedMs = 9000000; assert(!restarted.restore(invalid, 0));
+    assert(!restarted.restore(saved, std::numeric_limits<double>::infinity()));
+    assert(restarted.snapshot(0) == unchanged); // Rejection never partially installs.
+    assert(restarted.restore(restarted.snapshot(100), 300));
+    assert(restarted.available(1,*limited,1,8199.874) == 0);
+    assert(restarted.available(1,*limited,1,8199.875) == 1);
+
     const LocalVendorOffer batch{1,1,10,10};
     LocalVendorInventory bundles;
     assert(bundles.consume(10,batch,10,2,0));
@@ -85,8 +106,13 @@ int main() {
         assert(bounded.consume(id,*limited,1,1,0));
     assert(!bounded.consume(999999,*limited,1,1,1));
     assert(bounded.retainedOffers() == LocalVendorInventory::MaxDepletedOffers);
+    const auto fullSave = bounded.snapshot(1);
+    assert(restarted.restore(fullSave, 0));
+    assert(restarted.retainedOffers() == LocalVendorInventory::MaxDepletedOffers);
+    auto tooMany = fullSave; tooMany.push_back(fullSave.front());
+    assert(!restarted.restore(tooMany, 0));
     assert(bounded.consume(999999,*limited,1,1,9000));
     assert(bounded.retainedOffers() == 1); // Fully replenished entries reclaimed.
     bounded.clear(); assert(bounded.retainedOffers() == 0);
-    std::puts("PASS original vendor stocks, exact bundle prices, finite stock/restock and bounded memory");
+    std::puts("PASS original vendor stocks, exact bundle prices, finite stock/restock, restart phase, malformed/duplicate/oversized persistence rejection and bounded memory");
 }

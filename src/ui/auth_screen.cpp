@@ -256,8 +256,6 @@ void AuthScreen::render(auth::AuthHandler& authHandler) {
             if (bots == "0") localPlayerbots_ = false;
             else if (bots == "1") localPlayerbots_ = true;
         }
-        if (int multiplier = 10; realmConfig >> multiplier)
-            localAuctionMultiplier_ = std::clamp(multiplier, 4, 10);
         auto* registry = core::Application::getInstance().getExpansionRegistry();
         if (registry && registry->getActive()) {
             const auto& profiles = registry->getAllProfiles();
@@ -471,7 +469,7 @@ void AuthScreen::renderCard(auth::AuthHandler& authHandler, float screenW, float
     const float fieldW = px(280);
     const float center = screenW * .5f;
     const float left = center - fieldW * .5f;
-    float y = screenH - px(playMode_ == 3 ? 470 : playMode_ == 0 ? 250 : playMode_ == 2 ? 363 : 242);
+    float y = screenH - px(playMode_ == 3 ? 470 : playMode_ == 0 ? 250 : playMode_ == 2 ? 285 : 164);
     y = std::max(screenH * (playMode_ == 3 ? .27f : .46f), y);
     const auto field = [&](const char* label, const char* id, TextEdit& edit, PaperUI::FieldOpts opts) {
         ui_.textCentered(center, y, label, px(14), theme.ink);
@@ -512,8 +510,6 @@ void AuthScreen::renderCard(auth::AuthHandler& authHandler, float screenW, float
     // switched on once people are already in the world.
     if (playMode_ == 1 || playMode_ == 2) {
         y += renderPlayerbotToggle(left, y, fieldW, !authenticating && !localBusy);
-        renderAuctionPrice(left, y, fieldW, !authenticating && !localBusy && !settingsOpen_ && !connectionOptionsOpen_);
-        y += px(78);
     }
     const char* action = security ? "Security code" : authenticating ? "Connecting..." : localBusy ? "Cancel" :
                          playMode_ == 0 ? "Log In" : playMode_ == 3 ? "Character Selection" : "Character Selection";
@@ -626,7 +622,7 @@ void AuthScreen::renderConnectionPanel(auth::AuthHandler& authHandler, float scr
     // The playerbot row, which the sizing pass had never been told about: the
     // draw below advances the column past it, so the sheet came out a row
     // shorter than what is on it and the footer was drawn over its own edge.
-    if (playMode_ == 1 || playMode_ == 2) contentH += playerbotToggleHeight(contentW) + px(78);
+    if (playMode_ == 1 || playMode_ == 2) contentH += playerbotToggleHeight(contentW);
     if (codeInMain) contentH += fieldRow + px(kRowGap);
     if (statusH > 0.0f) contentH += statusH + px(10);
     contentH += px(kButtonHeight) + px(kRowGap);
@@ -700,8 +696,6 @@ void AuthScreen::renderConnectionPanel(auth::AuthHandler& authHandler, float scr
     }
     if (playMode_ == 1 || playMode_ == 2) {
         col.gap(renderPlayerbotToggle(col.at().x, col.at().y, contentW, !authenticating && !localBusy));
-        renderAuctionPrice(col.at().x, col.at().y, contentW, !authenticating && !localBusy);
-        col.gap(px(78));
     }
     if (playMode_ == 3) {
         PaperUI::FieldOpts opts;
@@ -1380,36 +1374,6 @@ void AuthScreen::renderLocalPlayerLimit(float left, float top, float width, bool
     if (!enabled) ui_.popInert();
 }
 
-void AuthScreen::renderAuctionPrice(float left, float top, float width, bool enabled) {
-    localAuctionMultiplier_ = std::clamp(localAuctionMultiplier_, 4, 10);
-    if (!enabled) ui_.pushInert();
-    ui_.textCentered(left + width * .5f, top, "Auction base price / vendor value", ui_.px(13), ui_.theme().ink);
-    ui_.sliderInt("local.auction.price", {left, top + ui_.px(19)},
-                  {left + width, top + ui_.px(43)}, &localAuctionMultiplier_, 4, 10);
-    int direction = 0;
-    const bool padEnabled = enabled && !ui_.popupOpen() && !ui_.wantsTextInput();
-#ifdef WOWEE_PS4
-    const auto& pad = platform::ps4::padState();
-    if (padEnabled && pad.connected && !platform::ps4::keyboardCapturesInput())
-        direction = int((pad.buttons & ORBIS_PAD_BUTTON_R1) != 0) - int((pad.buttons & ORBIS_PAD_BUTTON_L1) != 0);
-#else
-    if (padEnabled)
-        direction = int(ImGui::IsKeyDown(ImGuiKey_GamepadR1)) - int(ImGui::IsKeyDown(ImGuiKey_GamepadL1));
-#endif
-    const double now = ImGui::GetTime();
-    if (enabled) {
-        // The disabled card is also drawn behind the connection panel. It must
-        // not reset the active panel's repeat state on every frame.
-        if (direction && (direction != localAuctionDirection_ || now >= localAuctionRepeatAt_)) {
-            localAuctionMultiplier_ = std::clamp(localAuctionMultiplier_ + direction, 4, 10);
-            localAuctionRepeatAt_ = now + (direction != localAuctionDirection_ ? .35 : .12);
-        }
-        localAuctionDirection_ = direction;
-    }
-    ui_.textCentered(left + width * .5f, top + ui_.px(47), "L1 / R1: 4x-10x  |  Rarity adds value", ui_.px(11), ui_.theme().inkSoft);
-    if (!enabled) ui_.popInert();
-}
-
 void AuthScreen::attemptSelectedMode(auth::AuthHandler& authHandler) {
     connectionOptionsOpen_ = false;
     if (playMode_ == 0) { attemptAuth(authHandler); return; }
@@ -1426,7 +1390,7 @@ void AuthScreen::attemptSelectedMode(auth::AuthHandler& authHandler) {
         if (playMode_ == 2) {
             std::error_code ec; std::filesystem::create_directories(core::getConfigRoot(), ec);
             std::ofstream out(core::getConfigRoot() + "/lan_realm.cfg");
-            out << realmName << '\n' << (localPlayerbots_ ? '1' : '0') << '\n' << localAuctionMultiplier_ << '\n';
+            out << realmName << '\n' << (localPlayerbots_ ? '1' : '0') << '\n';
         }
         if (playMode_ == 1) {
             // Singleplayer wrote nothing, so its answer was thrown away every
@@ -1434,10 +1398,9 @@ void AuthScreen::attemptSelectedMode(auth::AuthHandler& authHandler) {
             // LAN screen offers next, which is what it did before.
             std::error_code ec; std::filesystem::create_directories(core::getConfigRoot(), ec);
             std::ofstream out(core::getConfigRoot() + "/lan_realm.cfg");
-            out << trimAscii(localRealmName_.text()) << '\n' << (localPlayerbots_ ? '1' : '0') << '\n' << localAuctionMultiplier_ << '\n';
+            out << trimAscii(localRealmName_.text()) << '\n' << (localPlayerbots_ ? '1' : '0') << '\n';
         }
         app.setLocalPlayerbotsEnabled(localPlayerbots_);
-        app.setLocalAuctionPriceMultiplier(uint32_t(localAuctionMultiplier_));
         app.beginLocalCharacterFlow(playMode_, static_cast<size_t>(localPlayerLimit_), realmName);
         return;
     }

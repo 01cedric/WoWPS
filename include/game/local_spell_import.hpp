@@ -12,6 +12,8 @@
 namespace wowee::game {
 struct LocalSpellImport {
     std::vector<LocalSpellDefinition> spells;
+    struct AuditRow {uint32_t id=0,classes=0;bool talent=false;std::string status;};
+    std::vector<AuditRow> audit;
     std::vector<LocalRecipe> recipes;
     std::string diagnostic;
 };
@@ -111,7 +113,7 @@ inline bool decodeClientSpell(const ClientSpellTables& t, uint32_t row, LocalSpe
     if(u(43)||u(44)||u(45)) unavailable("Scaling or periodic resource costs are not implemented");
     if(u(4)&0x404u) unavailable("Next-swing attacks are not implemented");
     if(u(5)&0x44u) unavailable("Channeled spells are not implemented");
-    if(u(12)||u(13)||u(14)||u(15)) unavailable("Shapeshift or stance requirements are not implemented");
+    if(u(12)||u(13)) unavailable("Shapeshift or stance requirements are not implemented");
     if(u(20)||u(21)||u(22)||u(23)||u(24)||u(25)||u(26)||u(27)) unavailable("Aura requirements are not implemented");
     if(i(68)>=0) unavailable("Spell equipment requirements are not implemented");
     for(uint32_t reagent=0;reagent<8;++reagent) if(i(52+reagent)>0) unavailable("Spell reagents are not implemented");
@@ -125,14 +127,17 @@ inline bool decodeClientSpell(const ClientSpellTables& t, uint32_t row, LocalSpe
     if(u(40)&&durationRow<0) unavailable("Duration record missing");
     else if(durationRow>=0) {
         const auto duration=t.durations->getInt32(durationRow,1);
-        if(duration>0&&duration<=600000) d.durationMs=uint32_t(duration);
+        if(duration>0&&duration<=3600000) d.durationMs=uint32_t(duration);
         if(t.durations->getInt32(durationRow,2)!=0) unavailable("Variable duration is not implemented");
     }
-    bool harm=false,healing=false;
+    bool harm=false,healing=false,buff=false;
+    uint32_t healingTarget=0,buffTarget=0;
     for(uint32_t effect=0;effect<3;++effect) {
         const auto type=u(71+effect); if(!type) continue;
         const auto target=u(86+effect), secondary=u(89+effect);
-        if(secondary || (target!=1&&target!=6&&target!=21)) unavailable("Area or scripted targeting is not implemented");
+        if(secondary || (target!=1&&target!=6&&target!=21&&target!=25)) unavailable("Area or scripted targeting is not implemented");
+        if(type==6 && (u(95+effect)==3 || u(95+effect)==8) && (u(31)||u(33)||u(35)>1||u(116+effect)))
+            unavailable("Periodic proc, charge, stack or triggered effects are not implemented");
         const auto base=i(80+effect), dice=i(74+effect);const auto scale=f(77+effect);
         if(base < -1 || base > 100000 || dice<0 || dice>100000 || !std::isfinite(scale)||std::abs(scale)>10000 || f(119+effect)!=0) {
             unavailable("Invalid or combo-point effect amount is not implemented");continue;
@@ -140,18 +145,43 @@ inline bool decodeClientSpell(const ClientSpellTables& t, uint32_t row, LocalSpe
         // DBC base points encode one less than the minimum; preserve the dice
         // range and choose a deterministic midpoint in the local ruleset.
         const uint32_t low=uint32_t(base+1),high=low+(dice>1?uint32_t(dice-1):0);
-        if(type==2) {d.damage+=low;d.damageMax+=high;d.damagePerLevel+=scale;harm=true;}
-        else if(type==10) {d.heal+=low;d.healMax+=high;d.healPerLevel+=scale;healing=true;}
-        else if(type==6&&u(95+effect)==3&&d.durationMs&&u(98+effect)>0&&u(98+effect)<=d.durationMs&&scale==0&&!d.periodicDamage) {
+        if(type==6 && (u(95+effect)==34 || (u(95+effect)==22 && u(110+effect)==1) ||
+             (u(95+effect)==69 && (u(110+effect)==1 || u(110+effect)==127))) &&
+           (target==1 || target==21 || target==25) && !secondary && d.durationMs && scale==0 && dice<=1 && low>0 &&
+           !u(31) && !u(33) && u(35)<=1 && !(u(4)&64u)) {
+            if(buffTarget && buffTarget!=target)unavailable("Mixed buff targets are not implemented");
+            buffTarget=target;
+            if(u(95+effect)==34)d.buffHealth+=low;
+            else if(u(95+effect)==22)d.buffArmor+=low;
+            else {if(d.absorbSchoolMask && d.absorbSchoolMask!=u(110+effect))unavailable("Mixed absorb schools are not implemented");
+                d.buffAbsorb+=low;d.absorbSchoolMask=u(110+effect);}
+            buff=true;
+        } else if(type==2) {d.damage+=low;d.damageMax+=high;d.damagePerLevel+=scale;harm=true;}
+        else if(type==10) {
+            d.heal+=low;d.healMax+=high;d.healPerLevel+=scale;healing=true;
+            if((target!=1&&target!=21&&target!=25)||(healingTarget&&healingTarget!=target))
+                unavailable("Mixed or hostile healing targets are not implemented");
+            healingTarget=target;
+        }
+        else if(type==6&&u(95+effect)==3&&d.durationMs&&d.durationMs<=600000&&u(98+effect)>0&&u(98+effect)<=d.durationMs&&scale==0&&!d.periodicDamage) {
             d.periodicDamage=(low+high)/2;d.periodicIntervalMs=u(98+effect);harm=true;
+        } else if(type==6&&u(95+effect)==8&&low>0&&d.durationMs&&d.durationMs<=600000&&u(98+effect)>0&&u(98+effect)<=d.durationMs&&
+                  !d.periodicHeal&&!d.periodicDamage) {
+            d.periodicHeal=low;d.periodicHealMax=high;d.periodicHealPerLevel=scale;
+            d.periodicIntervalMs=u(98+effect);healing=true;
+            if((target!=1&&target!=21&&target!=25)||(healingTarget&&healingTarget!=target))
+                unavailable("Mixed or hostile healing targets are not implemented");
+            healingTarget=target;
         } else unavailable("Unsupported effect "+std::to_string(type)+(type==6?" / aura "+std::to_string(u(95+effect)):""));
     }
+    if(buff&&(harm||healing)) unavailable("Mixed stat buffs and other effects are not implemented");
     if(harm&&healing) unavailable("Mixed hostile/friendly spells are not implemented");
-    if(!harm&&!healing) unavailable("No supported direct damage, healing or periodic damage effect");
+    if(!harm&&!healing&&!buff) unavailable("No supported direct or periodic damage/healing effect");
+    d.healingSelfOnly=healingTarget==1;d.buffSelfOnly=buffTarget==1;
     const auto rangeRow=ClientSpellTables::lookup(t.rangeIndex,u(46));
     if(rangeRow<0) unavailable("Range record missing");
     else {
-        d.minRange=t.ranges->getFloat(rangeRow,healing?2:1);d.range=t.ranges->getFloat(rangeRow,healing?4:3);
+        d.minRange=t.ranges->getFloat(rangeRow,(healing||buff)?2:1);d.range=t.ranges->getFloat(rangeRow,(healing||buff)?4:3);
         if(!std::isfinite(d.range)||!std::isfinite(d.minRange)||d.minRange<0||d.range<d.minRange||d.range>100)
             unavailable("Invalid or unsupported range");
     }
@@ -176,7 +206,7 @@ inline bool decodeClientGroundMount(const ClientSpellTables& t,uint32_t row,Loca
         if(!u(71+e))continue;
         if(u(71+e)!=6 || u(86+e)!=1 || u(89+e))return false;
         if(u(95+e)==78) {d.mountCreatureId=u(110+e);d.mountDisplayId=localMountDisplay(d.mountCreatureId);}
-        else if(u(95+e)==31 && i(80+e)>=0 && i(80+e)<=199)d.mountSpeedPercent=uint32_t(i(80+e)+1);
+        else if(u(95+e)==32 && i(80+e)>=0 && i(80+e)<=199)d.mountSpeedPercent=uint32_t(i(80+e)+1);
         else return false;
     }
     if(!d.mountDisplayId || !d.mountSpeedPercent)return false;
@@ -197,8 +227,53 @@ struct AbilityRow {
     uint32_t spellId = 0, skillId = 0, classMask = 0, supercededBy = 0;
     uint16_t requiredSkill = 0, trivialHigh = 0, trivialLow = 0;
     uint32_t category = 0;   ///< the SkillLine category this came from
+    std::vector<LocalRecipeAccess> recipeAccess;
+    bool ambiguousRecipe = false;
 };
 
+inline void importClientTalents(LocalSpellImport& out,const pipeline::DBCFile* talents,const pipeline::DBCFile* tabs,
+        const pipeline::DBCFile* spells,const pipeline::DBCFile* ranges,const pipeline::DBCFile* casts,
+        const pipeline::DBCFile* durations,const pipeline::DBCFile* icons,const pipeline::DBCFile* runes){
+    if(!talents || !tabs || !spells || !ranges || !casts || !durations || !talents->isLoaded() || !tabs->isLoaded() ||
+       talents->getFieldCount()!=23 || tabs->getFieldCount()<24 || spells->getFieldCount()!=234)return;
+    detail::ClientSpellTables t;t.spells=spells;t.ranges=ranges;t.casts=casts;t.durations=durations;t.icons=icons;t.runeCosts=runes;
+    detail::ClientSpellTables::buildIndex(ranges,t.rangeIndex);detail::ClientSpellTables::buildIndex(casts,t.castIndex);
+    detail::ClientSpellTables::buildIndex(durations,t.durationIndex);detail::ClientSpellTables::buildIndex(icons,t.iconIndex);detail::ClientSpellTables::buildIndex(runes,t.runeCostIndex);
+    std::vector<std::pair<uint32_t,uint32_t>> rows;detail::ClientSpellTables::buildIndex(spells,rows);
+    std::map<uint32_t,uint32_t> masks;for(uint32_t row=0;row<tabs->getRecordCount();++row)masks[tabs->getUInt32(row,0)]=tabs->getUInt32(row,20);
+    for(uint32_t row=0;row<talents->getRecordCount() && out.spells.size()<8192;++row){
+        const auto mask=masks[talents->getUInt32(row,1)];if(!mask)continue;
+        for(uint8_t rank=1;rank<=5;++rank){
+            const auto id=talents->getUInt32(row,3+rank);if(!id)continue;
+            const auto source=detail::ClientSpellTables::lookup(rows,id);if(source<0)continue;
+            LocalSpellDefinition d;d.id=id;d.allowableClasses=mask;d.clientSpell=true;
+            detail::decodeClientSpell(t,uint32_t(source),d);
+            d.talentId=talents->getUInt32(row,0);d.talentTab=talents->getUInt32(row,1);d.talentRank=rank;d.talentRow=uint8_t(talents->getUInt32(row,2));
+            for(size_t k=0;k<3;++k){d.talentPrerequisites[k]=talents->getUInt32(row,9+k);d.talentPrerequisiteRanks[k]=uint8_t(talents->getUInt32(row,12+k));}
+            const auto u=[&](uint32_t col){return spells->getUInt32(source,col);};
+            // Only unconditional passive health/physical armor are accepted.
+            // Proc, family-mask and scripted talents keep their rejection reason.
+            if(u(4)&64u){
+                d.passive=true;bool valid=true,any=false;
+                for(uint32_t k=0;k<3;++k)if(u(71+k)){
+                    const auto amount=int64_t(spells->getInt32(source,80+k))+1;
+                    if(u(71+k)!=6 || u(86+k)!=1 || u(89+k) || amount<0 || amount>100000 || u(74+k)>1 || spells->getFloat(source,77+k)!=0){valid=false;continue;}
+                    if(u(95+k)==34){d.passiveHealth+=uint32_t(amount);any=true;}
+                    else if(u(95+k)==22 && u(110+k)==1){d.passiveArmor+=uint32_t(amount);any=true;}
+                    else valid=false;
+                }
+                if(valid && any && !u(31) && !u(20) && !u(21) && !u(12) && !u(13))d.unsupportedReason.clear();
+                else if(d.unsupportedReason.empty())d.unsupportedReason="Passive talent effect is not implemented";
+            }
+            out.audit.push_back({d.id,d.allowableClasses,true,d.unsupportedReason.empty()?"Supported decoder; imported":d.unsupportedReason});
+            auto existing=std::find_if(out.spells.begin(),out.spells.end(),[&](const auto& v){return v.id==id;});
+            if(existing==out.spells.end())out.spells.push_back(std::move(d));else *existing=std::move(d);
+        }
+    }
+    std::sort(out.spells.begin(),out.spells.end(),[](const auto& a,const auto& b){return a.id<b.id;});
+    const auto supported=std::count_if(out.spells.begin(),out.spells.end(),[](const auto& d){return d.talentId && d.unsupportedReason.empty();});
+    out.diagnostic+=" Supported talent ranks: "+std::to_string(supported)+"; unsupported effects remain blocked.";
+}
 } // namespace detail
 
 // 3.3.5a (12340) only. Column meanings agree with the existing WotLK layout and
@@ -274,6 +349,9 @@ inline LocalSpellImport importClientStarterSpells(
             if(!entry.spellId||line==lineCategory.end()) continue;
             entry.category=line->second;
             entry.classMask=skillLineAbility->getUInt32(row,4);
+            if(entry.category!=kLocalSkillCategoryClass) entry.recipeAccess.push_back({
+                skillLineAbility->getUInt32(row,3),entry.classMask,
+                skillLineAbility->getUInt32(row,5),skillLineAbility->getUInt32(row,6)});
             entry.requiredSkill=uint16_t(std::min<uint32_t>(skillLineAbility->getUInt32(row,7),65535));
             entry.supercededBy=skillLineAbility->getUInt32(row,8);
             entry.trivialHigh=uint16_t(std::min<uint32_t>(skillLineAbility->getUInt32(row,10),65535));
@@ -297,6 +375,13 @@ inline LocalSpellImport importClientStarterSpells(
         std::vector<detail::AbilityRow> merged;
         for(auto& entry:wanted) {
             if(!merged.empty()&&merged.back().spellId==entry.spellId) {
+                if(entry.category!=kLocalSkillCategoryClass) {
+                    auto& prior=merged.back();
+                    if(prior.skillId!=entry.skillId || prior.requiredSkill!=entry.requiredSkill ||
+                       prior.trivialHigh!=entry.trivialHigh || prior.trivialLow!=entry.trivialLow || prior.recipeAccess.size()>=16)
+                        prior.ambiguousRecipe=true;
+                    else prior.recipeAccess.insert(prior.recipeAccess.end(),entry.recipeAccess.begin(),entry.recipeAccess.end());
+                }
                 merged.back().classMask|=entry.classMask;
                 if(!merged.back().supercededBy) merged.back().supercededBy=entry.supercededBy;
                 continue;
@@ -332,6 +417,7 @@ inline LocalSpellImport importClientStarterSpells(
         if(!tables.ready) d.unsupportedReason="WotLK spell tables missing or incompatible (Spell, SpellRange, SpellCastTimes, SpellDuration)";
         else if(found==selectedRows.end()) d.unsupportedReason="Starter spell is missing from installed Spell.dbc";
         else if(detail::decodeClientSpell(tables,found->second,d)) ++supported;
+        out.audit.push_back({d.id,d.allowableClasses,false,d.unsupportedReason.empty()?"Supported decoder; imported":d.unsupportedReason});
         out.spells.push_back(std::move(d));
     }
 
@@ -341,7 +427,7 @@ inline LocalSpellImport importClientStarterSpells(
     // holding one costs the same memory as holding a usable one.
     size_t abilitiesRejected=0;
     for(const auto& entry:abilityRows) {
-        if(out.spells.size()>=kLocalMaxImportedClassAbilities+sizeof(starters)/sizeof(starters[0])) break;
+
         if(selectedRows.count(entry.first)) continue;   // already a starter
         const auto row=std::lower_bound(wanted.begin(),wanted.end(),entry.first,
             [](const detail::AbilityRow& a,uint32_t key){return a.spellId<key;});
@@ -349,7 +435,13 @@ inline LocalSpellImport importClientStarterSpells(
         d.name="Spell #"+std::to_string(d.id);
         d.allowableClasses=row->classMask;
         d.supercededBySpell=row->supercededBy;
-        if(!detail::decodeClientSpell(tables,entry.second,d)) { ++abilitiesRejected; continue; }
+        if(!detail::decodeClientSpell(tables,entry.second,d)) {
+            out.audit.push_back({d.id,d.allowableClasses,false,d.unsupportedReason});++abilitiesRejected;continue;
+        }
+        if(out.spells.size()>=kLocalMaxImportedClassAbilities+sizeof(starters)/sizeof(starters[0])){
+            out.audit.push_back({d.id,d.allowableClasses,false,"Supported decoder; import capacity exceeded"});continue;
+        }
+        out.audit.push_back({d.id,d.allowableClasses,false,"Supported decoder; imported"});
         out.spells.push_back(std::move(d));
     }
     size_t supportedMounts=0;
@@ -373,21 +465,35 @@ inline LocalSpellImport importClientStarterSpells(
         recipe.skillId=uint16_t(std::min<uint32_t>(row->skillId,65535));
         recipe.requiredSkill=row->requiredSkill;
         recipe.trivialHigh=row->trivialHigh;recipe.trivialLow=row->trivialLow;
+        recipe.access=row->recipeAccess;
+        if(row->ambiguousRecipe) recipe.unsupportedReason="Ambiguous recipe skill-line requirements";
         const auto u=[&](uint32_t col){return spells->getUInt32(entry.second,col);};
         const auto i=[&](uint32_t col){return spells->getInt32(entry.second,col);};
-        for(uint32_t effect=0;effect<3&&!recipe.createdItemId;++effect) {
-            if(u(71+effect)!=24) continue;   // SPELL_EFFECT_CREATE_ITEM
+        // Retain the legacy first product/recipe ID for saved books, but block
+        // the whole craft if another effect or malformed amount was discarded.
+        for(uint32_t effect=0;effect<3;++effect) {
+            if(!u(71+effect))continue;
+            if(u(71+effect)!=24 || recipe.createdItemId) {
+                recipe.unsupportedReason="Additional recipe effects are not implemented";continue;
+            }
             recipe.createdItemId=u(107+effect);
-            const auto base=i(80+effect);
-            recipe.createdCount=uint16_t(std::clamp(base+1,1,1000));
+            const int64_t amount=int64_t(i(80+effect))+1;
+            recipe.createdCount=uint16_t(std::clamp<int64_t>(amount,1,1000));
+            if(amount<1 || amount>1000)recipe.unsupportedReason="Invalid recipe output amount";
         }
         if(!recipe.createdItemId) continue;
+        std::map<uint32_t,uint32_t> amounts;
         for(uint32_t slot=0;slot<8;++slot) {
             const auto item=i(52+slot); const auto count=i(60+slot);
-            if(item<=0||count<=0||count>1000) continue;
-            recipe.reagents.push_back({uint32_t(item),uint16_t(count)});
+            if(!item && !count)continue;
+            if(item<=0||count<=0||count>1000) {
+                recipe.unsupportedReason="Invalid recipe reagent item/count";continue;
+            }
+            amounts[uint32_t(item)]+=uint32_t(count);
         }
-        if(recipe.reagents.empty()) continue;   // a recipe that costs nothing is not a recipe
+        for(const auto& [item,count]:amounts)recipe.reagents.push_back({item,uint16_t(count)});
+        if(recipe.reagents.empty())continue;
+        for(size_t slot=0;slot<recipe.tools.size();++slot)recipe.tools[slot]=u(50+slot);
         const auto name=spells->getString(entry.second,136);
         recipe.name=!name.empty()&&name.size()<=96?name:"Recipe #"+std::to_string(recipe.spellId);
         out.recipes.push_back(std::move(recipe));
@@ -404,6 +510,8 @@ inline LocalSpellImport importClientStarterSpells(
     else if(wanted.empty()) out.diagnostic+=" SkillLineAbility/SkillLine were not read, so trainers have nothing beyond the starter set.";
     else if(abilitiesRejected) out.diagnostic+=" "+std::to_string(abilitiesRejected)+
         " class abilities were left out because this ruleset cannot cast them.";
+    const auto blockedRecipes=std::count_if(out.recipes.begin(),out.recipes.end(),[](const auto& r){return !r.unsupportedReason.empty();});
+    if(blockedRecipes)out.diagnostic+=" Retained unavailable recipes: "+std::to_string(blockedRecipes)+" (see recipe description).";
     return out;
 }
 }

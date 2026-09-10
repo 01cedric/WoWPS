@@ -138,6 +138,9 @@ public:
     void ensureBatchCmd();
     void endUploadBatch();       // Async: submits but does NOT wait for fence
     void endUploadBatchSync();   // Sync: submits and waits (for load screens)
+    // Outermost exception boundary only: every nested upload caller has unwound.
+    // Retains staging and submits the recorded copies through the normal fence path.
+    void finishInterruptedUploadBatch();
     [[nodiscard]] bool isInUploadBatch() const { return inUploadBatch_; }
     /// Hands a plainly-allocated staging buffer to the current batch, which
     /// frees it once its copies have actually run.

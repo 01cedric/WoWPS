@@ -1,9 +1,12 @@
 #include "core/application.hpp"
+#include "core/presentation_recovery.hpp"
+#include <cstdio>
 #include "core/entity_spawner.hpp"
 #include "core/coordinates.hpp"
 #include "core/config_paths.hpp"
 #include "core/logger.hpp"
 #include "game/local_realm.hpp"
+#include "game/local_services.hpp"
 #include "game/local_scripted_portals.hpp"
 #include "rendering/spell_visual_system.hpp"
 #include "addons/addon_manager.hpp"
@@ -319,9 +322,13 @@ void Application::stopLocalRealm() {
     localRealmInstanceId_ = 0;
     localRealmWmoOnly_ = false;
     localRealmTravelNotice_.clear();
-    localRealmRemoteGuids_.clear();
-    localRealmNpcGuids_.clear();
-    localRealmTransportGuids_.clear();
+    localRealmRemoteGuids_.release();
+    localRealmNpcGuids_.release();
+    localRealmTransportGuids_.release();
+    localRealmPresentScratch_.release();
+    localRealmMeleeScratch_.release();
+    localRealmPresentationSnapshot_.reset();
+    localPresentationOomFrames_ = 0;
     localRealmTarget_ = 0;
     localRealmMenuOpen_ = false;
 #ifdef WOWEE_PS4
@@ -418,8 +425,17 @@ void Application::updateLocalRealm(float deltaTime) {
         const auto durationDb=assetManager->loadDBC("SpellDuration.dbc");
         const auto iconDb=assetManager->loadDBC("SpellIcon.dbc");
         const auto runeCostDb=assetManager->loadDBC("SpellRuneCost.dbc");
+        const auto abilities=assetManager->loadDBC("SkillLineAbility.dbc");
+        const auto skills=assetManager->loadDBC("SkillLine.dbc");
+        const auto talents=assetManager->loadDBC("Talent.dbc");
+        const auto tabs=assetManager->loadDBC("TalentTab.dbc");
         auto importedSpells=game::importClientStarterSpells(spellDb.get(),rangeDb.get(),castDb.get(),durationDb.get(),iconDb.get(),
-            nullptr,nullptr,nullptr,runeCostDb.get());
+            abilities.get(),skills.get(),talents.get(),runeCostDb.get());
+        game::detail::importClientTalents(importedSpells,talents.get(),tabs.get(),spellDb.get(),rangeDb.get(),castDb.get(),durationDb.get(),iconDb.get(),runeCostDb.get());
+        for(const auto& row:importedSpells.audit)
+            LOG_INFO("[CLASS_AUDIT] spell=",row.id," classMask=",row.classes," talent=",row.talent," result=",row.status);
+        LOG_INFO("[CLASS_AUDIT] rows=",importedSpells.audit.size()," scope=starter/class-skill/talent ranks; decoder support is not full gameplay verification");
+        importedSpells.audit.clear();importedSpells.audit.shrink_to_fit();
 #ifdef WOWEE_PS4
         // Import owns its strings/effects. Release this 49,839-row source table
         // before terrain decoding competes for the console's CPU heap.
@@ -439,7 +455,7 @@ void Application::updateLocalRealm(float deltaTime) {
         LOG_INFO("[LOCAL_SPELLS] ",importedSpells.diagnostic);
         for(const auto& spell:importedSpells.spells) {
             if(!spell.iconPath.empty())localRealmSpellIconPaths_[spell.iconId]=spell.iconPath;
-            LOG_INFO("[LOCAL_SPELLS] id=",spell.id," classMask=",spell.allowableClasses," name=",spell.name,
+            if(!spell.talentId)LOG_INFO("[LOCAL_SPELLS] id=",spell.id," classMask=",spell.allowableClasses," name=",spell.name,
                 " castMs=",spell.castTimeMs," gcdMs=",spell.globalCooldownMs," supported=",spell.unsupportedReason.empty(),
                 " reason=",spell.unsupportedReason);
         }
@@ -521,7 +537,6 @@ void Application::updateLocalRealm(float deltaTime) {
         // applied before it starts rather than switched on inside it. A guest
         // never sets this: the host's bots reach it as ordinary players.
         localRealm_->setPlayerbots(localPlayerbotsEnabled_);
-        localRealm_->setAuctionPriceMultiplier(localAuctionPriceMultiplier_);
 
         bool started = request.mode == 1
             ? localRealm_->startSinglePlayer(saveDir, request.name)
@@ -691,8 +706,16 @@ void Application::updateLocalRealm(float deltaTime) {
         else if (current && current->transportEntry && !aboard)
             localRealm_->leaveTransport();
     }
-    // Snapshot copies remain valid if a realm command rebuilds its player list.
-    const auto self = *localRealm_->localPlayer();
+    std::shared_ptr<game::LocalRealmPlayer> snapshot;
+    const auto presentationResult = updatePresentationWithRecovery(localPresentationOomFrames_, [&] {
+    // Retain vector/string capacity between frames, while owning a snapshot
+    // independent of commands that rebuild the realm's player list. The local
+    // shared owner also survives a callback scheduling session destruction.
+    if (!localRealmPresentationSnapshot_)
+        localRealmPresentationSnapshot_ = std::make_shared<game::LocalRealmPlayer>();
+    snapshot = localRealmPresentationSnapshot_;
+    *snapshot = *localRealm_->localPlayer();
+    const auto& self = *snapshot;
     if(audioCoordinator_) {
         bool zeppelin=false;
         for(const auto& route:localRealm_->travel().transportRoutes())if(route.entry==self.transportEntry)
@@ -712,7 +735,8 @@ void Application::updateLocalRealm(float deltaTime) {
         animation->setInCombat(self.attackTarget != 0 && !self.dead);
         animation->setLowHealth(self.health > 0 && self.health * 4 < self.maxHealth);
     }
-    std::unordered_set<uint64_t> present;
+    auto& present = localRealmPresentScratch_;
+    present.clear();
     for (const auto& peer : localRealm_->players()) {
         if (peer.guid == self.guid || peer.mapId != gameHandler->getCurrentMapId() || peer.instanceId != self.instanceId) continue;
         present.insert(peer.guid);
@@ -720,12 +744,13 @@ void Application::updateLocalRealm(float deltaTime) {
     }
     for (auto guid : localRealmRemoteGuids_)
         if (!present.count(guid)) gameHandler->removeLocalExplorationPlayer(guid);
-    localRealmRemoteGuids_ = std::move(present);
+    localRealmRemoteGuids_.swap(present);
     present.clear();
-    std::vector<uint64_t> presentedMelee;
+    auto& presentedMelee = localRealmMeleeScratch_;
+    presentedMelee.clear();
     const auto presentImpact = [&](uint64_t attacker, uint64_t victim) {
-        if (std::find(presentedMelee.begin(), presentedMelee.end(), attacker) != presentedMelee.end()) return;
-        presentedMelee.push_back(attacker);
+        if (presentedMelee.count(attacker)) return;
+        presentedMelee.insert(attacker);
         gameHandler->presentLocalMeleeImpact(attacker, victim);
     };
     for (const auto& npc : localRealm_->npcs()) {
@@ -763,7 +788,7 @@ void Application::updateLocalRealm(float deltaTime) {
         gameHandler->removeLocalRealmNpc(guid);
         if (localRealmTarget_ == guid) localRealmTarget_ = 0;
     }
-    localRealmNpcGuids_ = std::move(present);
+    localRealmNpcGuids_.swap(present);
     gameHandler->setTargetGuidRaw(localRealmTarget_);
 
     syncLocalRealmTransports(self);
@@ -780,6 +805,21 @@ void Application::updateLocalRealm(float deltaTime) {
         }
         visuals->setAcherusPortals(pads);
     }
+    }, [&] {
+        if (assetManager) assetManager->trimFileCache();
+    });
+    if (presentationResult != PresentationUpdateResult::Complete) {
+        // This path allocates no diagnostic string at exhausted headroom.
+        // Finish the ordinary frame, then perform the normal session teardown
+        // if thirty consecutive presentations could not be rebuilt.
+        std::fprintf(stderr, "[LOCAL_PRESENTATION_MEMORY] allocation failure frame=%u action=%s\n",
+            localPresentationOomFrames_, presentationResult == PresentationUpdateResult::EndSession
+                ? "session unload queued" : "retry presentation next frame");
+        if (presentationResult == PresentationUpdateResult::EndSession)
+            logoutToLoginPending_ = true;
+        return;
+    }
+    const auto& self = *snapshot;
     // Gameplay owns automatic entrance activation, not a particular HUD. This
     // also runs with the original interface or with every panel hidden.
     if(!self.dead && !self.flight.active && !self.transportEntry && !characterIntroOwnsView()) {
@@ -995,7 +1035,32 @@ void Application::syncLocalRealmTransports(const game::LocalRealmPlayer& self) {
     auto* transportManager = gameHandler->getTransportManager();
     if (!transportManager) return;
 
-    std::unordered_set<uint64_t> present;
+    auto& present = localRealmPresentScratch_;
+    present.clear();
+    if(!self.instanceId && assetManager){
+        static uint32_t mailboxDisplay=0;static bool attempted=false;
+        if(!attempted){
+            if(const auto db=assetManager->loadDBC("GameObjectDisplayInfo.dbc");db && db->isLoaded()){
+                attempted=true;
+                for(uint32_t row=0;row<db->getRecordCount();++row){auto path=db->getString(row,1);
+                    std::transform(path.begin(),path.end(),path.begin(),[](unsigned char c){return char(std::tolower(c));});
+                    if(path.find("postboxhuman")!=std::string::npos){mailboxDisplay=db->getUInt32(row,0);break;}
+                }
+                LOG_INFO("[LOCAL_MAILBOX] model display=",mailboxDisplay);
+            }
+        }
+        if(mailboxDisplay)for(const auto& m:game::localMailboxSites(localRealm_->content(),self)){
+            if(m.mapId!=self.mapId || std::hypot(m.x-self.x,m.y-self.y)>120.f)continue;
+            present.insert(m.guid);
+            if(!entitySpawner_->isGameObjectSpawned(m.guid)){
+                const auto pos=coords::serverToCanonical(glm::vec3(m.x,m.y,m.z));
+                entitySpawner_->queueGameObjectSpawn(m.guid,142075,mailboxDisplay,pos.x,pos.y,pos.z,coords::serverToCanonicalYaw(m.orientation),1.f);
+                // queueGameObjectSpawn coalesces pending requests; report each site once.
+                if(!localRealmTransportGuids_.count(m.guid))
+                    LOG_INFO("[LOCAL_MAILBOX] queued guid=",m.guid," map=",m.mapId," position=",m.x,",",m.y,",",m.z," display=",mailboxDisplay);
+            }
+        }
+    }
     // A transport belongs to the open world, so a player inside an instance
     // sees none - and every hull is retired below rather than left floating in
     // a dungeon that has no harbour.
@@ -1082,7 +1147,7 @@ void Application::syncLocalRealmTransports(const game::LocalRealmPlayer& self) {
         // same transport reappears where it should when the player returns.
         entitySpawner_->despawnGameObject(guid);
     }
-    localRealmTransportGuids_ = std::move(present);
+    localRealmTransportGuids_.swap(present);
     gameHandler->syncLocalTransportPassengers();
 }
 

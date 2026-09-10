@@ -1112,6 +1112,8 @@ void M2Renderer::shutdown() {
     for (auto& inst : instances) {
         destroyInstanceBones(inst);
     }
+    shadowInstanceOrder_.release();
+    std::vector<const M2Instance*>{}.swap(shadowCasters_);
     instances.clear();
     spatialGrid.clear();
     instanceIndexById.clear();

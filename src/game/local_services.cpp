@@ -1,8 +1,10 @@
 #include "game/local_services.hpp"
+#include "game/local_world_catalog.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 
 namespace wowee::game {
 namespace {
@@ -91,21 +93,25 @@ std::vector<uint32_t> localVendorStockForNpc(uint32_t entry,
     return stock;
 }
 
-uint32_t localVendorBuyPrice(const LocalItemDefinition& item, uint32_t count) {
+uint64_t localVendorBuyTotal(const LocalItemDefinition& item, uint32_t count) {
     if (!count) return 0;
     const auto* source = localVendorPrice(item.id);
     if (source && item.value == source->sellPrice) {
         // BuyPrice covers BuyCount units. Round a partial bundle upward so a
         // sub-copper arrow cannot be bought for zero. Normal UI buys bundles.
         const uint64_t total = uint64_t(source->buyPrice) * count;
-        return uint32_t(std::min<uint64_t>((total + source->buyCount - 1) / source->buyCount,
-                                          1000000000ULL));
+        const uint64_t bundle=std::max(1u,source->buyCount);
+        return (total + bundle - 1) / bundle;
     }
     // A user-authored catalog can reprice an item. Retain its explicit value
     // under the legacy local rule rather than force a foreign source price.
     const uint64_t unit = std::max<uint64_t>(uint64_t(item.value) * 5, 1);
-    if (unit > 1000000000ULL / count) return 1000000000;
-    return uint32_t(unit * count);
+    // Public helper accepts uint32 quantities; saturate only at uint64 overflow.
+    if (unit > UINT64_MAX / count) return UINT64_MAX;
+    return unit * count;
+}
+uint32_t localVendorBuyPrice(const LocalItemDefinition& item, uint32_t count) {
+    return uint32_t(std::min<uint64_t>(localVendorBuyTotal(item,count),1000000000ULL));
 }
 
 uint32_t LocalVendorInventory::restocked(const Stock& stock, double now) {
@@ -141,7 +147,7 @@ bool LocalVendorInventory::consume(uint64_t npcGuid, const LocalVendorOffer& off
         }
         if (depleted_.size() >= MaxDepletedOffers) return false;
         found = depleted_.emplace(key, Stock{remaining, offer.maxCount,
-            std::max(1u, buyCount), offer.restockSeconds, now}).first;
+            std::max(1u, buyCount), offer.restockSeconds, now, offer.entry}).first;
     } else if (remaining == offer.maxCount) {
         found->second.since = now;
     } else if (remaining > found->second.remaining) {
@@ -150,6 +156,36 @@ bool LocalVendorInventory::consume(uint64_t npcGuid, const LocalVendorOffer& off
         found->second.since += periods * found->second.interval;
     }
     found->second.remaining = remaining - count;
+    return true;
+}
+
+std::vector<LocalVendorStockRecord> LocalVendorInventory::snapshot(double now) const {
+    if (!std::isfinite(now)) throw std::invalid_argument("Invalid merchant snapshot time");
+    std::vector<LocalVendorStockRecord> records;
+    records.reserve(depleted_.size());
+    for (const auto& [key, stock] : depleted_) {
+        const auto remaining = restocked(stock, now);
+        if (remaining == stock.maximum) continue;
+        const double elapsed = std::fmod(std::max(0.0, now - stock.since), double(stock.interval));
+        const auto elapsedMs = std::min(uint64_t(elapsed * 1000.0), uint64_t(stock.interval) * 1000 - 1);
+        records.push_back({key.first, stock.entry, key.second, remaining, elapsedMs});
+    }
+    return records;
+}
+
+bool LocalVendorInventory::restore(const std::vector<LocalVendorStockRecord>& records, double now) {
+    if (!std::isfinite(now) || records.size() > MaxDepletedOffers) return false;
+    decltype(depleted_) candidate;
+    for (const auto& row : records) {
+        const auto* offer = localVendorOffer(row.entry, row.itemId);
+        if (!row.npcGuid || !offer || !offer->maxCount || !offer->restockSeconds ||
+            row.remaining >= offer->maxCount || row.elapsedMs >= uint64_t(offer->restockSeconds) * 1000)
+            return false;
+        Stock stock{row.remaining, offer->maxCount, localVendorBuyCount(row.itemId),
+                    offer->restockSeconds, now - double(row.elapsedMs) / 1000.0, row.entry};
+        if (!candidate.emplace(std::make_pair(row.npcGuid, row.itemId), stock).second) return false;
+    }
+    depleted_.swap(candidate);
     return true;
 }
 
@@ -225,4 +261,63 @@ uint32_t localRecipeCost(const LocalRecipe& recipe) {
     return uint32_t(std::min(skill * kLocalRecipeCostPerSkill, uint64_t(1000000000)));
 }
 
+bool localRecipeAllows(const LocalRecipe& recipe, const LocalRealmPlayer& player) {
+    if (!recipe.unsupportedReason.empty() || !player.race || player.race > 32 ||
+        !player.classId || player.classId > 32) return false;
+    const uint32_t race = 1u << (player.race - 1), cls = 1u << (player.classId - 1);
+    return recipe.access.empty() || std::any_of(recipe.access.begin(), recipe.access.end(), [&](const auto& a) {
+        return (!a.races || (a.races & race)) && (!a.classes || (a.classes & cls)) &&
+            !(a.excludedRaces & race) && !(a.excludedClasses & cls);
+    });
+}
+
+bool localRecipeHasTools(const LocalRecipe& recipe, const LocalRealmPlayer& player) {
+    for (auto tool : recipe.tools) if (tool && std::none_of(player.inventory.begin(), player.inventory.end(),
+        [&](const auto& stack) { return stack.itemId == tool && stack.count; })) return false;
+    return true;
+}
+
+uint32_t localRecipeReagentCount(const LocalRecipe& recipe, const LocalRealmPlayer& player, uint32_t itemId) {
+    uint32_t total = 0;
+    for (const auto& stack : player.inventory) if (stack.itemId == itemId) total += stack.count;
+    const auto equipped = uint32_t(std::count(player.equipment.begin(), player.equipment.end(), itemId));
+    // An equipped copy can also satisfy the tool requirement; reserve it once.
+    const uint32_t reserve = std::max(equipped, uint32_t(std::find(recipe.tools.begin(), recipe.tools.end(), itemId) != recipe.tools.end()));
+    return total - std::min(total, reserve);
+}
+
 } // namespace wowee::game
+
+namespace wowee::game {
+const std::vector<LocalMailboxSite>& localMailboxSites(const LocalWorldContent& c,const LocalRealmPlayer& p) {
+    if(!c.mailboxSitesReady || c.mailboxMap!=p.mapId || std::hypot(p.x-c.mailboxX,p.y-c.mailboxY)>32.f || std::abs(p.z-c.mailboxZ)>32.f){
+        c.mailboxSites.clear();
+        // Local service placements near the two reported starting hubs.
+        // Shared by authority and renderer, so Square uses the visible object's position.
+        for(const auto& site:std::array<LocalMailboxSite,2>{{
+            {0x0A1C000000000001ULL,0,-8943.0f,-132.0f,83.6f,0.0f},
+            {0x0A1C00000000000AULL,530,10345.0f,-6362.0f,33.4f,0.0f}}})
+            if(site.mapId==p.mapId && std::hypot(site.x-p.x,site.y-p.y)<192.f)c.mailboxSites.push_back(site);
+        std::vector<LocalNpcSpawn> spawns;
+        if(c.catalog){std::string error;c.catalog->query3D(p.mapId,p.x,p.y,p.z,192.f,LocalWorldCatalog::MaxResults,spawns,error);}
+        spawns.insert(spawns.end(),c.spawns.begin(),c.spawns.end());
+        for(const auto& s:spawns)if(s.mapId==p.mapId && std::hypot(s.x-p.x,s.y-p.y)<192.f)
+            if(const auto* d=c.npc(s.entry);d && (localEffectiveNpcFlags(*d)&kLocalNpcFlagInnkeeper)){
+                const uint64_t guid=0x0A1B000000000000ULL|s.id;
+                if(std::none_of(c.mailboxSites.begin(),c.mailboxSites.end(),[&](const auto& m){return m.guid==guid;}))
+                    c.mailboxSites.push_back({guid,s.mapId,s.x+3.f*std::cos(s.orientation),s.y+3.f*std::sin(s.orientation),s.z,s.orientation});
+            }
+        c.mailboxSitesReady=true;c.mailboxMap=p.mapId;c.mailboxX=p.x;c.mailboxY=p.y;c.mailboxZ=p.z;
+    }
+    return c.mailboxSites;
+}
+const LocalMailboxSite* nearbyLocalMailbox(const LocalWorldContent& c,const LocalRealmPlayer& p,uint64_t guid) {
+    if(p.dead || p.instanceId || p.flight.active || p.transportEntry || p.castingSpellId || p.attackTarget)return nullptr;
+    const LocalMailboxSite* best=nullptr;float limit=25.f;
+    for(const auto& m:localMailboxSites(c,p))if(m.mapId==p.mapId && (!guid || m.guid==guid)){
+        const float dx=p.x-m.x,dy=p.y-m.y,dz=p.z-m.z;const float distance=dx*dx+dy*dy+dz*dz;
+        if(distance<=limit){limit=distance;best=&m;}
+    }
+    return best;
+}
+}

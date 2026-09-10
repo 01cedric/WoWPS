@@ -1085,20 +1085,41 @@ uint32_t GameHandler::getEquipmentSetIgnoreMask(uint32_t setId) const {
 
 // Trade state delegation to InventoryHandler (which owns the canonical trade state)
 GameHandler::TradeStatus GameHandler::getTradeStatus() const {
+    if(localExploration_){auto* r=localAuctionRealm_?localAuctionRealm_():nullptr;
+        if(!r || !r->ready() || !r->localPlayer())return TradeStatus::None;
+        const auto& t=r->tradeView();const auto side=t.side(r->localPlayer()->guid);
+        if(side<0)return TradeStatus::None;
+        if(t.state==1 && side==1)return TradeStatus::PendingIncoming;
+        if(t.state==2)return t.accepted[side]?TradeStatus::Accepted:TradeStatus::Open;
+        return t.state==3?TradeStatus::Complete:TradeStatus::None;
+    }
     if (inventoryHandler_) return static_cast<TradeStatus>(inventoryHandler_->getTradeStatus());
     return tradeStatus_;
 }
 bool GameHandler::hasPendingTradeRequest() const {
+    if(localExploration_)return getTradeStatus()==TradeStatus::PendingIncoming;
     return inventoryHandler_ ? inventoryHandler_->hasPendingTradeRequest() : false;
 }
 bool GameHandler::isTradeOpen() const {
+    if(localExploration_){const auto status=getTradeStatus();return status==TradeStatus::Open || status==TradeStatus::Accepted;}
     return inventoryHandler_ ? inventoryHandler_->isTradeOpen() : false;
 }
 const std::string& GameHandler::getTradePeerName() const {
+    if(localExploration_){auto* r=localAuctionRealm_?localAuctionRealm_():nullptr;static const std::string empty;
+        if(!r || !r->ready() || !r->localPlayer())return empty;
+        const auto& t=r->tradeView();const auto side=t.side(r->localPlayer()->guid);return side<0?empty:t.names[1-side];}
     if (inventoryHandler_) return inventoryHandler_->getTradePeerName();
     return tradePeerName_;
 }
 const std::array<GameHandler::TradeSlot, GameHandler::TRADE_SLOT_COUNT>& GameHandler::getMyTradeSlots() const {
+    if(localExploration_){static std::array<TradeSlot,TRADE_SLOT_COUNT> slots;slots={};
+        auto* r=localAuctionRealm_?localAuctionRealm_():nullptr;if(!r || !r->ready() || !r->localPlayer())return slots;
+        const auto& t=r->tradeView();const auto own=t.side(r->localPlayer()->guid);if(own<0 || t.state!=2)return slots;
+        for(unsigned i=0;i<6;++i){const auto& item=t.items[own][i];auto& slot=slots[i];
+            slot.itemId=item.item;slot.stackCount=item.count;slot.occupied=item.item!=0;slot.bag=0;slot.bagSlot=item.bag;
+            if(const auto* def=r->content().item(item.item))slot.displayId=def->displayId;
+        }return slots;
+    }
     if (inventoryHandler_) {
         // Convert InventoryHandler::TradeSlot → GameHandler::TradeSlot (different struct layouts)
         static std::array<TradeSlot, TRADE_SLOT_COUNT> converted{};
@@ -1115,6 +1136,14 @@ const std::array<GameHandler::TradeSlot, GameHandler::TRADE_SLOT_COUNT>& GameHan
     return myTradeSlots_;
 }
 const std::array<GameHandler::TradeSlot, GameHandler::TRADE_SLOT_COUNT>& GameHandler::getPeerTradeSlots() const {
+    if(localExploration_){static std::array<TradeSlot,TRADE_SLOT_COUNT> slots;slots={};
+        auto* r=localAuctionRealm_?localAuctionRealm_():nullptr;if(!r || !r->ready() || !r->localPlayer())return slots;
+        const auto& t=r->tradeView();const auto own=t.side(r->localPlayer()->guid);if(own<0 || t.state!=2)return slots;
+        for(unsigned i=0;i<6;++i){const auto& item=t.items[1-own][i];auto& slot=slots[i];
+            slot.itemId=item.item;slot.stackCount=item.count;slot.occupied=item.item!=0;slot.bag=0;slot.bagSlot=item.bag;
+            if(const auto* def=r->content().item(item.item))slot.displayId=def->displayId;
+        }return slots;
+    }
     if (inventoryHandler_) {
         static std::array<TradeSlot, TRADE_SLOT_COUNT> converted{};
         const auto& src = inventoryHandler_->getPeerTradeSlots();
@@ -1130,9 +1159,13 @@ const std::array<GameHandler::TradeSlot, GameHandler::TRADE_SLOT_COUNT>& GameHan
     return peerTradeSlots_;
 }
 uint64_t GameHandler::getMyTradeGold() const {
+    if(localExploration_){auto* r=localAuctionRealm_?localAuctionRealm_():nullptr;if(!r || !r->ready() || !r->localPlayer())return 0;
+        const auto& t=r->tradeView();const auto own=t.side(r->localPlayer()->guid);return own<0 || t.state!=2?0:t.money[own];}
     return inventoryHandler_ ? inventoryHandler_->getMyTradeGold() : myTradeGold_;
 }
 uint64_t GameHandler::getPeerTradeGold() const {
+    if(localExploration_){auto* r=localAuctionRealm_?localAuctionRealm_():nullptr;if(!r || !r->ready() || !r->localPlayer())return 0;
+        const auto& t=r->tradeView();const auto own=t.side(r->localPlayer()->guid);return own<0 || t.state!=2?0:t.money[1-own];}
     return inventoryHandler_ ? inventoryHandler_->getPeerTradeGold() : peerTradeGold_;
 }
 
@@ -1478,10 +1511,18 @@ void GameHandler::setOrientation(float orientation) {
 // handleDestroyObject) moved to EntityController - see entity_controller.cpp
 
 void GameHandler::sendChatMessage(ChatType type, const std::string& message, const std::string& target) {
+    if(localExploration_) {
+        auto* realm=localAuctionRealm_?localAuctionRealm_():nullptr;
+        if(!realm || !realm->ready()){addSystemChatMessage("The local chat session is not connected");return;}
+        realm->sendChat(static_cast<LocalChatChannel>(type),message,target);
+        return;
+    }
     if (chatHandler_) chatHandler_->sendChatMessage(type, message, target);
 }
 
 void GameHandler::sendAddonMessage(ChatType type, const std::string& message, const std::string& target) {
+    if(localExploration_)return; // Local chat does not implement addon transport.
+
     if (chatHandler_) chatHandler_->sendAddonMessage(type, message, target);
 }
 
@@ -1627,10 +1668,12 @@ void GameHandler::randomRoll(uint32_t minRoll, uint32_t maxRoll) {
 }
 
 void GameHandler::addIgnore(const std::string& playerName) {
+    if(localExploration_){if(auto* realm=localAuctionRealm_?localAuctionRealm_():nullptr)realm->changeIgnore(playerName,true);return;}
     if (socialHandler_) socialHandler_->addIgnore(playerName);
 }
 
 void GameHandler::removeIgnore(const std::string& playerName) {
+    if(localExploration_){if(auto* realm=localAuctionRealm_?localAuctionRealm_():nullptr)realm->changeIgnore(playerName,false);return;}
     if (socialHandler_) socialHandler_->removeIgnore(playerName);
 }
 
@@ -1733,10 +1776,12 @@ void GameHandler::inviteToGuild(const std::string& playerName) {
 }
 
 void GameHandler::initiateReadyCheck() {
+    if(localExploration_){if(auto* realm=localAuctionRealm_?localAuctionRealm_():nullptr)realm->startReadyCheck();return;}
     if (socialHandler_) socialHandler_->initiateReadyCheck();
 }
 
 void GameHandler::respondToReadyCheck(bool ready) {
+    if(localExploration_){if(auto* realm=localAuctionRealm_?localAuctionRealm_():nullptr)realm->answerReadyCheck(realm->readyCheck().id,ready);return;}
     if (socialHandler_) socialHandler_->respondToReadyCheck(ready);
 }
 
@@ -1772,14 +1817,23 @@ void GameHandler::channelModeration(Opcode op, const std::string& channelName,
 }
 
 void GameHandler::promoteToLeader(uint64_t guid) {
+    if(auto* realm=localAuctionRealm_?localAuctionRealm_():nullptr;realm && realm->ready()) {
+        realm->partyCommand(LocalPartyAction::Promote,guid);return;
+    }
     if (socialHandler_) socialHandler_->promoteToLeader(guid);
 }
 
 void GameHandler::uninvitePlayer(const std::string& playerName) {
+    if(auto* realm=localAuctionRealm_?localAuctionRealm_():nullptr;realm && realm->ready()) {
+        realm->partyCommand(LocalPartyAction::Remove,realm->partyPlayerByName(playerName));return;
+    }
     if (socialHandler_) socialHandler_->uninvitePlayer(playerName);
 }
 
 void GameHandler::leaveParty() {
+    if(auto* realm=localAuctionRealm_?localAuctionRealm_():nullptr;realm && realm->ready()) {
+        realm->partyCommand(LocalPartyAction::Leave);return;
+    }
     if (socialHandler_) socialHandler_->leaveParty();
 }
 
@@ -1828,6 +1882,7 @@ void GameHandler::proposeDuel(uint64_t targetGuid) {
 }
 
 void GameHandler::initiateTrade(uint64_t targetGuid) {
+    if(localExploration_){if(auto* realm=localAuctionRealm_?localAuctionRealm_():nullptr)realm->tradeAction(LocalAction::TradeRequest,0,0,targetGuid);return;}
     if (inventoryHandler_) inventoryHandler_->initiateTrade(targetGuid);
 }
 
@@ -2450,7 +2505,7 @@ void GameHandler::setActionBarSlot(int slot, ActionBarSlot::Type type, uint32_t 
         fireAddonEvent("ACTIONBAR_SLOT_CHANGED", {std::to_string(slot + 1)});
         fireAddonEvent("ACTIONBAR_UPDATE_STATE", {});
     // Notify the server so the action bar persists across relogs.
-    if (isInWorld()) {
+    if (isInWorld() && !localExploration_ && socket) {
         const bool classic = isClassicLikeExpansion();
         auto pkt = SetActionButtonPacket::build(
             static_cast<uint8_t>(slot),
@@ -2520,18 +2575,30 @@ void GameHandler::sendAlterAppearance(uint32_t hairStyleEntry, uint32_t hairColo
 // ============================================================
 
 void GameHandler::inviteToGroup(const std::string& playerName) {
+    if(auto* realm=localAuctionRealm_?localAuctionRealm_():nullptr;realm && realm->ready()) {
+        realm->partyCommand(LocalPartyAction::Invite,realm->partyPlayerByName(playerName));return;
+    }
     if (socialHandler_) socialHandler_->inviteToGroup(playerName);
 }
 
 void GameHandler::acceptGroupInvite() {
+    if(auto* realm=localAuctionRealm_?localAuctionRealm_():nullptr;realm && realm->ready()) {
+        realm->partyCommand(LocalPartyAction::Accept,0,realm->partyView().inviteId);return;
+    }
     if (socialHandler_) socialHandler_->acceptGroupInvite();
 }
 
 void GameHandler::declineGroupInvite() {
+    if(auto* realm=localAuctionRealm_?localAuctionRealm_():nullptr;realm && realm->ready()) {
+        realm->partyCommand(LocalPartyAction::Decline,0,realm->partyView().inviteId);return;
+    }
     if (socialHandler_) socialHandler_->declineGroupInvite();
 }
 
 void GameHandler::leaveGroup() {
+    if(auto* realm=localAuctionRealm_?localAuctionRealm_():nullptr;realm && realm->ready()) {
+        realm->partyCommand(LocalPartyAction::Leave);return;
+    }
     if (socialHandler_) socialHandler_->leaveGroup();
 }
 

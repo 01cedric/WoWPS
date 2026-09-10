@@ -2058,7 +2058,9 @@ void Renderer::update(float deltaTime) {
     if (modelCleanupTimer >= 5.0f) {
 #endif
         if (wmoRenderer) {
-            wmoRenderer->cleanupUnusedModels();
+            std::unordered_set<uint32_t> preparing;
+            if (terrainManager) terrainManager->collectPendingWmoModels(preparing);
+            wmoRenderer->cleanupUnusedModels(preparing);
         }
         if (m2Renderer) {
             std::unordered_set<uint32_t> preparing;
@@ -3241,8 +3243,12 @@ void Renderer::renderMinimapOverlay(VkCommandBuffer cmd,
             minimapPlayerOrientation = glm::pi<float>() - gameHandler->getMovementInfo().orientation;
             hasMinimapPlayerOrientation = true;
         }
+        const VkExtent2D minimapExtent = minimapDrawsWithWater_ &&
+            vkCtx->getMsaaSamples() > VK_SAMPLE_COUNT_1_BIT
+            ? vkCtx->getSwapchainExtent() : activeRenderExtent_;
         minimap->render(cmd, *camera, minimapCenter,
                         window->getWidth(), window->getHeight(),
+                        minimapExtent,
                         minimapPlayerOrientation, hasMinimapPlayerOrientation);
     }
 }

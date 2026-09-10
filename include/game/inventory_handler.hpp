@@ -378,6 +378,9 @@ public:
     void mailReturnToSender(uint32_t mailId);
     void mailMarkAsRead(uint32_t mailId);
     void refreshMailList();
+    void pumpLocalMail();
+    void autoLootLocalMail(uint32_t id);
+    void localMailAction(uint8_t action,uint32_t id,uint32_t slot=0);
 
     // ---- Item socketing ----
     //
@@ -710,6 +713,11 @@ private:
     bool mailboxOpen_ = false;
     uint64_t mailboxGuid_ = 0;
     std::vector<MailMessage> mailInbox_;
+    uint64_t localMailRevision_=UINT64_MAX,localMailResult_=0,localMailOwner_=0;
+    uint8_t localMailPending_=0;
+    uint32_t localMailPendingId_=0;
+    std::vector<std::pair<uint8_t,uint32_t>> localMailLootQueue_;
+    uint32_t localMailLootId_=0;
     int selectedMailIndex_ = -1;
     bool showMailCompose_ = false;
     bool hasNewMail_ = false;

@@ -116,7 +116,11 @@ std::vector<uint8_t> MpqAssetSource::readFileBounded(const std::string& requeste
         if (!SFileHasFile(archive, normalizedPath.c_str())) continue;
         HANDLE file = nullptr;
         if (!SFileOpenFileEx(archive, normalizedPath.c_str(), SFILE_OPEN_FROM_MPQ, &file)) {
-            LOG_WARNING("MpqAssetSource: open failed for ", normalizedPath, " (error ", SErrGetLastError(), ")");
+            const unsigned openError = SErrGetLastError();
+            // Open allocates StormLib's per-file state too. Preserve patch
+            // precedence on exhaustion just as we do for a failed sector read.
+            if (openError == ERROR_NOT_ENOUGH_MEMORY) throw std::bad_alloc();
+            LOG_WARNING("MpqAssetSource: open failed for ", normalizedPath, " (error ", openError, ")");
             continue;
         }
         // Buffer allocation and StormLib reads can fail after open. Keep the

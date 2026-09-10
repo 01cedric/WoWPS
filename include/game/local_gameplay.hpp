@@ -14,6 +14,7 @@
 
 namespace wowee::game {
 class LocalWorldCatalog;
+class LocalVendorInventory;
 enum class LocalResourceType : uint8_t { Mana = 0, Rage = 1, Energy = 3, RunicPower = 6 };
 struct LocalFactionTemplate {
     uint32_t id = 0, faction = 0, flags = 0, factionGroup = 0, friendGroup = 0, enemyGroup = 0;
@@ -52,17 +53,50 @@ struct LocalMapDefinition {
 };
 struct LocalInstanceState {
     uint32_t id = 0, mapId = 0;
+    // 0: legacy shared; human GUID: solo private; high-bit key: a session
+    // party's durable instance owner. This is not the transient party ID.
     uint64_t groupId = 0;
 };
 
-struct LocalItemStack { uint32_t itemId = 0; uint16_t count = 0; };
+struct LocalItemStack { uint32_t itemId = 0; uint16_t count = 0; uint8_t bagSlot=255; bool operator==(const LocalItemStack&) const = default; };
+inline constexpr size_t kLocalBankSlots = 28;
+struct LocalMerchantBuyback {
+    uint32_t id = 0, itemId = 0, price = 0;
+    uint16_t count = 0;
+    bool operator==(const LocalMerchantBuyback&) const = default;
+};
+inline constexpr size_t kLocalMaxBuyback = 12;
+/// Depleted physical merchant offer. Restocking uses active simulation time;
+/// offline time does not replenish stock. Only the partial interval is saved.
+struct LocalVendorStockRecord {
+    uint64_t npcGuid = 0;
+    uint32_t entry = 0, itemId = 0, remaining = 0;
+    uint64_t elapsedMs = 0;
+    bool operator==(const LocalVendorStockRecord&) const = default;
+};
 /// A profession this character has learned. `skillId` is a SkillLine.dbc id,
 /// `max` the rank cap a trainer has sold them, `current` the points earned
 /// towards it. Points come from crafting; `progress` is the fraction of the
 /// next point already earned, in thousandths - see localCraftSkillChance()
 /// about why this realm accumulates the client's own skill-up chance rather
 /// than rolling it.
+inline constexpr size_t kLocalMaxStatAuras = 16;
+inline constexpr size_t kLocalMaxHealingAuraViews=8;
+struct LocalHealingAuraView {
+    uint32_t spellId=0,remainingMs=0,durationMs=0;
+    uint64_t casterGuid=0;
+    bool operator==(const LocalHealingAuraView&) const = default;
+};
+struct LocalStatAura {
+    uint32_t spellId=0, remainingMs=0, mapId=0, instanceId=0;
+    uint64_t casterGuid=0; // zero denotes legacy/self caster
+    uint32_t absorbRemaining=0;
+    bool operator==(const LocalStatAura&) const = default;
+};
 struct LocalProfessionSkill { uint16_t skillId = 0, current = 0, max = 0, progress = 0; };
+struct LocalRecipeAccess {
+    uint32_t races = 0, classes = 0, excludedRaces = 0, excludedClasses = 0;
+};
 /// One trade-skill recipe, joined from the client's own SkillLineAbility.dbc
 /// and Spell.dbc. Nothing here is authored: the reagents, the item produced and
 /// the skill thresholds are all columns of the player's own data files.
@@ -79,6 +113,14 @@ struct LocalRecipe {
     std::string name;
     /// Spell.dbc Reagent[8]/ReagentCount[8], as many as the recipe declares.
     std::vector<LocalItemStack> reagents;
+    // Non-consumed Spell.dbc Totem item requirements. Tool-category and world
+    // focus rules are separate and are not represented by these exact IDs.
+    std::array<uint32_t, 2> tools{};
+    // Alternative SkillLineAbility race/class restrictions for this skill.
+    std::vector<LocalRecipeAccess> access;
+    // Keep previously learned recipe IDs loadable even when a source rule
+    // cannot be executed. Such a recipe is visible but cannot be sold/crafted.
+    std::string unsupportedReason;
 };
 struct LocalCooldown { uint32_t spellId = 0; uint32_t remainingMs = 0; };
 enum class LocalCastStatus : uint8_t { None = 0, Casting, Finished, Interrupted, Failed };
@@ -105,6 +147,11 @@ struct LocalRealmPlayer {
     // Legacy saves skip onboarding; createPlayer opts new identities into it.
     bool introSeen = true;
     std::vector<LocalItemStack> inventory;
+    std::array<LocalItemStack, kLocalBankSlots> bank{}; // Stable personal bank slots; no purchased bags yet.
+    // The most recent twelve sales, newest first. IDs never shift when an
+    // older row is bought back, so a delayed LAN command cannot buy another row.
+    uint32_t buybackSerial = 0;
+    std::vector<LocalMerchantBuyback> buyback;
     // Canonical nineteen worn slots. Each reference reserves one inventory
     // copy; equipped items remain in inventory, including paired duplicates.
     std::array<uint32_t, kLocalEquipmentSlotCount> equipment{};
@@ -114,6 +161,10 @@ struct LocalRealmPlayer {
     // rewarding. Kept separate so completed quests never occupy active slots.
     std::vector<uint32_t> completedQuestIds;
     std::vector<uint32_t> knownSpells;
+    std::vector<LocalHealingAuraView> healingAuras; // transient presentation only; never saved
+    std::vector<LocalStatAura> statAuras; // timed recipient effects; shield capacity is bounded against content
+    std::vector<std::pair<uint32_t,uint8_t>> talents; // talent ID and learned rank (1..5), at most 71 points
+
     // Trade-skill recipes this character has been taught. Separate from
     // knownSpells because a recipe is not cast at anything: it is crafted, and
     // the rules that gate it are skill points rather than mana and range.
@@ -145,6 +196,8 @@ struct LocalRealmPlayer {
     // a node the player has already discovered, and that rule is what keeps a
     // level-one character from crossing the continent in a minute.
     std::vector<uint32_t> knownTaxiNodes;
+    uint16_t ridingSkill = 0; // Ground riding: untrained, apprentice 75, journeyman 150.
+    bool migrateLegacyRiding = false; // Save16 encodes a pending migration as reserved riding value 65535.
     // A taxi flight in progress. Persisted with the character, so a save made
     // mid-flight resumes rather than dropping the player out of the sky.
     LocalFlightState flight;
@@ -193,6 +246,15 @@ struct LocalItemDefinition {
 struct LocalSpellDefinition {
     uint32_t id = 0, mana = 0, cooldownMs = 0, damage = 0, heal = 0;
     uint32_t allowableClasses = 0;
+    uint32_t talentId=0,talentTab=0;
+    uint8_t talentRank=0,talentRow=0;
+    std::array<uint32_t,3> talentPrerequisites{};
+    std::array<uint8_t,3> talentPrerequisiteRanks{};
+    uint32_t buffAbsorb=0,absorbSchoolMask=0;
+    bool buffSelfOnly=true;
+    uint32_t buffHealth=0,buffArmor=0; // fixed positive, timed self buffs
+    uint32_t passiveHealth=0,passiveArmor=0;
+    bool passive=false;
     // 255 consumes the active class resource; otherwise an explicit power type.
     uint8_t resourceType = 255;
     LocalRuneCost runeCost{};
@@ -206,6 +268,9 @@ struct LocalSpellDefinition {
     uint32_t visualId = 0, schoolMask = 0;
     uint32_t manaPercent = 0, baseLevel = 1, maxLevel = 0, damageMax = 0, healMax = 0;
     uint32_t periodicDamage = 0, periodicIntervalMs = 0;
+    uint32_t periodicHeal = 0, periodicHealMax = 0;
+    float periodicHealPerLevel = 0;
+    bool healingSelfOnly = false;
     float minRange = 0, damagePerLevel = 0, healPerLevel = 0;
     // SkillLineAbility.SupercededBySpell: the next rank of this ability. Retail
     // replaces a rank rather than stacking it, and so does this - which is what
@@ -229,7 +294,25 @@ struct LocalQuestDefinition {
     uint32_t xp = 0, money = 0, rewardItem = 0;
     uint16_t rewardCount = 0;
     std::vector<LocalQuestObjective> objectives;
+    // Legacy rewardItem/rewardCount is the first guaranteed reward. These
+    // optional lists extend old content without changing character saves.
+    std::vector<LocalItemStack> additionalRewards; // up to three more guaranteed items
+    std::vector<LocalItemStack> rewardChoices;     // choose exactly one of up to six
 };
+inline size_t localQuestRewardCount(const LocalQuestDefinition& q) {
+    return (q.rewardItem ? 1u : 0u) + q.additionalRewards.size();
+}
+inline LocalItemStack localQuestRewardAt(const LocalQuestDefinition& q,size_t index) {
+    if(q.rewardItem) {if(!index)return {q.rewardItem,q.rewardCount};--index;}
+    return index<q.additionalRewards.size()?q.additionalRewards[index]:LocalItemStack{};
+}
+inline bool validLocalQuestRewards(const LocalQuestDefinition& q) {
+    if(bool(q.rewardItem)!=bool(q.rewardCount) || q.additionalRewards.size()>3 ||
+       (!q.rewardItem && !q.additionalRewards.empty()) || q.rewardChoices.size()>6)return false;
+    for(const auto& r:q.additionalRewards)if(!r.itemId || !r.count)return false;
+    for(const auto& r:q.rewardChoices)if(!r.itemId || !r.count)return false;
+    return true;
+}
 struct LocalNpcDefinition {
     uint32_t id = 0, displayId = 0, health = 40, damage = 4, armor = 0, xp = 50, money = 0;
     uint8_t level = 1;
@@ -338,6 +421,9 @@ struct LocalNpcSpawn {
 };
 struct LocalRealmNpc {
     uint64_t guid = 0, targetGuid = 0, lootOwner = 0;
+    // Authority-only cohort captured at death. Only lootOwner is sent over LAN;
+    // new group members cannot acquire an earlier corpse's reservation.
+    std::array<uint64_t, 5> lootCandidates{};
     uint32_t entry = 0, displayId = 0, mapId = 0, instanceId = 0, health = 0, maxHealth = 0;
     float x = 0, y = 0, z = 0, orientation = 0;
     uint8_t level = 1;
@@ -350,7 +436,7 @@ struct LocalRealmNpc {
     uint32_t taxiNodeId = 0;
     /// Set when this NPC runs an auction house. Resolved on the authority from
     /// the catalog's npcflag, replicated so a guest sees the same auctioneers.
-    bool auctioneer = false;
+    bool auctioneer = false, banker = false;
     /// The rest of the services this NPC offers, resolved on the authority the
     /// same way and replicated for the same reason: a guest that decided for
     /// itself could offer training the host would refuse.
@@ -372,7 +458,12 @@ struct LocalRealmNpc {
     uint32_t spawnId = 0;
     float homeX = 0, homeY = 0, homeZ = 0, attackTimer = 0, respawnTimer = 0;
 };
+struct LocalMailboxSite {uint64_t guid=0;uint32_t mapId=0;float x=0,y=0,z=0,orientation=0;};
 struct LocalWorldContent {
+    mutable bool mailboxSitesReady=false;
+    mutable uint32_t mailboxMap=0;
+    mutable float mailboxX=0,mailboxY=0,mailboxZ=0;
+    mutable std::vector<LocalMailboxSite> mailboxSites;
     uint32_t fingerprint = 0;
     std::string sourcePath;
     std::vector<LocalItemDefinition> items;
@@ -401,6 +492,7 @@ struct LocalWorldContent {
     const LocalNpcDefinition* npc(uint32_t id) const;
     std::vector<LocalQuestDefinition> questsForNpc(uint32_t entry) const;
 };
+struct LocalTradeItem {uint32_t item=0;uint16_t count=0,sourceCount=0;uint8_t bag=0;bool operator==(const LocalTradeItem&)const=default;};
 enum class LocalAction : uint8_t {
     Attack = 1, StopAttack, CastSpell, AcceptQuest, TurnInQuest, Loot, EquipItem,
     UseItem, Respawn, Interact, EnterPortal, LeaveInstance, AbandonQuest = 13,
@@ -414,9 +506,9 @@ enum class LocalAction : uint8_t {
     // bid in `target`; ListAuction carries the item in `id` and the count in
     // `target`.
     BuyoutAuction = 20, BidAuction = 21, ListAuction = 22,
-    // Merchants, repair and training. Like TakeFlight, none of these carries
-    // the NPC they are addressed to: the authority finds the qualifying NPC the
-    // player is standing at, so a client can never trade with a merchant on the
+    // Merchants, repair and training. Merchant commands name the selected NPC
+    // and the authority validates that exact nearby service; legacy zero-GUID
+    // callers resolve the nearby service. A client cannot trade on the
     // far side of the world or buy training from something that is not a
     // trainer. `id` names the item, spell or skill; `target` carries the stack
     // size for the two merchant actions and nothing for the rest.
@@ -428,30 +520,39 @@ enum class LocalAction : uint8_t {
     // Trade skills. LearnRecipe is bought from the profession trainer the
     // player is standing at and carries the recipe in `id`; CraftItem needs no
     // trainer and carries the recipe the character already knows.
-    LearnRecipe = 31, CraftItem = 32, CancelAuction = 33, Dismount = 34,
+    LearnRecipe = 31, CraftItem = 32, CancelAuction = 33, Dismount = 34, BuybackItem = 35,
+    BankDeposit = 36, BankWithdraw = 37, UnlearnProfession = 38, BankMove = 39,
+    PartyInvite = 40, PartyAccept = 41, PartyDecline = 42, PartyLeave = 43, PartyRemove = 44, PartyPromote = 45,
+    BankDepositSlot = 46, // bag slot -> bank slot; same snapshot fields as BankMove.
+    ReadyStart=47, ReadyAnswer=48, TradeRequest=49, TradeOpen=50, TradeOffer=51,
+    TradeMoney=52, TradeAccept=53, TradeUnaccept=54, TradeCancel=55,
+    MailSend=56, MailTakeMoney=57, MailTakeItem=58, MailReturn=59, MailDelete=60, MailRead=61,
+    BackpackMove=62, BankWithdrawSlot=63, BankDepositFromSlot=64,
+    TrainRiding=65, DiscoverTaxi=66, LearnTalent=67, ResetTalents=68, CancelStatAura=69,
 };
 /// The highest action a client may send. Anything above it is rejected at the
 /// wire rather than reaching the rules, so adding an action here is a
 /// deliberate act and a forgotten one is inert instead of dangerous.
-inline constexpr LocalAction kLocalActionMax = LocalAction::Dismount;
-struct LocalRealmCommand { LocalAction action = LocalAction::StopAttack; uint64_t target = 0; uint32_t id = 0; uint32_t bid = 0, buyout = 0, durationMinutes = 0; uint64_t serviceNpcGuid = 0; uint16_t auctionCount = 1; };
+inline constexpr LocalAction kLocalActionMax = LocalAction::CancelStatAura;
+struct LocalRealmCommand { LocalAction action = LocalAction::StopAttack; uint64_t target = 0; uint32_t id = 0; uint32_t bid = 0, buyout = 0, durationMinutes = 0; uint64_t serviceNpcGuid = 0; uint16_t auctionCount = 1; uint16_t bankSourceCount = 0, bankDestinationCount = 0;
+    std::string mailRecipient,mailSubject,mailBody;
+    std::vector<LocalTradeItem> mailAttachments;
+};
 
 // Deliberately bounded local simulation. This is a standalone ruleset, not an
 // AzerothCore replacement claiming complete retail scripts or WoW formulas.
+struct LocalParty;
 class LocalGameplay {
 public:
     static constexpr size_t MaxInventory = 24, MaxQuests = 32, MaxNpcs = 128, MaxInstances = 128;
+    // Authority-owned, transient single-target healing effects. Recasts replace
+    // an existing rank rather than consuming another slot.
+    static constexpr size_t MaxPeriodicHeals = 256, MaxPeriodicHealsPerTarget = 8;
     // A spellbook and a recipe book, per character.
     //
-    // These three are what the owner's progress datagram is spent on, and it
-    // has to stay inside one 1400-byte packet: everything else in that message
-    // is fixed at 1060 bytes, so these may cost at most 340 between them at
-    // four bytes an entry plus a count byte each. Forty-eight abilities is
-    // ample once ranks replace each other rather than stacking - a level-eighty
-    // class has roughly a dozen abilities this ruleset can actually cast, all
-    // ranks collapsed - and twenty-four recipes is a working trade skill rather
-    // than a complete one. See the static_assert in local_realm.cpp.
-    static constexpr size_t MaxSpells = 48, MaxRecipes = 24;
+    // Owner progress uses bounded multipart snapshots. These caps also bound
+    // save parsing, memory use and reassembly; see local_realm.cpp's packet budget.
+    static constexpr size_t MaxSpells = 192, MaxRecipes = 96;
     // Cooldowns are bounded separately because only the handful of abilities
     // actually cooling down are ever present; sizing this with the spellbook
     // would have spent 384 bytes a packet on entries that are never sent.
@@ -508,15 +609,21 @@ public:
     /// What the merchant the player is standing at sells. Empty away from one.
     std::vector<uint32_t> vendorStock(const LocalRealmPlayer& player, uint64_t npcGuid = 0) const;
     int32_t vendorRemaining(const LocalRealmPlayer& player, uint32_t itemId, uint64_t npcGuid = 0) const;
+    // Financial commands can roll back stock along with bags/gold if the
+    // atomic character save fails.
+    LocalVendorInventory vendorInventorySnapshot() const;
+    void restoreVendorInventory(LocalVendorInventory snapshot);
+    std::vector<LocalVendorStockRecord> savedVendorStock() const;
+    bool restoreVendorStock(const std::vector<LocalVendorStockRecord>& records);
     /// Abilities the class trainer the player is standing at can teach them.
-    std::vector<uint32_t> trainableSpells(const LocalRealmPlayer& player) const;
+    std::vector<uint32_t> trainableSpells(const LocalRealmPlayer& player, uint64_t npcGuid = 0) const;
     /// Install the trade-skill recipes read from the client's own
     /// SkillLineAbility.dbc and Spell.dbc. Without them no profession can be
     /// practised and the trainer says so, rather than inventing recipes.
     bool setRecipes(std::vector<LocalRecipe> recipes, std::string& error);
     /// Recipes the profession trainer the player is standing at can teach them
     /// now: their skill line, within their current skill, not already known.
-    std::vector<uint32_t> trainableRecipes(const LocalRealmPlayer& player) const;
+    std::vector<uint32_t> trainableRecipes(const LocalRealmPlayer& player, uint64_t npcGuid = 0) const;
     /// Recipes the character knows and currently has the reagents for.
     std::vector<uint32_t> craftableRecipes(const LocalRealmPlayer& player) const;
 
@@ -548,6 +655,7 @@ public:
     bool restoreInstances(const std::vector<LocalInstanceState>& instances, std::string& error);
     static bool validCharacterOptions(uint8_t race, uint8_t classId, uint8_t gender);
     const LocalWorldContent& content() const;
+    void refreshInventoryObjectives(LocalRealmPlayer& player);
     void useContent(std::shared_ptr<LocalWorldContent> content);
     std::shared_ptr<LocalWorldContent> sharedContent() const;
     bool validatePlayer(const LocalRealmPlayer& player, std::string& error) const;
@@ -555,6 +663,10 @@ public:
     bool execute(LocalRealmPlayer& player, const LocalRealmCommand& command,
                  const std::vector<LocalRealmPlayer*>& players, std::string& result);
     bool tick(float seconds, const std::vector<LocalRealmPlayer*>& players);
+    // Atomically install the authenticated session roster (never saved/client supplied).
+    bool setPartyMembership(const std::vector<LocalParty>& parties);
+    // Restore the consumed corpse reservation after a failed atomic realm save.
+    void restoreLootable(uint64_t guid, bool lootable);
     const std::vector<LocalRealmNpc>& npcs() const;
     void setRemoteNpcs(std::vector<LocalRealmNpc> npcs);
 private:

@@ -13,8 +13,9 @@ const ItemSlot* GameHandler::localBagSlot(int index, uint64_t* guid) {
     if (guid) *guid=0;
     auto* realm=localAuctionRealm_?localAuctionRealm_():nullptr;
     const auto* player=realm?realm->localPlayer():nullptr;
-    if (!localExploration_ || !player || index<0 || index>=24 || size_t(index)>=player->inventory.size()) return nullptr;
-    const auto& stack=player->inventory[size_t(index)];
+    if (!localExploration_ || !player || index<0 || index>=24) return nullptr;
+    const auto storageIndex=localInventoryIndex(*player,uint32_t(index));if(storageIndex>=player->inventory.size())return nullptr;
+    const auto& stack=player->inventory[storageIndex];
     const auto* definition=realm->content().item(stack.itemId);
     if (!definition || !stack.count) return nullptr;
     cacheLocalAuctionItem(stack.itemId);

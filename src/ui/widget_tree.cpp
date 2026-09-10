@@ -658,6 +658,9 @@ void WidgetTree::shiftExplicitLevels(uint32_t id, int delta) {
     for (uint32_t child : kids) {
         if (Widget* c = get(child)) {
             if (c->levelExplicit) c->level += delta;
+            // Input can press and release in one pad update, before another
+            // layout. Keep child hit priority above the newly raised parent.
+            c->effLevel += delta;
         }
         shiftExplicitLevels(child, delta);
     }
@@ -666,6 +669,7 @@ void WidgetTree::shiftExplicitLevels(uint32_t id, int delta) {
 void WidgetTree::raise(uint32_t id) {
     Widget* w = get(id);
     if (!w) return;
+    resolveWidget(id);
     // The highest of the *others*, not of everything including this frame.
     //
     // Seeded with w->effLevel, a frame already on top still came out one
@@ -677,6 +681,14 @@ void WidgetTree::raise(uint32_t id) {
     for (const Widget& other : widgets_) {
         if (other.id == 0 || other.id == id) continue;
         if (other.effStrata != w->effStrata) continue;
+        // Descendants move with this window; comparing against them makes
+        // every Raise outrun its own buttons. Closed windows are not peers.
+        bool peer = other.shown;
+        for (const Widget* ancestor = get(other.parent); peer && ancestor;
+             ancestor = get(ancestor->parent)) {
+            if (ancestor->id == id || !ancestor->shown) peer = false;
+        }
+        if (!peer) continue;
         if (other.effLevel > highest) highest = other.effLevel;
     }
     // Already above everything: raising is what was asked for and it is
@@ -689,11 +701,23 @@ void WidgetTree::raise(uint32_t id) {
     shiftExplicitLevels(id, newLevel - w->effLevel);
     w->level = newLevel;
     w->levelExplicit = true;
+    w->effLevel = newLevel;
     // After the idempotence guard above, so a raise that changed nothing does
     // not ask for a pass. ShowUIPanel raises on every panel open and the
     // interface calls it freely; dirtying on a no-op would keep a solve owed
     // for ever.
     markLayoutDirty("raise");
+}
+
+void WidgetTree::setShown(uint32_t id, bool shown) {
+    Widget* w = get(id);
+    if (!w || w->shown == shown) return;
+    w->shown = shown;
+    markLayoutDirty("setShown");
+    // ContainerFrameTemplate is MEDIUM, as is the action bar. Its toplevel
+    // flag is what puts an opened bag above the bar's deeper art frames.
+    // Waiting for a mouse click left pad-opened bags behind the gryphons.
+    if (shown && w->kind == WidgetKind::Frame && w->topLevel) raise(id);
 }
 
 void WidgetTree::lower(uint32_t id) {
@@ -716,6 +740,7 @@ void WidgetTree::lower(uint32_t id) {
     shiftExplicitLevels(id, newLevel - w->effLevel);
     w->level = newLevel;
     w->levelExplicit = true;
+    w->effLevel = newLevel;
     markLayoutDirty("lower");   // see raise()
 }
 
@@ -861,19 +886,22 @@ void WidgetTree::resolveChain(uint32_t id, float screenW, float screenH, int& de
     // stops the second visit itself.
     w->resolvedGen = layoutGeneration_;
     const uint32_t parent = w->parent;
-    // Copied: resolving a dependency can create widgets and move the container
-    // this widget's anchors live in.
-    std::vector<uint32_t> deps;
-    deps.reserve(w->anchors.size());
-    for (const Anchor& a : w->anchors) {
-        if (a.relativeTo != 0 && a.relativeTo != id) deps.push_back(a.relativeTo);
-    }
     // The parent first: a widget's rect is measured from its parent's, and its
     // scale is the parent's times its own.
     if (parent != 0 && parent != id) resolveChain(parent, screenW, screenH, depth);
-    for (uint32_t d : deps) resolveChain(d, screenW, screenH, depth);
+    // Geometry resolution runs no Lua callbacks and does not mutate anchors.
+    for (const Anchor& a : w->anchors) {
+        if (a.relativeTo != 0 && a.relativeTo != id)
+            resolveChain(a.relativeTo, screenW, screenH, depth);
+    }
     --depth;
     layoutWidgetSelf(id, screenW, screenH);
+    // A hidden dependency may be reached before its normal subtree walk.
+    // Keep the pruning invariant: an already-hidden node has hidden children,
+    // so a later hideSubtree() can safely stop at it.
+    if (!w->visibleChain && !w->visible) {
+        for (uint32_t child : w->children) hideSubtree(child);
+    }
 }
 
 void WidgetTree::layout(float pixelW, float pixelH) {
@@ -905,6 +933,10 @@ void WidgetTree::layout(float pixelW, float pixelH) {
     lastPrunedWidgets_ = 0;
     layingOut_ = true;
     struct Done { bool& f; ~Done() { f = false; } } done{layingOut_};
+    // A resize changes every anchor target even if Lua changed no widget.
+    // A fresh solve generation also covers callers that explicitly request
+    // layout after writing a widget field directly.
+    ++layoutGeneration_;
     lastPixelW_ = pixelW;
     lastPixelH_ = pixelH;
     // How many pixels one interface unit is worth. Everything below works in
@@ -956,6 +988,7 @@ void WidgetTree::layout(float pixelW, float pixelH) {
     rootW.effStrata = rootW.strata;
     rootW.effLevel = 0;
     rootW.effScale = 1.0f;
+    rootW.resolvedGen = layoutGeneration_;
     // The screen and UIParent are placed here rather than by the walk, so the
     // walk never visits them - and the two lists it gathers would be missing
     // them. Neither can reach the draw order (a bare frame paints nothing) but
@@ -978,6 +1011,7 @@ void WidgetTree::layout(float pixelW, float pixelH) {
         ui->effStrata = ui->strata;
         ui->effLevel = 0;
         ui->effScale = 1.0f;
+        ui->resolvedGen = layoutGeneration_;
         considerForDraw(*ui);
         if (ui->visibleChain || ui->visible) {
             for (uint32_t child : ui->children) layoutWidget(child, screenW, screenH);
@@ -1007,7 +1041,10 @@ void WidgetTree::layout(float pixelW, float pixelH) {
 }
 
 void WidgetTree::layoutWidget(uint32_t id, float screenW, float screenH) {
-    layoutWidgetSelf(id, screenW, screenH);
+    // Anchors may name a sibling created later. Resolve that dependency now,
+    // so first display and resolution changes use this frame's target rect.
+    int depth = 0;
+    resolveChain(id, screenW, screenH, depth);
     const Widget* w = get(id);
     if (!w) return;
     considerForDraw(*w);

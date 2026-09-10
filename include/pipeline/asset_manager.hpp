@@ -5,6 +5,7 @@
 #include "pipeline/asset_manifest.hpp"
 #include "pipeline/loose_file_reader.hpp"
 #include "pipeline/byte_lru_cache.hpp"
+#include "pipeline/preview_model_cache.hpp"
 #include <atomic>
 #include <memory>
 #include <string>
@@ -191,6 +192,7 @@ public:
      * Clear all cached resources
      */
     void clearCache();
+    PreviewModelCache& previewModels() { return previewModels_; }
 
     // Reclaim only disposable file copies; live DBC/model owners stay valid.
     // Also used at the menu -> world transition to release stale menu assets.
@@ -248,6 +250,7 @@ private:
     // File hits update recency under an exclusive lock; payload copies happen
     // outside the lock through immutable handles. DBC lookups use shared locks.
     mutable std::shared_mutex cacheMutex;
+    PreviewModelCache previewModels_;
     // THREAD-SAFE: protected by cacheMutex (exclusive lock for writes).
     std::unordered_map<std::string, std::shared_ptr<DBCFile>> dbcCache;
 

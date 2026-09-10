@@ -250,7 +250,8 @@ void Application::renderLocalVendorPanel(float scale) {
     // Walking away ends the conversation. The authority has already stopped
     // accepting these commands by now, so a window left open would be a shop
     // whose every button reports "too far away".
-    if (!live || (!vendor && !repairer)) { localRealmVendorOpen_ = false; return; }
+    if (!live || (!vendor && !repairer)) { localRealm_->refreshMerchant(0); localRealmVendorOpen_ = false; return; }
+    if (vendor) localRealm_->refreshMerchant(vendor->guid);
     const auto self = *live;
     const auto& content = localRealm_->content();
     const auto& io = ImGui::GetIO();
@@ -273,19 +274,20 @@ void Application::renderLocalVendorPanel(float scale) {
     if (repairer) {
         ImGui::Separator();
         if (ImGui::Button("Repair All Equipment", ImVec2(200 * scale, 26 * scale)))
-            localRealm_->repairEquipment();
+            localRealm_->repairEquipment(repairer->guid);
         ImGui::SameLine();
         ImGui::TextDisabled("Gear in this world does not wear out, so this costs nothing.");
     }
 
     if (vendor && ImGui::BeginTabBar("##vendorTabs")) {
         if (ImGui::BeginTabItem("Buy")) {
-            const auto stock = localRealm_->vendorStock();
+            const auto stock = localRealm_->vendorStock(vendor->guid);
             if (stock.empty()) ImGui::TextWrapped("This merchant has nothing in stock right now.");
             ImGui::BeginChild("##buyList", ImVec2(0, 0), ImGuiChildFlags_Borders);
             for (uint32_t itemId : stock) {
-                const auto* item = content.item(itemId);
-                if (!item) continue;
+                const auto* source = content.item(itemId);
+                if (!source) continue;
+                const auto definition = *source; const auto* item = &definition;
                 ImGui::PushID(static_cast<int>(itemId));
                 if (item->displayId) {
                     if (const auto icon = ui::itemIconTexture(item->displayId, assetManager.get(), window.get())) {
@@ -302,8 +304,10 @@ void Application::renderLocalVendorPanel(float scale) {
                 if (bundle > 1) { ImGui::Text("x%u", unsigned(bundle)); ImGui::SameLine(); }
                 // Existing partial stacks can accept goods even when all bag
                 // slots are occupied. The authority validates actual capacity.
-                ImGui::BeginDisabled(self.money < price);
-                if (ImGui::SmallButton("Buy")) localRealm_->buyFromVendor(itemId, bundle);
+                const auto remaining = localRealm_->vendorRemaining(itemId, vendor->guid);
+                if (remaining >= 0) { ImGui::Text("Remaining: %d", remaining); ImGui::SameLine(); }
+                ImGui::BeginDisabled(self.money < price || (remaining >= 0 && uint32_t(remaining) < bundle));
+                if (ImGui::SmallButton("Buy")) localRealm_->buyFromVendor(itemId, bundle, vendor->guid);
                 ImGui::EndDisabled();
                 if (item->attack || item->armor || item->maxHealth)
                     ImGui::TextDisabled("   Attack +%u  Armor +%u  Health +%u",
@@ -314,7 +318,7 @@ void Application::renderLocalVendorPanel(float scale) {
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Sell")) {
-            ImGui::TextWrapped("Selling is final. The merchant pays the item's own value.");
+            ImGui::TextWrapped("The merchant pays the item's own value. Your twelve most recent sales are available in Buyback.");
             ImGui::BeginChild("##sellToVendor", ImVec2(0, 0), ImGuiChildFlags_Borders);
             for (size_t index = 0; index < self.inventory.size(); ++index) {
                 const auto& stack = self.inventory[index];
@@ -343,10 +347,10 @@ void Application::renderLocalVendorPanel(float scale) {
                 // whichever row happens to be under the cursor when it is
                 // answered - the two can differ once the list shifts.
                 if (ImGui::BeginPopupModal("Sell this item?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-                    ImGui::TextWrapped("Sell %s x%u? You will not get it back.",
+                    ImGui::TextWrapped("Sell %s x%u?",
                                        item->name.c_str(), stack.count);
                     if (ImGui::Button("Sell") && localRealmVendorSell_ == item->id) {
-                        localRealm_->sellToVendor(item->id, stack.count);
+                        localRealm_->sellToVendor(item->id, stack.count, vendor->guid);
                         ImGui::CloseCurrentPopup();
                     }
                     ImGui::SameLine();
@@ -359,6 +363,20 @@ void Application::renderLocalVendorPanel(float scale) {
                 ImGui::PopID();
             }
             ImGui::EndChild();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Buyback")) {
+            const auto ledger = localRealm_->vendorBuyback(vendor->guid);
+            if (ledger.empty()) ImGui::TextWrapped("No recent sales to buy back.");
+            for (const auto& row : ledger) {
+                const auto* item = content.item(row.itemId); if (!item) continue;
+                ImGui::PushID(static_cast<int>(row.id));
+                ImGui::Text("%s x%u", item->name.c_str(), unsigned(row.count));
+                ImGui::SameLine(); labelledPrice("", row.price); ImGui::SameLine();
+                ImGui::BeginDisabled(self.money < row.price);
+                if (ImGui::SmallButton("Buy back")) localRealm_->buybackItem(row.id, vendor->guid);
+                ImGui::EndDisabled(); ImGui::PopID();
+            }
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
@@ -398,7 +416,7 @@ void Application::renderLocalTrainerPanel(float scale) {
 
     if (classTrainer) {
         ImGui::TextUnformatted("Abilities");
-        const auto teachable = localRealm_->trainableSpells();
+        const auto teachable = localRealm_->trainableSpells(classTrainer->guid);
         if (teachable.empty())
             ImGui::TextWrapped("There is nothing new for you here yet. Come back at a higher level.");
         ImGui::BeginChild("##trainSpells", ImVec2(0, professionTrainer ? 170 * scale : 0),
@@ -415,7 +433,7 @@ void Application::renderLocalTrainerPanel(float scale) {
             }
             ImGui::TextUnformatted(spell->name.c_str());
             ImGui::SameLine();
-            if (ImGui::SmallButton("Learn")) localRealm_->learnSpell(spellId);
+            if (ImGui::SmallButton("Learn")) localRealm_->learnSpell(spellId,classTrainer->guid);
             if (!spell->unsupportedReason.empty())
                 ImGui::TextDisabled("   %s", spell->unsupportedReason.c_str());
             ImGui::PopID();

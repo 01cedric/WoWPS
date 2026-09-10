@@ -1,5 +1,6 @@
 #pragma once
 #include "rendering/shadow_ranges.hpp"
+#include "rendering/triangle_cell_index.hpp"
 
 #include "rendering/collision_geometry.hpp"
 #include "rendering/vk_shader.hpp"
@@ -85,13 +86,16 @@ public:
     /// the same arguments; a single large model can otherwise take over a
     /// hundred milliseconds, which lands as a visible hitch when terrain
     /// streaming finalises a tile.
-    ModelLoadResult loadModelIncremental(const pipeline::WMOModel& model, uint32_t id, float budgetMs);
+    ModelLoadResult loadModelIncremental(const pipeline::WMOModel& model, uint32_t id, float budgetMs,
+                                       bool terrainManaged = false);
 
     /**
      * Check if a WMO model is currently resident in the renderer
      * @param id WMO model identifier
      */
     bool isModelLoaded(uint32_t id) const;
+    // Terrain owns a disposable parse; release only groups whose upload committed.
+    size_t releaseUploadedGeometry(pipeline::WMOModel& model, uint32_t id) const noexcept;
     /// Whether this instance's model has finished uploading its groups, and so
     /// whether a failed floor query means "nothing under you" rather than "not
     /// loaded yet". The two need telling apart: a rider held in place waiting
@@ -237,7 +241,7 @@ public:
      * Remove models that have no instances referencing them
      * Call periodically to free GPU memory
      */
-    void cleanupUnusedModels();
+    void cleanupUnusedModels(const std::unordered_set<uint32_t>& pendingModelIds = {});
 
     /**
      * Get total triangle count (all instances)
@@ -517,6 +521,7 @@ private:
             VkDescriptorSet materialSet = VK_NULL_HANDLE;  // set 1
             ::VkBuffer materialUBO = VK_NULL_HANDLE;
             VmaAllocation materialUBOAlloc = VK_NULL_HANDLE;
+            bool materialReady = false; // UBO/set owned and initialized; safe across allocation retries.
             bool hasTexture = false;
             bool alphaTest = false;
             bool unlit = false;
@@ -532,6 +537,7 @@ private:
             std::vector<DrawRange> draws;
         };
         std::vector<MergedBatch> mergedBatches;
+        bool materialBatchesPrepared = false;
         std::vector<ShadowRange> shadowRanges;
         // Local-space center/radius for each authored lava draw range.
         std::vector<glm::vec4> lavaLights;
@@ -547,11 +553,11 @@ private:
         int gridCellsY = 0;
         glm::vec2 gridOrigin;  // XY of bounding box min
         // cellTriangles[cellY * gridCellsX + cellX] = list of triangle start indices
-        std::vector<std::vector<uint32_t>> cellTriangles;
+        TriangleCellIndex cellTriangles;
 
         // Pre-classified triangle lists per cell (built at load time)
-        std::vector<std::vector<uint32_t>> cellFloorTriangles;  // abs(normal.z) >= 0.35
-        std::vector<std::vector<uint32_t>> cellWallTriangles;   // abs(normal.z) < 0.35
+        TriangleCellIndex cellFloorTriangles;  // abs(normal.z) >= 0.65
+        TriangleCellIndex cellWallTriangles;   // abs(normal.z) < 0.65
 
         // Pre-computed per-triangle Z bounds for fast vertical reject
         struct TriBounds { float minZ; float maxZ; };
@@ -580,7 +586,7 @@ private:
         /// The triangles of one of the three cell arrays that a query box
         /// reaches, deduplicated. The three queries below differ only in
         /// which array they pass.
-        void gatherCellTriangles(const std::vector<std::vector<uint32_t>>& cells,
+        void gatherCellTriangles(const TriangleCellIndex& cells,
                                  float minX, float minY, float maxX, float maxY,
                                  std::vector<uint32_t>& out) const;
 
@@ -620,6 +626,7 @@ private:
         glm::vec3 boundingBoxMax;
         glm::vec3 wmoAmbientColor{0.5f, 0.5f, 0.5f};  // From MOHD, used for interior lighting
         bool isLowPlatform = false;
+        bool retiring = false; // A partial deferred-retirement pass is not a ready model.
 
         // Doodad templates (M2 models placed in WMO, stored for instancing)
         // Uses the public DoodadTemplate struct defined above
@@ -653,8 +660,12 @@ private:
         // Next texture to upload. Uploading them all at once cost 40ms on a
         // transport - the images are large, and the expense is the GPU upload
         // rather than the decode, which the worker already did.
+        size_t expectedGeometryGroups = 0;
+        bool countedGeometryGroups = false;
         size_t nextTextureIndex = 0;
         size_t nextGroupIndex = 0;
+        bool groupUploadInProgress = false;
+        bool terrainManaged = false;
         size_t nextMaterialGroupIndex = 0;
         uint32_t loadedGroups = 0;
 

@@ -252,6 +252,9 @@ bool LocalWorldCatalog::quest(uint32_t id,LocalQuestDefinition& result,std::stri
         Json j;if(!impl_->quests.get(id,j))return false;LocalQuestDefinition q;q.id=number(j,"id",0,UINT32_MAX);if(q.id!=id)throw std::runtime_error("Catalog quest ID mismatch");
         q.title=label(j,"title",96);q.description=label(j,"description",1024,true);q.giverEntry=number(j,"giverEntry",0,UINT32_MAX);q.turnInEntry=number(j,"turnInEntry",0,UINT32_MAX);q.prerequisite=number(j,"prerequisite",0,UINT32_MAX);q.minLevel=uint8_t(number(j,"minLevel",1,80));
         q.allowableRaces=number(j,"allowableRaces",0,UINT32_MAX);q.allowableClasses=number(j,"allowableClasses",0,UINT32_MAX);q.xp=number(j,"xp");q.money=number(j,"money");q.rewardItem=number(j,"rewardItem",0,UINT32_MAX);q.rewardCount=uint16_t(number(j,"rewardCount",0,65535));
+        if(j.contains("additionalRewards"))for(const auto& r:array(j,"additionalRewards",3))q.additionalRewards.push_back(stack(r));
+        if(j.contains("rewardChoices"))for(const auto& r:array(j,"rewardChoices",6))q.rewardChoices.push_back(stack(r));
+        if(!validLocalQuestRewards(q))throw std::runtime_error("Invalid catalog quest reward bundle");
         for(const auto& o:array(j,"objectives",4)){LocalQuestObjective d;const auto t=label(o,"type",16);if(t=="kill")d.type=LocalQuestObjective::Type::Kill;else if(t=="collect")d.type=LocalQuestObjective::Type::Collect;else if(t=="talk")d.type=LocalQuestObjective::Type::Talk;else throw std::runtime_error("Unsupported catalog objective");d.entry=number(o,"entry",0,UINT32_MAX);d.count=uint16_t(number(o,"count",1,65535));if(!d.entry||!d.count)throw std::runtime_error("Zero catalog objective");q.objectives.push_back(d);}
         if(!q.giverEntry||!q.turnInEntry||!q.minLevel||q.objectives.empty())throw std::runtime_error("Incomplete catalog quest");
         result=std::move(q);return true;

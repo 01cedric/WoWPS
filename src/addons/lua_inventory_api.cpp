@@ -1108,6 +1108,11 @@ static int lua_DeleteInboxItem(lua_State* L) {
 
 // InboxItemCanDelete(index) - nothing here refuses a deletion
 static int lua_InboxItemCanDelete(lua_State* L) {
+    auto* gh=getGameHandler(L);
+    if(gh && gh->localServiceRealm()){
+        const auto* m=mailAt(gh,static_cast<int>(luaL_optnumber(L,1,0)));
+        lua_pushboolean(L,m && !m->money && m->attachments.empty());return 1;
+    }
     lua_pushboolean(L, 1);
     return 1;
 }
@@ -1117,6 +1122,7 @@ static int lua_AutoLootMailItem(lua_State* L) {
     auto* gh = getGameHandler(L);
     const auto* mail = mailAt(gh, static_cast<int>(luaL_optnumber(L, 1, 0)));
     if (!gh || !mail) return 0;
+    if(gh->localServiceRealm()){gh->autoLootLocalMail(mail->messageId);return 0;}
     if (mail->money > 0) gh->mailTakeMoney(mail->messageId);
     for (const auto& att : mail->attachments) {
         gh->mailTakeItem(mail->messageId, att.itemGuidLow);
@@ -1322,7 +1328,8 @@ static int lua_SendMail(lua_State* L) {
     const char* to = luaL_optstring(L, 1, "");
     const char* subject = luaL_optstring(L, 2, "");
     const char* body = luaL_optstring(L, 3, "");
-    if (gh && to && *to) gh->sendMail(to, subject, body, s_sendMailMoney, s_sendMailCOD);
+    if (gh) gh->sendMail(to, subject, body, s_sendMailMoney, s_sendMailCOD);
+    if (gh && gh->localServiceRealm()) return 0; // MAIL_SEND_SUCCESS resets the local draft; failure preserves it.
     // Whether or not it went, the next letter starts empty. Leaving the amount
     // set would attach it again to a letter nobody meant to put money in.
     s_sendMailMoney = 0;
@@ -4830,9 +4837,9 @@ void registerInventoryLuaAPI(lua_State* L) {
             if (mail.attachments.empty()) lua_pushnil(L);
             else lua_pushnumber(L, static_cast<lua_Number>(mail.attachments.size()));
             lua_pushboolean(L, mail.read ? 1 : 0);               // wasRead
-            lua_pushboolean(L, 0);                                // wasReturned
+            lua_pushboolean(L, gh->localServiceRealm() && (mail.flags&2)); // local returned flag
             lua_pushboolean(L, !mail.body.empty() ? 1 : 0);      // textCreated
-            lua_pushboolean(L, mail.messageType == 0 ? 1 : 0);   // canReply (player mail only)
+            lua_pushboolean(L, mail.messageType == 0 && (!gh->localServiceRealm() || (mail.senderGuid && !(mail.flags&4))));
             lua_pushboolean(L, 0);                                // isGM
             // How many of the first attachment there are, which is what the
             // inbox button prints in its corner.
@@ -4864,6 +4871,7 @@ void registerInventoryLuaAPI(lua_State* L) {
             auto* gh = getGameHandler(L);
             const auto* mail = mailAt(gh, static_cast<int>(luaL_optnumber(L, 1, 0)));
             if (!mail) { return luaReturnNil(L); }
+            const auto mailCopy=*mail;mail=&mailCopy; // A synchronous local read acknowledgment can rebuild the inbox.
             if (!mail->read && mail->messageId != 0) gh->mailMarkAsRead(mail->messageId);
             lua_pushstring(L, mail->body.c_str());
             lua_pushnil(L);

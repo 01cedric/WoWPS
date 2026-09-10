@@ -256,7 +256,7 @@ public:
     /**
      * Enqueue a tile for async loading (returns false if previously failed).
      */
-    bool enqueueTile(int x, int y);
+    bool enqueueTile(int x, int y, bool priority = false);
 
     /**
      * Unload a tile
@@ -418,6 +418,7 @@ public:
         return !finalizingTiles_.empty() || getReadyQueueCount() > 0;
     }
     void collectPendingM2Models(std::unordered_set<uint32_t>& ids) const;
+    void collectPendingWmoModels(std::unordered_set<uint32_t>& ids) const;
     /** Total unfinished tiles (worker threads + ready queue + finalizing) */
     [[nodiscard]] int getRemainingTileCount() const {
         // Pending membership lasts through worker, ready and finalizing

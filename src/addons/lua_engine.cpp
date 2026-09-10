@@ -3298,13 +3298,7 @@ int lua_Region_Show(lua_State* L) {
             ++w->shownToggles;
         }
         becameShown = !w->shown;
-        if (!w->shown) {
-            // Everything under this frame becomes drawable, which is a layout
-            // change and used to be announced to nobody - the renderer's
-            // 15 Hz compatibility poll was covering for exactly this.
-            markTreeDirty(L);
-        }
-        w->shown = true;
+        if (auto* tree = wowee::addons::getWidgetTree(L)) tree->setShown(w->id, true);
     }
     lua_pushboolean(L, 1); lua_setfield(L, 1, "__visible");
     // A frame shown to play a model animation has already finished it.
@@ -3398,8 +3392,7 @@ int lua_Region_Hide(lua_State* L) {
         // prune acts on, so it has to know the tree has moved. Hiding a frame
         // and having it stay on screen was the fault the renderer's 15 Hz poll
         // was left in place to cover.
-        if (w->shown) markTreeDirty(L);
-        w->shown = false;
+        if (auto* tree = wowee::addons::getWidgetTree(L)) tree->setShown(w->id, false);
     }
     lua_pushboolean(L, 0); lua_setfield(L, 1, "__visible");
     return 0;
@@ -3631,6 +3624,7 @@ int lua_Frame_SetFrameLevel(lua_State* L) {
     if (tree && id) tree->shiftExplicitLevels(id, wanted - w->effLevel);
     w->level = wanted;
     w->levelExplicit = true;
+    w->effLevel = wanted;
     // shiftExplicitLevels writes the descendants' levels but not the tree's
     // generation, and effLevel is resolved by the solve and sorted on by the
     // draw order - so without this a raise took effect only when something
@@ -8998,7 +8992,8 @@ void LuaEngine::fireEvent(const std::string& eventName,
                         if (pcallScript(L_, "OnEvent", nargs, 0) != 0) {
                             const char* ferr = lua_tostring(L_, -1);
                             std::string ferrStr = ferr ? ferr : "(unknown)";
-                            LOG_ERROR("LuaEngine: frame OnEvent error: ", ferrStr);
+                            LOG_ERROR("LuaEngine: frame OnEvent error: event=", eventName,
+                                      " argc=", args.size(), ": ", ferrStr);
                             noteLuaError(ferrStr);
         if (luaErrorCallback_) luaErrorCallback_(ferrStr);
                             lua_pop(L_, 1);

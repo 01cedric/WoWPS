@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <initializer_list>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -18,6 +19,10 @@ namespace pipeline {
 
 class AssetManager;
 struct M2Model;
+struct CharacterSectionTextures;
+// Prepared Stand-only data, shared immutably while another preview owns it.
+std::shared_ptr<const M2Model> loadCharacterPreviewModel(AssetManager& assets,
+    const std::string& path, const CharacterSectionTextures& textures, const std::string& raceFolder);
 
 /**
  * Read an M2 and the .skin beside it.

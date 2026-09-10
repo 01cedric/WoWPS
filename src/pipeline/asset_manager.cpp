@@ -334,6 +334,7 @@ std::string AssetManager::resolveFile(const std::string& normalizedPath) const {
 
 bool AssetManager::setBaseFallbackPath(const std::string& basePath,
                                        const std::string& expansionId) {
+    previewModels_.clear();
     if (baseFallbackHits_.load(std::memory_order_relaxed) > 0) {
         // Said on the way out rather than per lookup. Next to a warning about
         // an unlabelled or forced base, this is how much of what was on screen
@@ -542,6 +543,7 @@ BLPImage AssetManager::tryLoadPngOverride(const std::string& normalizedPath) con
 }
 
 void AssetManager::setExpansionDataPath(const std::string& path) {
+    previewModels_.clear();
     expansionDataPath_ = path;
     LOG_INFO("Expansion data path for CSV DBCs: ", expansionDataPath_);
 }
@@ -1011,6 +1013,7 @@ size_t AssetManager::trimFileCache(size_t targetBytes) const {
 }
 
 void AssetManager::evictDBC(const std::string& name) {
+    previewModels_.clear();
     const auto fileKey = normalizePath("DBFilesClient\\" + name);
     std::lock_guard<std::shared_mutex> lock(cacheMutex);
     dbcCache.erase(name);
@@ -1018,12 +1021,14 @@ void AssetManager::evictDBC(const std::string& name) {
 }
 
 void AssetManager::clearDBCCache() {
+    previewModels_.clear();
     std::lock_guard<std::shared_mutex> lock(cacheMutex);
     dbcCache.clear();
     LOG_INFO("Cleared DBC cache");
 }
 
 void AssetManager::clearCache() {
+    previewModels_.clear();
     std::lock_guard<std::shared_mutex> lock(cacheMutex);
     dbcCache.clear();
     fileCache.clear();

@@ -178,6 +178,10 @@ inline constexpr bool auctionSlotsKnown(const uint8_t* list, size_t n) {
 inline const AuctionSubFilter* auctionSubsFor(uint32_t classId, int& count) {
     if (classId == 2) { count = kNumAuctionWeaponSubs; return kAuctionWeaponSubs; }
     if (classId == 4) { count = kNumAuctionArmorSubs;  return kAuctionArmorSubs;  }
+    static constexpr AuctionSubFilter misc[] = {{"All",kAuctionAny},{"Junk",0},{"Reagent",1},{"Pet",2},{"Holiday",3},{"Other",4},{"Mount",5}};
+    static constexpr AuctionSubFilter goods[] = {{"All",kAuctionAny},{"Trade Goods",0},{"Parts",1},{"Explosives",2},{"Devices",3},{"Jewelcrafting",4},{"Cloth",5},{"Leather",6},{"Metal & Stone",7},{"Meat",8},{"Herb",9},{"Elemental",10},{"Other",11},{"Enchanting",12},{"Materials",13},{"Armor Enchantment",14},{"Weapon Enchantment",15}};
+    if(classId==15){count=int(std::size(misc));return misc;}
+    if(classId==7){count=int(std::size(goods));return goods;}
     count = 0;
     return nullptr;
 }

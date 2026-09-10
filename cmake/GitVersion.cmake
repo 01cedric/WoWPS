@@ -42,7 +42,7 @@ endif()
 # takes precedence so rebuilding the same checkpoint preserves its identity.
 if(EXISTS "${SRC_DIR}/BUILD_VERSION")
     file(STRINGS "${SRC_DIR}/BUILD_VERSION" _delivery_version LIMIT_COUNT 1)
-    if(_delivery_version MATCHES "^([0-9][0-9]\\.[0-9][0-9]|B[0-9]+ / [0-9][0-9]\\.[0-9][0-9])$")
+    if(_delivery_version MATCHES "^([0-9][0-9]\\.[0-9][0-9]( HF[1-9][0-9]*)?|B[0-9]+ / [0-9][0-9]\\.[0-9][0-9])$")
         set(WOWEE_GIT_VERSION "${_delivery_version}")
     endif()
 endif()

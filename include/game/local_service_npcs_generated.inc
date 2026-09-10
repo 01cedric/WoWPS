@@ -26,7 +26,7 @@
 // creature_template.subname, which names it in plain words ("Blacksmithing
 // Trainer", "Mage Trainer"). The skill ids are the SkillLine.dbc ids for the
 // fourteen professions this realm models; 0 means the subname named something
-// this realm does not model (Riding, Pet, Portal, Weapon Master), and such a
+// this realm does not model (Pet, Portal, Weapon Master), and such a
 // trainer teaches nothing rather than teaching the wrong thing. The subname is
 // kept in the trailing comment so every row can be checked by eye.
 //
@@ -678,7 +678,7 @@
 {  3685,0x000080,   0, 0},  // Harb Clawhoof <Kodo Mounts>
 {  3688,0x000010,   0, 0},  // Reban Freerunner <Pet Trainer>
 {  3689,0x000280,   0, 0},  // Laer Stepperunner <Food & Drink>
-{  3690,0x000050,   0, 0},  // Kar Stormsinger <Riding Trainer>
+{  3690,0x000050, 762, 0},  // Kar Stormsinger <Riding Trainer>
 {  3698,0x000010,   0, 0},  // Bolyun <Pet Trainer>
 {  3700,0x000880,   0, 0},  // Jadenvis Seawatcher <Reagents>
 {  3703,0x000050, 165, 0},  // Krulmoo Fullmoon <Leatherworking Trainer>
@@ -875,11 +875,11 @@
 {  4617,0x000080,   0, 0},  // Thaddeus Webb <Enchanting Supplies>
 {  4730,0x000080,   0, 0},  // Lelanai <Saber Handler>
 {  4731,0x000080,   0, 0},  // Zachariah Post <Undead Horse Merchant>
-{  4732,0x000050,   0, 0},  // Randal Hunter <Riding Trainer>
-{  4752,0x000050,   0, 0},  // Kildar <Riding Trainer>
-{  4753,0x000050,   0, 0},  // Jartsam <Riding Trainer>
-{  4772,0x000050,   0, 0},  // Ultham Ironhorn <Riding Trainer>
-{  4773,0x000050,   0, 0},  // Velma Warnam <Riding Trainer>
+{  4732,0x000050, 762, 0},  // Randal Hunter <Riding Trainer>
+{  4752,0x000050, 762, 0},  // Kildar <Riding Trainer>
+{  4753,0x000050, 762, 0},  // Jartsam <Riding Trainer>
+{  4772,0x000050, 762, 0},  // Ultham Ironhorn <Riding Trainer>
+{  4773,0x000050, 762, 0},  // Velma Warnam <Riding Trainer>
 {  4775,0x000080,   0, 0},  // Felicia Doan <Trade Supplies>
 {  4782,0x000280,   0, 0},  // Truk Wildbeard <Bartender>
 {  4875,0x000280,   0, 0},  // Turhaw <Butcher>
@@ -1159,7 +1159,7 @@
 {  7948,0x000050, 171, 0},  // Kylanna Windwhisper <Alchemy Trainer>
 {  7949,0x000050, 333, 0},  // Xylinnia Starshine <Enchanting Trainer>
 {  7952,0x000080,   0, 0},  // Zjolnir <Raptor Handler>
-{  7953,0x000050,   0, 0},  // Xar'Ti <Riding Trainer>
+{  7953,0x000050, 762, 0},  // Xar'Ti <Riding Trainer>
 {  7954,0x000050,   0, 0},  // Binjy Featherwhistle <Mechanostrider Pilot>
 {  7955,0x000080,   0, 0},  // Milli Featherwhistle <Mechanostrider Merchant>
 {  7976,0x001180,   0, 0},  // Thalgus Thunderfist <Weapon Merchant>
@@ -1481,7 +1481,7 @@
 { 16277,0x000050, 185, 0},  // Quarelestra <Cooking Trainer>
 { 16278,0x000050, 165, 0},  // Sathein <Leatherworking Trainer>
 { 16279,0x000030,   0, 4},  // Tannaria <Rogue Trainer>
-{ 16280,0x000050,   0, 0},  // Perascamin <Riding Trainer>
+{ 16280,0x000050, 762, 0},  // Perascamin <Riding Trainer>
 { 16366,0x0000d0, 197, 0},  // Sempstress Ambershine <Tailoring Trainer>
 { 16367,0x0000d0, 182, 0},  // Botanist Tyniarrel <Herbalism Trainer & Supplies>
 { 16376,0x001080,   0, 0},  // Craftsman Wilhelm <Brotherhood of the Light>
@@ -1951,9 +1951,9 @@
 { 20407,0x000030,   0, 7},  // Farseer Umbrua <Shaman Trainer>
 { 20463,0x001080,   0, 0},  // Apprentice Andrethan
 { 20494,0x000080,   0, 0},  // Dama Wildmane <Wind Rider Keeper>
-{ 20500,0x000050,   0, 0},  // Olrokk <Riding Trainer>
+{ 20500,0x000050, 762, 0},  // Olrokk <Riding Trainer>
 { 20510,0x000080,   0, 0},  // Brunn Flamebeard <Gryphon Keeper>
-{ 20511,0x000050,   0, 0},  // Ilsa Blusterbrew <Riding Trainer>
+{ 20511,0x000050, 762, 0},  // Ilsa Blusterbrew <Riding Trainer>
 { 20515,0x002000,   0, 0},  // Harpax <Flight Master>
 { 20613,0x001080,   0, 0},  // Arodis Sunblade <Keeper of Sha'tari Artifacts>
 { 20616,0x001080,   0, 0},  // Asuur <Keeper of Sha'tari Artifacts>
@@ -1965,7 +1965,7 @@
 { 20891,0x000080,   0, 0},  // Skraa <Trade Goods>
 { 20892,0x000080,   0, 0},  // Ruogo <General Goods>
 { 20893,0x000080,   0, 0},  // Morula <Food & Drink>
-{ 20914,0x000050,   0, 0},  // Aalun <Riding Trainer>
+{ 20914,0x000050, 762, 0},  // Aalun <Riding Trainer>
 { 20915,0x000080,   0, 0},  // Noko Moonwhisper <Reagents>
 { 20916,0x000080,   0, 0},  // Xerintha Ravenoak <Food & Drink>
 { 20917,0x001080,   0, 0},  // Zinyen Swiftstrider <Weapon Vendor>
@@ -2716,14 +2716,14 @@
 { 34772,0x000080,   0, 0},  // Vasarin Redmorn <Sunreavers Quartermaster>
 { 34881,0x000080,   0, 0},  // Hiren Loresong <Silver Covenant Quartermaster>
 { 34885,0x000080,   0, 0},  // Dame Evniki Kapsalis <Crusader's Quartermaster>
-{ 35093,0x000050,   0, 0},  // Wind Rider Jahubo <Riding Trainer>
+{ 35093,0x000050, 762, 0},  // Wind Rider Jahubo <Riding Trainer>
 { 35099,0x000080,   0, 0},  // Bana Wildmane <Wind Rider Keeper>
-{ 35100,0x000050,   0, 0},  // Hargen Bronzewing <Riding Trainer>
+{ 35100,0x000050, 762, 0},  // Hargen Bronzewing <Riding Trainer>
 { 35101,0x000080,   0, 0},  // Grunda Bronzewing <Gryphon Keeper>
 { 35131,0x000080,   0, 0},  // Durgan Thunderbeak <Gryphon Keeper>
 { 35132,0x000080,   0, 0},  // Tohfo Skyhoof <Wind Rider Keeper>
-{ 35133,0x000050,   0, 0},  // Maigra Keenfeather <Riding Trainer>
-{ 35135,0x000050,   0, 0},  // Wind Rider Sabamba <Riding Trainer>
+{ 35133,0x000050, 762, 0},  // Maigra Keenfeather <Riding Trainer>
+{ 35135,0x000050, 762, 0},  // Wind Rider Sabamba <Riding Trainer>
 { 35281,0x000030,   0, 2},  // Rukua <Paladin Trainer>
 { 35494,0x000080,   0, 0},  // Arcanist Miluria <Emblem of Triumph Quartermaster>
 { 35495,0x000080,   0, 0},  // Magistrix Vesara <Emblem of Triumph Quartermaster>

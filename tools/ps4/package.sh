@@ -88,7 +88,7 @@ SHIM_S
 fi
 
 TITLE="${WOWEE_PS4_TITLE:-WoWPS}"
-VERSION="${WOWEE_PS4_VERSION:-01.61}"
+VERSION="${WOWEE_PS4_VERSION:-01.90}"
 TITLE_ID="${WOWEE_PS4_TITLE_ID:-WOWE00001}"
 CONTENT_ID="${WOWEE_PS4_CONTENT_ID:-IV0000-${TITLE_ID}_00-WOWEEPS4CLIENT00}"
 
@@ -144,6 +144,25 @@ SFO="$OUT_DIR/sce_sys/param.sfo"
 "$TOOLS/PkgTool.Core" sfo_setentry "$SFO" VERSION --type Utf8 --maxsize 8 --value "$VERSION"
 
 echo "==> runtime files"
+# Reusing an output directory must not nest Data/Data, addons/addons or
+# local_realm/local_realm, or retain files removed from the current source.
+# These are generated staging directories. Never clean an output that overlaps
+# the source runtime directories, including symlink aliases.
+python3 - "$REPO_DIR" "$OUT_DIR" <<'PY'
+from pathlib import Path
+import shutil, sys
+source = Path(sys.argv[1]).resolve()
+output = Path(sys.argv[2]).resolve()
+targets = [output / name for name in ('assets', 'Data', 'addons')]
+protected = [source / name for name in ('assets', 'Data', 'addons')]
+for target in targets:
+    resolved = target.resolve()
+    if target.is_symlink() or any(resolved == p or resolved in p.parents or p in resolved.parents for p in protected):
+        raise SystemExit('Refusing runtime staging cleanup inside or over source runtime files')
+for target in targets:
+    if target.exists():
+        shutil.rmtree(target)
+PY
 # Shaders: the same committed SPIR-V desktop uses (ps4_vulkan is a real
 # Vulkan ICD; opengnm-psbc compiles SPIR-V to PS4 GCN at shader-module
 # creation time, no offline GLSL ES conversion step), the client's own

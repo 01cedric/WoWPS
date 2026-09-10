@@ -739,6 +739,10 @@ public:
     void setWidth(uint32_t id, float width);
     void setHeight(uint32_t id, float height);
 
+    /// Showing a top-level window brings it above its visible peers in the
+    /// same stratum, including when it opens from a key or a controller.
+    void setShown(uint32_t id, bool shown);
+
     /// Pin a frame where it currently sits, on one anchor to its parent.
     ///
     /// What StartMoving does before the cursor takes over: a frame anchored to
@@ -973,13 +977,8 @@ public:
 
     /// Title-safe inset, as a fraction of each screen edge (0 to 0.1).
     ///
-    /// A television overscans: it magnifies the picture slightly and loses
-    /// whatever falls outside the panel. How much varies by set, which is why
-    /// consoles have always kept their interface inside a margin. This client
-    /// had none - the root filled the whole screen - so on a real TV the
-    /// action bar, the chat frame and the minimap sit exactly where a set is
-    /// most likely to clip them. A monitor loses nothing and wants no margin,
-    /// which is why this is a setting rather than a constant.
+    /// Zero uses the complete display. Players whose television overscans
+    /// can choose a margin without changing each individual frame's anchors.
     ///
     /// The inset moves and shrinks the root frame, so every anchored frame
     /// follows it without knowing about it, and hit testing reads the same

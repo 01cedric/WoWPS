@@ -47,6 +47,25 @@ int main() {
     selected.dead=false;game.setRemoteNpcs({near,selected});
     LocalRealmCommand sell{LocalAction::SellToVendor,1,2392};sell.serviceNpcGuid=20;
     assert(game.execute(player,sell,players,result) && player.inventory.empty());
+    assert(player.buyback.size()==1 && player.buyback[0].itemId==2392 && player.buyback[0].count==1);
+    const auto sold=player.buyback[0];const auto afterSale=player.money;
+    LocalRealmCommand buyback{LocalAction::BuybackItem,0,sold.id};buyback.serviceNpcGuid=20;
+    buyback.serviceNpcGuid=999;reject(buyback);buyback.serviceNpcGuid=20;
+    player.money=0;reject(buyback);player.money=afterSale;
+    player.inventory.assign(LocalGameplay::MaxInventory,{117,1000});reject(buyback);player.inventory.clear();
+    assert(player.buyback.size()==1 && player.buyback[0].id==sold.id);
+    assert(game.execute(player,buyback,players,result));
+    assert(player.buyback.empty() && player.money==afterSale-sold.price && player.inventory[0].itemId==2392);
+    reject(buyback); // Replaying the stable ledger ID cannot buy twice.
+    for(unsigned i=0;i<15;++i) {
+        player.inventory={{2392,1}};assert(game.execute(player,sell,players,result));
+    }
+    assert(player.buyback.size()==kLocalMaxBuyback && player.buyback.front().id==16 && player.buyback.back().id==5);
+    buyback.id=4;reject(buyback); // Evicted entries are unavailable, not reindexed.
+    buyback.id=player.buyback[3].id;assert(game.execute(player,buyback,players,result));
+    assert(player.buyback.size()==11 && player.buyback.front().id==16);
+    player.inventory={{2392,1}};player.money=1000000000;reject(sell);player.money=1000000;
+    player.flight.active=true;reject(sell);reject(buyback);player.flight.active=false;
     selected.entry=66;game.setRemoteNpcs({selected});buy.id=6270;
     player.inventory.assign(LocalGameplay::MaxInventory,{117,1000});
     reject(buy); // Failed inventory-capacity transaction does not consume stock.
@@ -57,5 +76,5 @@ int main() {
     assert(game.vendorRemaining(player,6270,20)==0); // Streaming can't refill the shop.
     auto guest=player;guest.guid=2;guest.inventory.clear();players.push_back(&guest);
     assert(!game.execute(guest,buy,players,result) && guest.inventory.empty());
-    std::cout<<"PASS merchant authority: exact selected NPC, map/instance/range/alive gates, quantity, money/item atomicity, shared limited stock across unload\n";
+    std::cout<<"PASS merchant authority: exact selected NPC, map/instance/range/alive gates, quantity, atomic buyback capacity/gold/12-entry eviction/stable IDs, shared limited stock across unload\n";
 }

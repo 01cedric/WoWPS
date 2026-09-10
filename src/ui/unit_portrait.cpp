@@ -12,7 +12,11 @@ namespace {
 template <class Build>
 bool rebuildPortrait(rendering::CharacterPreview& preview, Build&& build) {
     try {
-        return build();
+        if (build()) return true;
+        // Normal load failures can leave partially prepared model resources,
+        // just like allocation failures. Retire them before the delayed retry.
+        preview.releaseCharacterModel();
+        return false;
     } catch (const std::bad_alloc&) {
         // A UI preview owns its model independently of the running world.
         // Roll back that model/attachments, retaining the render target until

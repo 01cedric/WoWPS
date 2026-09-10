@@ -120,6 +120,7 @@ uint32_t M2Renderer::commitInstance(M2Instance&& instance) {
         instanceIndexById.emplace(id, idx);
         if (instance.participatesInPositionDedup) instanceDedupMap_.emplace(key, id);
         // Capacity is ready and M2Instance moves without allocating.
+        shadowInstanceOrder_.invalidate();
         instances.push_back(std::move(instance));
     } catch (...) {
         eraseBounds(spatialGrid, instance.worldBoundsMin, instance.worldBoundsMax, id);
@@ -2412,33 +2413,47 @@ void M2Renderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMa
     vmaGetAllocationInfo(vkCtx_->getAllocator(), foliageSet.alloc, &foliageInfo);
     std::memcpy(foliageInfo.pMappedData, &foliage, sizeof(foliage));
 
+    // Thousands of stable doodads need the same model grouping each frame.
+    // Rebuild it only for membership changes; still test this frame's light
+    // matrix and current instance bounds/transform for every caster.
+    const bool profileShadow = shadowPerfFrames_ % 300u == 1u;
+    const auto gatherStart = profileShadow ? std::chrono::steady_clock::now()
+        : std::chrono::steady_clock::time_point{};
+    const auto& casterOrder = shadowInstanceOrder_.prepare(static_cast<uint32_t>(instances.size()),
+        [&](uint32_t index) { return instances[index].modelId; });
     shadowCasters_.clear();
-    for (const auto& instance : instances) {
-            // Use cached flags to skip early without hash lookup
-            if (!instance.cachedIsValid || instance.cachedIsSmoke || instance.cachedIsInvisibleTrap) continue;
+    for (uint32_t index : casterOrder) {
+        const auto& instance = instances[index];
+        // Use cached flags to skip early without hash lookup
+        if (!instance.cachedIsValid || instance.cachedIsSmoke || instance.cachedIsInvisibleTrap) continue;
 
-            if (!instance.cachedModel) continue;
-            const M2ModelGPU& model = *instance.cachedModel;
+        if (!instance.cachedModel) continue;
+        const M2ModelGPU& model = *instance.cachedModel;
 
-            // Cull casters against the light-space ortho footprint, not a
-            // world-space sphere around the player. The shadow frustum extends
-            // ~2000 units toward the sun, so a distant tree can legitimately
-            // cast across the whole view while sitting far outside any player
-            // sphere - sphere culling made such shadows pop on/off at the cull
-            // boundary as the player moved (large-area flicker at low sun).
-            {
-                const glm::vec4 clip = lightSpaceMatrix * glm::vec4(instance.position, 1.0f);
-                // Orthographic projection: w == 1, NDC directly comparable.
-                // Inflate by the model's bounding sphere converted to NDC
-                // (shadowRadius ≈ frustum half-extent; overshoot is harmless).
-                const float margin = (model.boundRadius * instance.scale) / shadowRadius * 1.5f;
-                if (std::abs(clip.x) > 1.0f + margin || std::abs(clip.y) > 1.0f + margin) continue;
-                if (clip.z < -margin || clip.z > 1.0f + margin) continue;
-            }
+        // Cull casters against the light-space ortho footprint, not a
+        // world-space sphere around the player. The shadow frustum extends
+        // ~2000 units toward the sun, so a distant tree can legitimately
+        // cast across the whole view while sitting far outside any player
+        // sphere - sphere culling made such shadows pop on/off at the cull
+        // boundary as the player moved (large-area flicker at low sun).
+        {
+            const glm::vec4 clip = lightSpaceMatrix * glm::vec4(instance.position, 1.0f);
+            // Orthographic projection: w == 1, NDC directly comparable.
+            // Inflate by the model's bounding sphere converted to NDC
+            // (shadowRadius ≈ frustum half-extent; overshoot is harmless).
+            const float margin = (model.boundRadius * instance.scale) / shadowRadius * 1.5f;
+            if (std::abs(clip.x) > 1.0f + margin || std::abs(clip.y) > 1.0f + margin) continue;
+            if (clip.z < -margin || clip.z > 1.0f + margin) continue;
+        }
 
         shadowCasters_.push_back(&instance);
     }
-    std::sort(shadowCasters_.begin(), shadowCasters_.end(), [](auto* a, auto* b) { return a->modelId < b->modelId; });
+    if (profileShadow) {
+        const double gatherMs = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - gatherStart).count();
+        LOG_INFO("[SHADOW_GATHER] M2 instances=", instances.size(), " casters=", shadowCasters_.size(),
+                 " modelOrderRebuilds=", shadowInstanceOrder_.rebuilds(), " gatherMs=", gatherMs);
+    }
 
     // The buffer is separate from the main pass, which resets and rewrites its
     // instance SSBO later in this same command buffer. This slot's fence was

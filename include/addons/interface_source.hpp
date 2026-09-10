@@ -6,6 +6,7 @@
 #include <fstream>
 #include <functional>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <set>
 #include <string>
@@ -25,7 +26,7 @@ public:
         std::lock_guard<std::mutex> guard(cacheMutex_);
         read_ = std::move(read); exists_ = std::move(exists); list_ = std::move(list);
         textCache_.clear(); existsCache_.clear(); textCacheBytes_ = 0;
-        cacheText_ = true;
+        cacheText_ = true; cacheExists_=true;
     }
     // Under pressure, compiled Lua/templates remain valid; only discard copies
     // of source text. Keep caching suspended until the next provider/session.
@@ -54,8 +55,12 @@ public:
               if (const auto it=existsCache_.find(key); it!=existsCache_.end()) return it->second; }
             const bool found=exists_(key);
             { std::lock_guard<std::mutex> guard(cacheMutex_);
-              if (existsCache_.size()>=4096) existsCache_.clear();
-              existsCache_[key]=found; }
+              if (cacheExists_) try {
+                  if (existsCache_.size()>=4096) existsCache_.clear();
+                  existsCache_.emplace(key,found);
+              } catch (const std::bad_alloc&) {
+                  existsCache_.clear(); cacheExists_=false;
+              } }
             return found;
         }
         std::error_code ec;return std::filesystem::is_regular_file(p,ec);
@@ -82,8 +87,10 @@ public:
     }
     std::optional<std::string> read(const std::string& p) const {
         std::string text;
-        if(archived(p)) {
-            const auto key=archiveKey(p);
+        const bool fromArchive=archived(p);
+        std::string key;
+        if(fromArchive) {
+            key=archiveKey(p);
             if(key.empty() || !read_) return std::nullopt;
             { std::lock_guard<std::mutex> guard(cacheMutex_);
               if (const auto it=textCache_.find(key); it!=textCache_.end()) return it->second; }
@@ -93,7 +100,7 @@ public:
             // Never poison a retry by caching it as a successfully read source.
             if(bytes.empty()) return std::nullopt;
             if(bytes.size()>MaxSourceBytes) return std::nullopt;
-            text.assign(bytes.begin(),bytes.end());
+            text.assign(reinterpret_cast<const char*>(bytes.data()),bytes.size());
         } else {
             std::ifstream f(p,std::ios::binary|std::ios::ate);
             if(!f) return std::nullopt;
@@ -103,15 +110,20 @@ public:
             if(!text.empty() && !f.read(text.data(),text.size())) return std::nullopt;
         }
         if(text.size()>=3 && text.compare(0,3,"\xEF\xBB\xBF")==0) text.erase(0,3);
-        if (archived(p) && text.size() <= MaxCachedSourceBytes) {
-            const auto key=archiveKey(p);
+        if (fromArchive && text.size() <= MaxCachedSourceBytes) {
             std::lock_guard<std::mutex> guard(cacheMutex_);
             if (!cacheText_) return text;
             if (textCacheBytes_ + text.size() > MaxTextCacheBytes || textCache_.size() >= 2048) {
                 textCache_.clear(); textCacheBytes_ = 0;
             }
-            auto [it, inserted]=textCache_.emplace(key,text);
-            if(inserted) textCacheBytes_ += it->second.size();
+            try {
+                auto [it, inserted]=textCache_.emplace(key,text);
+                if(inserted) textCacheBytes_ += it->second.size();
+            } catch (const std::bad_alloc&) {
+                // Source text is already owned by this read. Its optional
+                // cached copy must not prevent compilation of that source.
+                textCache_.clear(); textCacheBytes_=0; cacheText_=false;
+            }
         }
         return text;
     }
@@ -153,6 +165,6 @@ private:
     mutable std::unordered_map<std::string,std::string> textCache_;
     mutable std::unordered_map<std::string,bool> existsCache_;
     mutable size_t textCacheBytes_ = 0;
-    bool cacheText_ = true;
+    mutable bool cacheText_ = true, cacheExists_=true;
 };
 }

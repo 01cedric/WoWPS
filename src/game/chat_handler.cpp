@@ -284,6 +284,8 @@ void ChatHandler::registerOpcodes(DispatchTable& table) {
 }
 
 void ChatHandler::sendChatMessage(ChatType type, const std::string& message, const std::string& target) {
+    if(owner_.isLocalExploration()){owner_.sendChatMessage(type,message,target);return;}
+
     if (owner_.getState() != WorldState::IN_WORLD) {
         LOG_WARNING("Cannot send chat in state: ", static_cast<int>(owner_.getState()));
         return;
@@ -355,6 +357,8 @@ void ChatHandler::sendChatMessage(ChatType type, const std::string& message, con
 }
 
 void ChatHandler::sendAddonMessage(ChatType type, const std::string& message, const std::string& target) {
+    if(owner_.isLocalExploration())return;
+
     if (owner_.getState() != WorldState::IN_WORLD || message.empty()) return;
 
     auto packet = MessageChatPacket::build(type, ChatLanguage::ADDON, message, target);
@@ -1165,7 +1169,7 @@ void ChatHandler::fireChatEvent(const MessageChatData& msg) {
     std::string eventName = "CHAT_MSG_";
     eventName += getChatTypeString(msg.type);
     const Character* ac = owner_.getActiveCharacter();
-    std::string senderName = msg.senderName.empty()
+    std::string senderName = msg.type==ChatType::WHISPER_INFORM && !msg.receiverName.empty() ? msg.receiverName : msg.senderName.empty()
         ? (ac ? ac->name : std::string{}) : msg.senderName;
     char guidBuf[32];
     snprintf(guidBuf, sizeof(guidBuf), "0x%016llX",

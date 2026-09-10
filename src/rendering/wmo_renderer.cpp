@@ -5,6 +5,7 @@
 #include "rendering/wmo_vertex.hpp"
 #include "rendering/shadow_params.hpp"
 #include "rendering/wmo_renderer.hpp"
+#include "pipeline/wmo_geometry_residency.hpp"
 #include "core/collision_height.hpp"
 #include "rendering/wmo_material_class.hpp"
 #include "rendering/normal_map.hpp"
@@ -316,6 +317,7 @@ void WMORenderer::shutdown() {
     // - and nothing to call it on either, which is what this used to try.
     if (!vkCtx_) {
         loadedModels.clear();
+        loadingModels_.clear();
         instances.clear();
         spatialGrid.clear();
         instanceIndexById.clear();
@@ -334,6 +336,11 @@ void WMORenderer::shutdown() {
             destroyGroupGPU(group);
         }
     }
+
+    // A failed or canceled incremental upload owns GPU groups as well.
+    for (auto& [id, model] : loadingModels_)
+        for (auto& group : model.groups) destroyGroupGPU(group);
+    loadingModels_.clear();
 
     // Free cached textures
     for (auto& [path, entry] : textureCache) {
@@ -394,7 +401,7 @@ bool WMORenderer::loadModel(const pipeline::WMOModel& model, uint32_t id) {
 }
 
 WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
-        const pipeline::WMOModel& model, uint32_t id, float budgetMs) {
+        const pipeline::WMOModel& model, uint32_t id, float budgetMs, bool terrainManaged) {
     if (!model.isValid()) {
         core::Logger::getInstance().error("Cannot load invalid WMO model");
         return ModelLoadResult::Failed;
@@ -402,6 +409,13 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
 
     // Check if already loaded
     auto existingIt = loadedModels.find(id);
+    if (existingIt != loadedModels.end() && existingIt->second.retiring) {
+        // A prior retirement can stop at a queue allocation failure. Finish
+        // that owned pass before consulting the one-time white-texture retry
+        // record, which otherwise mistakes partially retired groups for ready.
+        unloadModel(id);
+        existingIt = loadedModels.end();
+    }
     if (existingIt != loadedModels.end()) {
         // If a model was first loaded while texture resolution failed (or before
         // assets were fully available), it can remain permanently white because
@@ -457,6 +471,12 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
     // textures, materials and the groups already uploaded.
     ModelData& modelData = loadingModels_[id];
     modelData.id = id;
+    modelData.terrainManaged = terrainManaged;
+    if (!modelData.countedGeometryGroups) {
+        for (const auto& group : model.groups)
+            if (!group.vertices.empty() && !group.indices.empty()) ++modelData.expectedGeometryGroups;
+        modelData.countedGeometryGroups = true;
+    }
     modelData.boundingBoxMin = model.boundingBoxMin;
     modelData.boundingBoxMax = model.boundingBoxMax;
     modelData.wmoAmbientColor = model.ambientColor;
@@ -488,9 +508,15 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
     // Load textures for this model
     core::Logger::getInstance().debug("  WMO has ", model.textures.size(), " texture paths, ", model.materials.size(), " materials");
     if (assetManager && !model.textures.empty()) {
+        // Keep source texture indices stable across allocation failures. The
+        // old append path replayed an already committed prefix on retry, and
+        // a failed name allocation could misalign textures and names.
+        modelData.textures.resize(model.textures.size(), nullptr);
+        modelData.textureNames.resize(model.textures.size());
         const auto texStart = loadStepStart;
-        for (size_t i = modelData.nextTextureIndex; i < model.textures.size(); i++) {
-            if (budgetMs > 0.0f && i > modelData.nextTextureIndex) {
+        const size_t firstTextureIndex = modelData.nextTextureIndex;
+        for (size_t i = firstTextureIndex; i < model.textures.size(); i++) {
+            if (budgetMs > 0.0f && i > firstTextureIndex) {
                 const float spent = std::chrono::duration<float, std::milli>(
                     std::chrono::steady_clock::now() - texStart).count();
                 if (spent >= budgetMs) {
@@ -501,13 +527,14 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
             }
             const auto& texPath = model.textures[i];
             core::Logger::getInstance().debug("    Loading texture ", i, ": ", texPath);
-            VkTexture* tex = loadTexture(texPath);
-            modelData.textures.push_back(tex);
-            // Store lowercase texture name for material detection
+            // Finish throwing CPU work before committing this texture slot.
             std::string lowerPath = texPath;
             std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            modelData.textureNames.push_back(lowerPath);
+            VkTexture* tex = loadTexture(texPath);
+            modelData.textures[i] = tex;
+            modelData.textureNames[i] = std::move(lowerPath);
+            modelData.nextTextureIndex = i + 1;
         }
         core::Logger::getInstance().debug("  Loaded ", modelData.textures.size(), " textures for WMO");
     }
@@ -529,6 +556,11 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
         return std::numeric_limits<uint32_t>::max();
     };
 
+    // These parallel arrays are also indexed by the source material. A retry
+    // overwrites a partial fill instead of appending duplicate mappings.
+    modelData.materialTextureIndices.resize(model.materials.size());
+    modelData.materialBlendModes.resize(model.materials.size());
+    modelData.materialFlags.resize(model.materials.size());
     for (size_t i = 0; i < model.materials.size(); i++) {
         const auto& mat = model.materials[i];
         uint32_t texIndex = 0;  // Default to first texture
@@ -559,9 +591,9 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
             matLogCount++;
         }
 
-        modelData.materialTextureIndices.push_back(texIndex);
-        modelData.materialBlendModes.push_back(mat.blendMode);
-        modelData.materialFlags.push_back(mat.flags);
+        modelData.materialTextureIndices[i] = texIndex;
+        modelData.materialBlendModes[i] = mat.blendMode;
+        modelData.materialFlags[i] = mat.flags;
 
     }
 
@@ -604,14 +636,20 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
                 return ModelLoadResult::InProgress;
             }
         }
-        modelData.nextGroupIndex = gi + 1;
         const auto& wmoGroup = model.groups[gi];
         // Skip empty groups
         if (wmoGroup.vertices.empty() || wmoGroup.indices.empty()) {
+            modelData.nextGroupIndex = gi + 1;
             continue;
         }
 
-        GroupResources resources;
+        // Own the group before any GPU allocation. A failed upload remains in
+        // loadingModels_ and resumes at this source group with its handles.
+        if (!modelData.groupUploadInProgress) {
+            modelData.groups.emplace_back();
+            modelData.groupUploadInProgress = true;
+        }
+        auto& resources = modelData.groups.back();
         if (createGroupResources(wmoGroup, resources, wmoGroup.flags)) {
             // Detect distance-only LOD/exterior shell groups:
             // 1. Very low vertex count (<100) - portal connectors, tiny shells
@@ -643,9 +681,12 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
                 isStormwindCathedralShell) {
                 resources.isLOD = true;
             }
-            modelData.groups.push_back(resources);
             modelData.loadedGroups++;
+        } else {
+            modelData.groups.pop_back(); // Rejected before any GPU allocation.
         }
+        modelData.groupUploadInProgress = false;
+        modelData.nextGroupIndex = gi + 1;
     }
 
     if (modelData.loadedGroups == 0) {
@@ -667,6 +708,7 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
             return ModelLoadResult::InProgress;
         }
         auto& groupRes = modelData.groups[materialGroup];
+        if (!groupRes.materialBatchesPrepared) {
         // Use pointer value as key for batching
         struct BatchKey {
             uintptr_t texPtr;
@@ -789,13 +831,23 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
             mb.draws.push_back(dr);
         }
 
-        // Allocate descriptor sets and UBOs for each merged batch
+        // Commit CPU entries before any raw GPU handle exists. reserve may
+        // throw; the following moves cannot allocate or leave partial ownership.
         groupRes.mergedBatches.reserve(batchMap.size());
+        for (auto& [key, mb] : batchMap)
+            groupRes.mergedBatches.push_back(std::move(mb));
+        groupRes.materialBatchesPrepared = true;
+        }
+
+        // Entries stay owned across attempts. A failure after one material
+        // commits resumes at the next without appending duplicate draws/UBOs.
         bool anyTextured = false;
         bool isInterior = (groupRes.groupFlags & 0x2000) != 0;
-        for (auto& [key, mb] : batchMap) {
+        groupRes.lavaLights.clear();
+        for (auto& mb : groupRes.mergedBatches) {
             if (mb.hasTexture) anyTextured = true;
-
+            if (!mb.materialReady) {
+            if (!mb.materialUBO) {
             // Create material UBO
             VmaAllocator allocator = vkCtx_->getAllocator();
             AllocatedBuffer matBuf = createBuffer(allocator, sizeof(WMOMaterialUBO),
@@ -803,6 +855,7 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
                 VMA_MEMORY_USAGE_CPU_TO_GPU);
             mb.materialUBO = matBuf.buffer;
             mb.materialUBOAlloc = matBuf.allocation;
+            if (!mb.materialUBO || !mb.materialUBOAlloc) throw std::bad_alloc();
 
             // Write material params
             WMOMaterialUBO matData{};
@@ -827,8 +880,10 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
                 memcpy(matBuf.info.pMappedData, &matData, sizeof(matData));
             }
 
+            }
             // Allocate and write descriptor set
-            mb.materialSet = allocateMaterialSet();
+            if (!mb.materialSet) mb.materialSet = allocateMaterialSet();
+            if (!mb.materialSet) throw std::bad_alloc();
             // Valid, not merely non-null. descriptorInfo() returns the
             // texture's handles as they are, so one whose upload or view
             // creation failed writes VK_NULL_HANDLE into a live descriptor and
@@ -883,6 +938,8 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
 
                 vkUpdateDescriptorSets(vkCtx_->getDevice(), 3, writes, 0, nullptr);
             }
+            mb.materialReady = true;
+            }
 
             if (mb.isLava) {
                 for (const auto& draw : mb.draws) {
@@ -909,7 +966,6 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
                 }
             }
 
-            groupRes.mergedBatches.push_back(std::move(mb));
         }
         groupRes.shadowRanges.clear();
         for (const auto& batch : groupRes.mergedBatches) for (const auto& draw : batch.draws)
@@ -921,6 +977,11 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
 
     vkCtx_->endUploadBatch();
 
+    // This CPU-only metadata is rebuilt after a failed final commit. Never
+    // append the same portal references or doodad templates a second time.
+    modelData.portals.clear();
+    modelData.portalRefs.clear();
+    modelData.doodadTemplates.clear();
     // Copy portal data for visibility culling
     modelData.portalVertices = model.portalVertices;
     for (const auto& portal : model.portals) {
@@ -1011,10 +1072,7 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
     // several calls under a time budget makes it possible to lose one at a
     // resume point without anything else noticing: the model still loads, still
     // renders, and is simply missing pieces of itself.
-    size_t expectedGroups = 0;
-    for (const auto& g : model.groups) {
-        if (!g.vertices.empty() && !g.indices.empty()) expectedGroups++;
-    }
+    const size_t expectedGroups = modelData.expectedGeometryGroups;
     if (modelData.groups.size() != expectedGroups) {
         core::Logger::getInstance().error(
             "WMO ", id, " uploaded ", modelData.groups.size(), " of ", expectedGroups,
@@ -1022,8 +1080,11 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
     }
 
     size_t drawableGroups = 0, opaqueBatches = 0, blendedBatches = 0;
+    size_t collisionIndexBytes = 0;
     size_t glassBatches = 0, missingMaterialSets = 0;
     for (const auto& g : modelData.groups) {
+        collisionIndexBytes += g.cellTriangles.storageBytes() + g.cellFloorTriangles.storageBytes() +
+            g.cellWallTriangles.storageBytes();
         if (g.vertexBuffer && g.indexBuffer) ++drawableGroups;
         for (const auto& batch : g.mergedBatches) {
             if (!batch.materialSet) ++missingMaterialSets;
@@ -1036,7 +1097,8 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
              " sourceGroups=", model.groups.size(), " parsedGroups=", expectedGroups,
              " uploadedGroups=", modelData.groups.size(), " drawableGroups=", drawableGroups,
              " opaqueBatches=", opaqueBatches, " blendedBatches=", blendedBatches,
-             " glassBatches=", glassBatches, " missingMaterialSets=", missingMaterialSets);
+             " glassBatches=", glassBatches, " missingMaterialSets=", missingMaterialSets,
+             " collisionIndexBytes=", collisionIndexBytes);
 
     // Read before the move: the log line below reports what was stored, and
     // modelData no longer owns it afterwards.
@@ -1047,8 +1109,17 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
     return ModelLoadResult::Complete;
 }
 
+size_t WMORenderer::releaseUploadedGeometry(pipeline::WMOModel& model, uint32_t id) const noexcept {
+    if (loadedModels.find(id) != loadedModels.end())
+        return pipeline::releaseWmoGeometryPrefix(model, model.groups.size());
+    const auto uploading = loadingModels_.find(id);
+    if (uploading == loadingModels_.end()) return 0;
+    return pipeline::releaseWmoGeometryPrefix(model, uploading->second.nextGroupIndex);
+}
+
 bool WMORenderer::isModelLoaded(uint32_t id) const {
-    return loadedModels.find(id) != loadedModels.end();
+    const auto it = loadedModels.find(id);
+    return it != loadedModels.end() && !it->second.retiring;
 }
 
 bool WMORenderer::instanceHasCollisionGeometry(uint32_t instanceId) const {
@@ -1066,6 +1137,7 @@ void WMORenderer::unloadModel(uint32_t id) {
         return;
     }
 
+    it->second.retiring = true;
     // Free GPU resources - defer because in-flight command buffers may
     // still reference this model's vertex/index buffers and descriptors.
     for (auto& group : it->second.groups) {
@@ -1076,11 +1148,24 @@ void WMORenderer::unloadModel(uint32_t id) {
     core::Logger::getInstance().info("WMO model ", id, " unloaded");
 }
 
-void WMORenderer::cleanupUnusedModels() {
+void WMORenderer::cleanupUnusedModels(const std::unordered_set<uint32_t>& pendingModelIds) {
     // Build set of model IDs that are still referenced by instances
     std::unordered_set<uint32_t> usedModelIds;
     for (const auto& instance : instances) {
         usedModelIds.insert(instance.modelId);
+    }
+
+    usedModelIds.insert(pendingModelIds.begin(), pendingModelIds.end());
+
+    // Canceled terrain work can leave an upload with no finalizing owner.
+    // Release its CPU collision payload now; buffers/descriptors still wait
+    // for both frame fences. A failed queue allocation retains model ownership.
+    for (auto it = loadingModels_.begin(); it != loadingModels_.end();) {
+        // EntitySpawner also incrementally uploads transport hulls. Its
+        // pending queue has a separate lifetime and is not a terrain cancel.
+        if (!it->second.terrainManaged || usedModelIds.count(it->first)) { ++it; continue; }
+        for (auto& group : it->second.groups) destroyGroupGPU(group, /*defer=*/true);
+        it = loadingModels_.erase(it);
     }
 
     // Find and remove models with no instances
@@ -1137,7 +1222,7 @@ void WMORenderer::cleanupUnusedModels() {
 uint32_t WMORenderer::createInstance(uint32_t modelId, const glm::vec3& position,
                                      const glm::vec3& rotation, float scale) {
     // Check if model is loaded
-    if (loadedModels.find(modelId) == loadedModels.end()) {
+    if (!isModelLoaded(modelId)) {
         core::Logger::getInstance().error("Cannot create instance of unloaded WMO model ", modelId);
         return 0;
     }
@@ -2126,23 +2211,10 @@ bool WMORenderer::createGroupResources(const pipeline::WMOGroup& group, GroupRes
         }
     }
 
-    // Upload vertex buffer to GPU
-    AllocatedBuffer vertBuf = uploadBuffer(*vkCtx_, vertices.data(),
-        vertices.size() * sizeof(WMOVertex),
-        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-    resources.vertexBuffer = vertBuf.buffer;
-    resources.vertexAlloc = vertBuf.allocation;
-
-    // Upload index buffer to GPU
-    AllocatedBuffer idxBuf = uploadBuffer(*vkCtx_, group.indices.data(),
-        group.indices.size() * sizeof(uint16_t),
-        VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
-    resources.indexBuffer = idxBuf.buffer;
-    resources.indexAlloc = idxBuf.allocation;
-
     // Store collision geometry for floor raycasting.
     // Use MOPY per-triangle flags to exclude detail/decorative geometry (flag 0x04)
     // from collision - these are things like gears, railings, etc.
+    resources.collisionVertices.clear();
     resources.collisionVertices.reserve(group.vertices.size());
     for (const auto& v : group.vertices) {
         resources.collisionVertices.push_back(v.position);
@@ -2208,6 +2280,7 @@ bool WMORenderer::createGroupResources(const pipeline::WMOGroup& group, GroupRes
     }
 
     // Create batches
+    resources.batches.clear();
     if (!group.batches.empty()) {
         for (const auto& batch : group.batches) {
             GroupResources::Batch resBatch;
@@ -2223,6 +2296,22 @@ bool WMORenderer::createGroupResources(const pipeline::WMOGroup& group, GroupRes
         batch.indexCount = resources.indexCount;
         batch.materialId = 0;
         resources.batches.push_back(batch);
+    }
+
+    // All CPU construction finishes before GPU allocations. On a later
+    // allocation failure the owned partial group resumes, retaining any
+    // already recorded upload until the batch/fence completes.
+    if (!resources.vertexBuffer) {
+        AllocatedBuffer buffer = uploadBuffer(*vkCtx_, vertices.data(),
+            vertices.size() * sizeof(WMOVertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        resources.vertexBuffer = buffer.buffer;
+        resources.vertexAlloc = buffer.allocation;
+    }
+    if (!resources.indexBuffer) {
+        AllocatedBuffer buffer = uploadBuffer(*vkCtx_, group.indices.data(),
+            group.indices.size() * sizeof(uint16_t), VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+        resources.indexBuffer = buffer.buffer;
+        resources.indexAlloc = buffer.allocation;
     }
 
     return true;
@@ -2253,8 +2342,6 @@ void WMORenderer::destroyGroupGPU(GroupResources& group, bool defer) {
         VmaAllocation vbAlloc = group.vertexAlloc;
         ::VkBuffer ib = group.indexBuffer;
         VmaAllocation ibAlloc = group.indexAlloc;
-        group.vertexBuffer = VK_NULL_HANDLE;
-        group.indexBuffer = VK_NULL_HANDLE;
 
         // Snapshot material handles (::VkBuffer = raw Vulkan handle, not RAII wrapper)
         struct MatSnapshot { VkDescriptorSet set; ::VkBuffer ubo; VmaAllocation uboAlloc; };
@@ -2262,8 +2349,6 @@ void WMORenderer::destroyGroupGPU(GroupResources& group, bool defer) {
         mats.reserve(group.mergedBatches.size());
         for (auto& mb : group.mergedBatches) {
             mats.push_back({.set = mb.materialSet, .ubo = mb.materialUBO, .uboAlloc = mb.materialUBOAlloc});
-            mb.materialSet = VK_NULL_HANDLE;
-            mb.materialUBO = VK_NULL_HANDLE;
         }
 
         VkDescriptorPool pool = materialDescPool_;
@@ -2279,6 +2364,17 @@ void WMORenderer::destroyGroupGPU(GroupResources& group, bool defer) {
                 if (m.ubo) vmaDestroyBuffer(allocator, m.ubo, m.uboAlloc);
             }
         });
+        // Snapshot/queue allocations can throw. Source ownership changes only
+        // after both frame-fence queues accepted the entire retirement.
+        group.vertexBuffer = VK_NULL_HANDLE;
+        group.vertexAlloc = VK_NULL_HANDLE;
+        group.indexBuffer = VK_NULL_HANDLE;
+        group.indexAlloc = VK_NULL_HANDLE;
+        for (auto& mb : group.mergedBatches) {
+            mb.materialSet = VK_NULL_HANDLE;
+            mb.materialUBO = VK_NULL_HANDLE;
+            mb.materialUBOAlloc = VK_NULL_HANDLE;
+        }
     }
 }
 
@@ -2972,9 +3068,6 @@ void WMORenderer::GroupResources::buildCollisionGrid() {
     if (gridCellsY > 64) gridCellsY = 64;
 
     size_t totalCells = static_cast<size_t>(gridCellsX) * static_cast<size_t>(gridCellsY);
-    cellTriangles.resize(totalCells);
-    cellFloorTriangles.resize(totalCells);
-    cellWallTriangles.resize(totalCells);
 
     size_t numTriangles = collisionIndices.size() / 3;
     triBounds.resize(numTriangles);
@@ -2988,12 +3081,6 @@ void WMORenderer::GroupResources::buildCollisionGrid() {
         const glm::vec3& v0 = collisionVertices[collisionIndices[i]];
         const glm::vec3& v1 = collisionVertices[collisionIndices[i + 1]];
         const glm::vec3& v2 = collisionVertices[collisionIndices[i + 2]];
-
-        // Triangle XY bounding box
-        float triMinX = std::min({v0.x, v1.x, v2.x});
-        float triMinY = std::min({v0.y, v1.y, v2.y});
-        float triMaxX = std::max({v0.x, v1.x, v2.x});
-        float triMaxY = std::max({v0.y, v1.y, v2.y});
 
         // Per-triangle Z bounds
         float triMinZ = std::min({v0.z, v1.z, v2.z});
@@ -3012,27 +3099,35 @@ void WMORenderer::GroupResources::buildCollisionGrid() {
         }
         triNormals[i / 3] = normal;
 
-        // Classify floor vs wall by normal; see kWallMaxAbsNormalZ.
-        float absNz = std::abs(normal.z);
-        bool isFloor = (absNz >= kWallMaxAbsNormalZ);
-        bool isWall = (absNz < kWallMaxAbsNormalZ);
-
-        int cellMinX = std::max(0, static_cast<int>((triMinX - gridOrigin.x) * invCellW));
-        int cellMinY = std::max(0, static_cast<int>((triMinY - gridOrigin.y) * invCellH));
-        int cellMaxX = std::min(gridCellsX - 1, static_cast<int>((triMaxX - gridOrigin.x) * invCellW));
-        int cellMaxY = std::min(gridCellsY - 1, static_cast<int>((triMaxY - gridOrigin.y) * invCellH));
-
-        uint32_t triIdx = static_cast<uint32_t>(i);
-        for (int cy = cellMinY; cy <= cellMaxY; ++cy) {
-            for (int cx = cellMinX; cx <= cellMaxX; ++cx) {
-                int cellIdx = cy * gridCellsX + cx;
-                cellTriangles[cellIdx].push_back(triIdx);
-                if (isFloor) cellFloorTriangles[cellIdx].push_back(triIdx);
-                if (isWall) cellWallTriangles[cellIdx].push_back(triIdx);
-            }
-        }
     }
+
+    // Count and fill contiguous cell ranges. No per-cell allocations or
+    // geometric changes: the old triangle/cell traversal order is retained.
+    const auto enumerate = [&](int classification, auto emit) {
+        for (size_t i = 0; i + 2 < collisionIndices.size(); i += 3) {
+            const bool floor = std::abs(triNormals[i / 3].z) >= kWallMaxAbsNormalZ;
+            if ((classification == 1 && !floor) || (classification == 2 && floor)) continue;
+            const auto& v0 = collisionVertices[collisionIndices[i]];
+            const auto& v1 = collisionVertices[collisionIndices[i + 1]];
+            const auto& v2 = collisionVertices[collisionIndices[i + 2]];
+            const float triMinX = std::min({v0.x, v1.x, v2.x});
+            const float triMinY = std::min({v0.y, v1.y, v2.y});
+            const float triMaxX = std::max({v0.x, v1.x, v2.x});
+            const float triMaxY = std::max({v0.y, v1.y, v2.y});
+            const int cellMinX = std::max(0, static_cast<int>((triMinX - gridOrigin.x) * invCellW));
+            const int cellMinY = std::max(0, static_cast<int>((triMinY - gridOrigin.y) * invCellH));
+            const int cellMaxX = std::min(gridCellsX - 1, static_cast<int>((triMaxX - gridOrigin.x) * invCellW));
+            const int cellMaxY = std::min(gridCellsY - 1, static_cast<int>((triMaxY - gridOrigin.y) * invCellH));
+            for (int cy = cellMinY; cy <= cellMaxY; ++cy)
+                for (int cx = cellMinX; cx <= cellMaxX; ++cx)
+                    emit(static_cast<size_t>(cy * gridCellsX + cx), static_cast<uint32_t>(i));
+        }
+    };
+    cellTriangles.build(totalCells, [&](auto emit) { enumerate(0, emit); });
+    cellFloorTriangles.build(totalCells, [&](auto emit) { enumerate(1, emit); });
+    cellWallTriangles.build(totalCells, [&](auto emit) { enumerate(2, emit); });
 }
+
 /// The triangles of one cell array that a query box reaches.
 ///
 /// Three queries walk this grid, for any triangle, for floors and for walls,
@@ -3046,7 +3141,7 @@ void WMORenderer::GroupResources::buildCollisionGrid() {
 /// then reports an even number of crossings where there was one surface, which
 /// is how a solid wall reads as empty air.
 void WMORenderer::GroupResources::gatherCellTriangles(
-        const std::vector<std::vector<uint32_t>>& cells,
+        const TriangleCellIndex& cells,
         float minX, float minY, float maxX, float maxY,
         std::vector<uint32_t>& out) const {
     out.clear();
@@ -3058,8 +3153,14 @@ void WMORenderer::GroupResources::gatherCellTriangles(
         glm::vec2(gridOrigin.x, gridOrigin.y), minX, minY, maxX, maxY);
     if (!range) return;
 
-    // About eight triangles a cell, which is what the meshes here average.
-    out.reserve(range->count() * 8);
+    // Reserve before touching visited bits. If growth throws midway through
+    // deduplication, marked triangles otherwise disappear from later collision
+    // queries. The result cannot exceed the triangle count or cell references.
+    size_t candidateCount = 0;
+    for (int cy = range->minY; cy <= range->maxY; ++cy)
+        for (int cx = range->minX; cx <= range->maxX; ++cx)
+            candidateCount += cells[cy * gridCellsX + cx].size();
+    out.reserve(triVisited.empty() ? candidateCount : std::min(candidateCount, triVisited.size()));
 
     // One cell cannot hand out the same triangle twice, so the dedup and the
     // bitset clear it needs are pure cost in the commonest case.

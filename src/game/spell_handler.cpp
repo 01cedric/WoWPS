@@ -1,4 +1,5 @@
 #include "game/spell_handler.hpp"
+#include "game/local_realm.hpp"
 #include "addons/lua_api_registrations.hpp"
 #include "game/protocol_constants.hpp"
 #include "game/gather_spells.hpp"
@@ -1138,6 +1139,10 @@ void SpellHandler::cancelCraftQueue() {
 }
 
 void SpellHandler::cancelAura(uint32_t spellId) {
+    if(auto* realm=owner_.localServiceRealm()) {
+        if(!realm->cancelStatAura(spellId))owner_.raiseUiError(realm->actionStatus());
+        return;
+    }
     if (owner_.getState() != WorldState::IN_WORLD || !owner_.getSocket()) return;
     auto packet = CancelAuraPacket::build(spellId);
     owner_.getSocket()->send(packet);
@@ -1187,7 +1192,17 @@ void SpellHandler::seedCooldownFromSpellInfo(uint32_t spellId) {
     }
 }
 
+void SpellHandler::syncLocalTalents(const std::vector<std::pair<uint32_t,uint8_t>>& talents,uint8_t level){
+    std::unordered_map<uint32_t,uint8_t> learned;unsigned spent=0;for(auto [id,rank]:talents){learned[id]=rank;spent+=rank;}
+    const unsigned earned=level>9?level-9:0;const uint8_t available=uint8_t(earned>spent?earned-spent:0);
+    if(learnedTalents_[0]==learned && unspentTalentPoints_[0]==available)return;
+    activeTalentSpec_=0;learnedTalents_[0]=std::move(learned);learnedTalents_[1].clear();unspentTalentPoints_[0]=available;unspentTalentPoints_[1]=0;
+    owner_.fireAddonEvent("PLAYER_TALENT_UPDATE",{});owner_.fireAddonEvent("CHARACTER_POINTS_CHANGED",{"0","0"});
+}
 void SpellHandler::learnTalent(uint32_t talentId, uint32_t requestedRank) {
+    if(auto* realm=owner_.localServiceRealm()){
+        if(!requestedRank || requestedRank>5 || !realm->learnTalent(talentId,requestedRank-1))owner_.raiseUiError(realm->actionStatus());return;
+    }
     if (owner_.getState() != WorldState::IN_WORLD || !owner_.getSocket()) {
         LOG_WARNING("learnTalent: Not in world or no socket connection");
         return;

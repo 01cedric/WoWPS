@@ -2,6 +2,7 @@
 #include "ui/game_screen.hpp"
 #include "rendering/shadow_quality.hpp"
 #include "ui/settings_schema.hpp"
+#include "ui/interface_layout.hpp"
 #include "ui/framexml_takeover.hpp"
 #include "ui/ui_raid_icons.hpp"
 #include "ui/ui_colors.hpp"
@@ -1723,6 +1724,7 @@ void GameScreen::saveSettings() {
     out << "ui_opacity=" << settingsPanel_.pendingUiOpacity << "\n";
     out << "window_ui_scale=" << settingsPanel_.pendingWindowUiScale << "\n";
     out << "safe_area=" << settingsPanel_.pendingSafeArea << "\n";
+    out << "interface_layout_version=" << kInterfaceLayoutVersion << "\n";
     out << "minimap_rotate=" << (settingsPanel_.pendingMinimapRotate ? 1 : 0) << "\n";
     out << "minimap_square=" << (settingsPanel_.pendingMinimapSquare ? 1 : 0) << "\n";
     out << "minimap_npc_dots=" << (settingsPanel_.pendingMinimapNpcDots ? 1 : 0) << "\n";
@@ -1889,6 +1891,7 @@ void GameScreen::loadSettings() {
     bool bagScaleLoaded = false;
     bool windowScaleLoaded = false;
     bool actionBarScaleLoaded = false;
+    int interfaceLayoutVersion = 0;
     std::string line;
     while (std::getline(in, line)) {
         size_t eq = line.find('=');
@@ -1907,6 +1910,8 @@ void GameScreen::loadSettings() {
             } else if (key == "safe_area") {
                 const int v = std::stoi(val);
                 if (v >= 0 && v <= 10) settingsPanel_.pendingSafeArea = v;
+            } else if (key == "interface_layout_version") {
+                interfaceLayoutVersion = std::stoi(val);
             } else if (key == "window_ui_scale") {
                 settingsPanel_.pendingWindowUiScale =
                     std::clamp(std::stof(val), windowUiScaleRange().first,
@@ -2109,6 +2114,21 @@ void GameScreen::loadSettings() {
             else if (key == "chat_autojoin_lfg") chatPanel_.chatAutoJoinLFG = (std::stoi(val) != 0);
             else if (key == "chat_autojoin_local") chatPanel_.chatAutoJoinLocal = (std::stoi(val) != 0);
         } catch (...) {}
+    }
+
+    if (interfaceLayoutVersion < kInterfaceLayoutVersion) {
+        settingsPanel_.pendingSafeArea = migratedSafeAreaPercent(
+            settingsPanel_.pendingSafeArea, interfaceLayoutVersion);
+        // Append the corrected values so the migration is durable without
+        // rewriting unrelated settings or keybindings during construction.
+        in.close();
+        std::ofstream migrated(path, std::ios::app);
+        if (migrated.is_open()) {
+            migrated << "\n[InterfaceLayout]\nsafe_area=" << settingsPanel_.pendingSafeArea << "\n"
+                     << "interface_layout_version=" << kInterfaceLayoutVersion << "\n";
+        } else {
+            LOG_WARNING("Could not persist interface layout migration to ", path);
+        }
     }
 
     if (!bagScaleLoaded || !windowScaleLoaded || !actionBarScaleLoaded) {

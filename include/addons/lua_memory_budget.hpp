@@ -17,6 +17,15 @@ struct LuaMemoryBudget {
             return nullptr;
         }
         const size_t retained = budget.used - oldSize;
+        // Lua 5.1 assumes that shrinking cannot fail. This also allows the VM
+        // to recover when its configured limit is below current live usage.
+        // If realloc cannot shrink physically, retain the original block;
+        // accounting follows Lua's requested sizes, not allocator capacity.
+        if (ptr && newSize <= oldSize) {
+            void* replacement = std::realloc(ptr, newSize);
+            budget.used = retained + newSize;
+            return replacement ? replacement : ptr;
+        }
         if (retained > budget.limit || newSize > budget.limit - retained) {
             ++budget.failures;
             return nullptr;

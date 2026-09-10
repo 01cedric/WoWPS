@@ -18,7 +18,7 @@ struct LocalAuction {
     uint32_t itemId = 0;
     uint16_t count = 1;
     /// Copper. buyout is what the item sells for outright; bid is where the
-    /// bidding starts, and is always below it.
+    /// bidding starts. Cap-priced collectibles have the same bid and buyout.
     uint32_t bid = 0;
     uint32_t buyout = 0;
     /// Whose listing this is. A bot's guid, or a player's when they list one.
@@ -66,14 +66,18 @@ struct LocalBotState {
     uint32_t randomState = 0;
 };
 
-/// Overflow-safe local market prices in copper. The multiplier is the host's
-/// 4..10 setting; rarity and a small seller spread are applied to that base.
+/// Overflow-safe local market prices in copper. Each new simulated seller
+/// draws its own 4..10 multiplier, then applies rarity and a small price spread.
 class LocalAuctionPricing {
 public:
     static constexpr uint32_t MoneyCap = 1000000000u;
-    static constexpr uint32_t DefaultMultiplier = 10;
+    static constexpr uint32_t MinMultiplier = 4;
+    static constexpr uint32_t MaxMultiplier = 10;
+    /// The existing suggested quote for the player's posting form. Simulated
+    /// sellers always supply an independently drawn multiplier instead.
+    static constexpr uint32_t ReferenceMultiplier = 10;
     static uint32_t buyoutFor(const LocalItemDefinition& item, uint16_t count,
-                             float variation, uint32_t multiplier = DefaultMultiplier);
+                             float variation, uint32_t multiplier = ReferenceMultiplier);
     static uint32_t bidFor(uint32_t buyout);
     static uint32_t rarityPremiumBasisPoints(uint16_t knownDropChanceBp);
 };
@@ -85,10 +89,9 @@ public:
     /// simulation - these are simulated players, and each one costs what a
     /// player costs.
     static constexpr size_t MaxBots = 16;
-    static constexpr size_t MaxAuctions = 96;
-    static constexpr size_t MaxMarketAuctions = 64;
-    void setAuctionPriceMultiplier(uint32_t multiplier);
-    uint32_t auctionPriceMultiplier() const { return auctionMultiplier_; }
+    static constexpr size_t MaxAuctions = 256;
+    static constexpr size_t MaxMarketAuctions = 224; // 32 places reserved for players
+    static constexpr size_t MaxDeliveries = 1024;
     static bool isMarketSeller(uint64_t guid);
     /// How long a listing stands before it expires, in seconds. Short compared
     /// to retail's twelve hours: a standalone session is not twelve hours long,
@@ -147,6 +150,8 @@ public:
     /// Restore listings from a save. Rejects a malformed set wholesale rather
     /// than importing half of it.
     bool restoreAuctions(const std::vector<LocalAuction>& auctions, std::string& error);
+    uint32_t nextAuctionId() const { return nextAuctionId_; }
+    bool restoreAuctionSequence(uint32_t next, std::string& error);
     bool listItemPriced(LocalRealmPlayer& seller, uint32_t itemId, uint16_t count,
                         uint32_t bid, uint32_t buyout, uint32_t durationMinutes,
                         const LocalWorldContent& content, std::string& result);
@@ -164,12 +169,12 @@ private:
     /// statistically excellent.
     static uint32_t nextRandom(uint32_t& state);
     static float randomUnit(uint32_t& state);
+    static uint32_t randomPriceMultiplier(uint32_t& state);
 
     void listFromBot(LocalBotState& bot, LocalRealmPlayer& player,
                      const LocalWorldContent& content);
 
     bool refreshMarket(const LocalWorldContent& content);
-    uint32_t auctionMultiplier_ = LocalAuctionPricing::DefaultMultiplier;
     uint32_t marketRandom_ = 0x74db9103u;
     float marketTimer_ = 0;
     bool enabled_ = false;

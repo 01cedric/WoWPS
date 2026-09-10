@@ -137,13 +137,9 @@ private:
     /// the bots live on the host's authority like every other player.
     // Market sellers operate independently of these optional world characters.
     bool localPlayerbots_ = false;
-    int localAuctionMultiplier_ = 10;
-    int localAuctionDirection_ = 0;
-    double localAuctionRepeatAt_ = 0;
     int localLimitDirection_ = 0;
     double localLimitRepeatAt_ = 0;
     void renderLocalPlayerLimit(float left, float top, float width, bool enabled);
-    void renderAuctionPrice(float left, float top, float width, bool enabled);
     /// The playerbot switch, shown beside the player limit before a realm
     /// starts. Off by default: a world that quietly fills with characters
     /// nobody created is a surprise, not a feature.

@@ -1,3 +1,5 @@
+#include <chrono>
+#include "game/local_aura_presentation.hpp"
 #include "game/local_ui_spell_metadata.hpp"
 #include "game/game_handler.hpp"
 #include "game/entity_controller.hpp"
@@ -186,6 +188,24 @@ bool GameHandler::syncLocalRealmPlayer(const LocalRealmPlayer& snapshot, const L
         movementInfo.x = unit->getX(); movementInfo.y = unit->getY(); movementInfo.z = unit->getZ();
         movementInfo.orientation = unit->getOrientation();
         serverPlayerLevel_ = snapshot.level;
+        if(spellHandler_){
+            spellHandler_->syncLocalTalents(snapshot.talents,snapshot.level);
+            auto& list=spellHandler_->getPlayerAurasMut();
+            const auto now=uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+            const auto count=localOwnerAuraCount(snapshot);
+            bool changed=list.size()!=count;
+            for(size_t i=0;i<count&&!changed;++i){const auto a=localOwnerAuraAt(snapshot,content,i);
+                changed=list[i].spellId!=a.spellId||list[i].casterGuid!=a.casterGuid||
+                    std::abs(int64_t(list[i].getRemainingMs(now))-a.remainingMs)>1500;
+            }
+            list.resize(count);
+            for(size_t i=0;i<count;++i){const auto a=localOwnerAuraAt(snapshot,content,i);auto& slot=list[i];
+                slot.spellId=a.spellId;slot.flags=0x1f;slot.level=snapshot.level;slot.charges=1;
+                slot.durationMs=a.remainingMs;slot.maxDurationMs=a.durationMs;slot.casterGuid=a.casterGuid;slot.receivedAtMs=now;
+            }
+            spellHandler_->mirrorAurasByGuid(snapshot.guid,list);
+            if(changed&&addonEventCallback_){addonEventCallback_("UNIT_AURA",{"player"});addonEventCallback_("PLAYER_AURAS_CHANGED",{});}
+        }
         playerXp_ = snapshot.xp;
         playerNextLevelXp_ = snapshot.xpToLevel;
         playerMoneyCopper_ = snapshot.money;
@@ -294,7 +314,7 @@ void GameHandler::syncLocalRealmNpc(const LocalRealmNpc& npc) {
         (npc.vendor ? kLocalNpcFlagVendor : 0u) | (npc.repairer ? kLocalNpcFlagRepair : 0u) |
         (npc.classTrainer ? kLocalNpcFlagTrainer | kLocalNpcFlagTrainerClass : 0u) |
         (npc.professionTrainer ? kLocalNpcFlagTrainer | kLocalNpcFlagTrainerProfession : 0u) |
-        (npc.innkeeper ? kLocalNpcFlagInnkeeper : 0u) | (npc.flightMaster ? 0x2000u : 0u));
+        (npc.banker ? kLocalNpcFlagBanker : 0u) | (npc.innkeeper ? kLocalNpcFlagInnkeeper : 0u) | (npc.flightMaster ? 0x2000u : 0u));
     unit->setHostile(npc.hostile);
     unit->setFactionTemplate(npc.hostile ? 14 : 12);
     unit->setDynamicFlags((npc.dead ? UNIT_DYNFLAG_DEAD : 0) |

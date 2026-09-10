@@ -5,9 +5,37 @@
 
 #include "pipeline/asset_manager.hpp"
 #include "pipeline/m2_loader.hpp"
+#include "pipeline/char_sections.hpp"
+#include "core/logger.hpp"
 
 namespace wowee {
 namespace pipeline {
+
+std::shared_ptr<const M2Model> loadCharacterPreviewModel(AssetManager& assets,
+    const std::string& path, const CharacterSectionTextures& textures, const std::string& raceFolder) {
+    PreviewModelCache::Key key{path,raceFolder,textures.bodySkin,textures.skinExtra,
+        textures.faceLower,textures.faceUpper,textures.hair};
+    key.insert(key.end(),textures.underwear.begin(),textures.underwear.end());
+    uint64_t generation=0;
+    if (auto model=assets.previewModels().find(key,generation)) {
+        LOG_INFO("[PREVIEW_MODEL] reused immutable model path=",path);
+        return model;
+    }
+    auto data=assets.readFile(path);
+    if (data.empty()) return {};
+    auto model=std::make_shared<M2Model>(M2Loader::load(data));
+    if (model->name.empty()) model->name=path;
+    if (model->version>=264) {
+        auto skin=assets.readFile(skinPathForM2(path));
+        if (!skin.empty()) M2Loader::loadSkin(skin,*model);
+    }
+    if (!model->isValid()) return {};
+    applyCharacterTextures(*model,textures,raceFolder);
+    loadExternalAnimations(assets,path,data,*model,{0}); // Stand and its variations.
+    assets.previewModels().remember(key,generation,model);
+    LOG_INFO("[PREVIEW_MODEL] prepared model path=",path," vertices=",model->vertices.size());
+    return model;
+}
 
 bool loadM2WithSkin(AssetManager& assets, const std::string& m2Path, M2Model& outModel) {
     auto m2Data = assets.readFile(m2Path);

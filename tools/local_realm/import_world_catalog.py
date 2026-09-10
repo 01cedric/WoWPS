@@ -26,6 +26,23 @@ def record_pack(path, values):
             f.write(struct.pack('<IQI', key, offset, len(data))); offset += len(data)
         for _, data in records: f.write(data)
 
+def quest_rewards(q):
+    """Retain every supported guaranteed reward and every selectable option."""
+    def entries(id_pattern, count_pattern, limit):
+        out=[]
+        for i in range(1,limit+1):
+            item,count=q.get(id_pattern.format(i),0),q.get(count_pattern.format(i),0)
+            if not item and not count:continue
+            if not isinstance(item,int) or not isinstance(count,int) or not 0<item<=0xffffffff or not 0<count<=65535:
+                raise ValueError('invalid reward item/count')
+            out.append({'itemId':item,'count':count})
+        return out
+    fixed=entries('rewarditem{}','rewardamount{}',4)
+    choices=entries('rewardchoiceitemid{}','rewardchoiceitemquantity{}',6)
+    first=fixed[0] if fixed else {'itemId':0,'count':0}
+    return {'rewardItem':first['itemId'],'rewardCount':first['count'],
+            'additionalRewards':fixed[1:],'rewardChoices':choices}
+
 def compile_catalog(sql_dir, output, baseline=None):
     output.mkdir(parents=True, exist_ok=True)
     rows, hashes = {}, {}
@@ -86,7 +103,6 @@ def compile_catalog(sql_dir, output, baseline=None):
         elif a.get('exclusivegroup',0) or a.get('prevquestid',0)<0: why = 'exclusive/group prerequisite'
         elif any(a.get(k,0) for k in ('sourcespellid','requiredskillid','requiredminrepfaction','requiredmaxrepfaction','rewardmailtemplateid')): why = 'skill/spell/reputation/mail condition'
         elif any(q.get(k,0) for k in ('requiredfactionid1','requiredfactionid2','requireditemid5','requireditemid6')): why = 'unsupported faction/extra objective'
-        elif any(q.get(f'rewarditem{i}',0) for i in range(2,5)): why = 'multiple fixed rewards'
         elif q['rewardmoney'] < 0: why = 'money payment'
         for i in range(1,5):
             entry,count=q[f'requirednpcorgo{i}'],q[f'requirednpcorgocount{i}']
@@ -99,10 +115,8 @@ def compile_catalog(sql_dir, output, baseline=None):
                 if item not in available_items: why=why or 'item lacks direct baseline drop'
                 else: objectives.append({'type':'collect','entry':item,'count':count})
         if len(objectives)>4: why=why or 'more than four objectives'
-        reward,count=q['rewarditem1'],q['rewardamount1']
-        if q['rewardchoiceitemid1']:
-            if reward: why=why or 'fixed plus choice reward'
-            reward,count=q['rewardchoiceitemid1'],q['rewardchoiceitemquantity1']
+        try: rewards=quest_rewards(q)
+        except ValueError: why=why or 'invalid reward item/count';rewards={}
         if not why and not objectives:
             if not q['logdescription'] and not q['questdescription']: why='empty definition'
             else: objectives=[{'type':'talk','entry':enders[qid],'count':1}]
@@ -113,7 +127,7 @@ def compile_catalog(sql_dir, output, baseline=None):
           'giverEntry':starters[qid],'turnInEntry':enders[qid],'minLevel':max(1,min(80,q['minlevel'])),
           'allowableRaces':max(0,q['allowableraces']), 'allowableClasses':max(0,a.get('allowableclasses',0)),
           'prerequisite':max(0,a.get('prevquestid',0)),'xp':max(50,q['questlevel']*80),
-          'money':max(0,q['rewardmoney']),'rewardItem':reward,'rewardCount':count,'objectives':objectives}
+          'money':max(0,q['rewardmoney']),**rewards,'objectives':objectives}
     def remove_prerequisites():
         while True:
             removed=[qid for qid,q in quests.items() if q['prerequisite'] and q['prerequisite'] not in quests]
@@ -173,7 +187,10 @@ def compile_catalog(sql_dir, output, baseline=None):
         starter=json.loads(baseline.read_text())
         for key,target in [('items',items),('npcs',npcs),('quests',quests)]:
             for r in starter[key]:
-                prior=target.get(r['id'],{});prior.update(r);target[r['id']]=prior
+                prior=target.get(r['id'],{})
+                if key=='quests':
+                    prior.pop('additionalRewards',None);prior.pop('rewardChoices',None)
+                prior.update(r);target[r['id']]=prior
     contacts=collections.defaultdict(set)
     for qid,q in quests.items():
         for key in ['giverEntry','turnInEntry']:contacts[q[key]].add(qid)
@@ -203,14 +220,14 @@ def compile_catalog(sql_dir, output, baseline=None):
     # invalidates LAN joins even if the NPC/quest files are identical.
     manifest['fingerprint']=int.from_bytes(hashlib.sha256(encode(manifest)).digest()[:4],'little') or 1
     (output/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n')
-    report['coverage']={'maps':len(allmaps),'mapsWithBaselineCreatures':len(mapcounts),'spawns':len(spawns),'cells':len(cells),'npcs':len(npcs),'items':len(items),'quests':len(quests),'profiles':len(manifest['starts']),'destinations':len(manifest['destinations']),'instanceTemplates':len(instances),'runtimeBytes':sum(v['bytes'] for v in manifest['files'].values())}
+    report['coverage']={'maps':len(allmaps),'mapsWithBaselineCreatures':len(mapcounts),'spawns':len(spawns),'cells':len(cells),'npcs':len(npcs),'items':len(items),'quests':len(quests),'questsWithChoices':sum(bool(q.get('rewardChoices')) for q in quests.values()),'questsWithMultipleFixedRewards':sum(bool(q.get('additionalRewards')) for q in quests.values()),'profiles':len(manifest['starts']),'destinations':len(manifest['destinations']),'instanceTemplates':len(instances),'runtimeBytes':sum(v['bytes'] for v in manifest['files'].values())}
     report['limits']=['Normal difficulty + baseline phase only; positive events and alternative pool members excluded.',
       'Each spawn uses id1 and first source model; randomized id2/id3 and appearance probabilities are not simulated.',
       'SQL source IDs, names, positions, item displays and objective IDs/counts retained; combat stats use local formulas.',
       'Unknown factions remain friendly. Known hostile/neutral starter factions retain the B2 mapping; no complete FactionTemplate.dbc resolver.',
       'Maximum 128 active NPCs; cell reads and individual definition loads are bounded. World data is paged from disk.',
       'Item metadata does not implement all item effects. Four equipment slots; local abilities only.',
-      'Only supported kill/collect/talk quests with available baseline actors are emitted. First choice reward selected; drop count/probability simplified.',
+      'Only supported kill/collect/talk quests with available baseline actors are emitted. Up to four guaranteed and six choice rewards retained; drop count/probability simplified.',
       'Creature SmartAI and C++ instance scripts are source metadata only, never claimed executed. Boss phases, gameobjects, paths and encounter events remain unsupported.',
       'Teleport SQL provides validated destination coordinates only. Automatic area triggering requires client DBC geometry.',
       'Base dump snapshot only; incremental upstream database updates are not executed.']

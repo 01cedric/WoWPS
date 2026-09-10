@@ -2,12 +2,14 @@
 #include "addons/local_framexml.hpp"
 #include "addons/lua_engine.hpp"
 #include "game/local_realm.hpp"
+#include "game/local_services.hpp"
 #include "core/logger.hpp"
 #include <vector>
 #ifdef WOWEE_PS4
 #include <orbis/Pad.h>
 #endif
 #include "ui/keybinding_manager.hpp"
+#include "ui/framexml_pad_navigation.hpp"
 #include "ui/framexml_takeover.hpp"
 #include <imgui.h>
 #include <cmath>
@@ -30,30 +32,18 @@ bool carrying() { return !ui::frameXmlCursorItem().empty(); }
 /// which is the only kind that is destroyed rather than merely dropped.
 bool carryingBagItem() { uint8_t bag=0,slot=0; return ui::frameXmlCursorWireSlot(bag,slot); }
 bool shown(ui::WidgetTree& tree, const ui::Widget* w) {
-    for (int depth=0; w && depth<128; ++depth) {
-        if (!w->shown) return false;
-        w=tree.get(w->parent);
-    }
-    return true;
+    return ui::padWidgetShown(tree,w);
 }
 const ui::Widget* panel(ui::WidgetTree& tree) {
     const ui::Widget* result=nullptr;
-    for(const char* name:{"CharacterFrame","SpellBookFrame","QuestLogFrame","WorldMapFrame",
-        "ContainerFrame1","ContainerFrame2","ContainerFrame3","ContainerFrame4","ContainerFrame5",
-        "GossipFrame","QuestFrame","MerchantFrame","BankFrame","ClassTrainerFrame","AuctionFrame",
-        "TalentFrame","PlayerTalentFrame","TradeSkillFrame","MailFrame","TradeFrame",
-        "GameMenuFrame","InterfaceOptionsFrame","VideoOptionsFrame","AudioOptionsFrame",
-        "StaticPopup1","StaticPopup2","StaticPopup3","StaticPopup4"}) {
-        auto* w=tree.findByName(name);if(!w || !w->visible || !shown(tree,w))continue;
+    for(auto name:ui::kPadPanels) {
+        auto* w=tree.findByName(std::string(name));if(!w || !w->visible || !shown(tree,w))continue;
         if(!result || w->effStrata>result->effStrata ||
             (w->effStrata==result->effStrata &&
              (w->effLevel>result->effLevel ||
               (w->effLevel==result->effLevel && w->creationOrder>result->creationOrder))))result=w;
     }
     return result;
-}
-bool descendant(ui::WidgetTree& tree,const ui::Widget* w,uint32_t parent) {
-    for(int depth=0;w && depth<128;++depth){if(w->id==parent)return true;w=tree.get(w->parent);}return false;
 }
 /// The original interface's world map, when it is the panel on top.
 ///
@@ -111,7 +101,14 @@ void LocalFrameXml::publishPadCursor() {
 bool LocalFrameXml::activatePadControl(uint32_t id) {
     if(!ready())return false;
     auto& tree=engine_->widgets();const auto* w=tree.get(id);
-    if(!w || !w->visible || !w->enabled)return false;
+    if(!ui::padControlPoint(tree,w,ImGui::GetIO().DisplaySize.x/tree.uiScale(),
+        ImGui::GetIO().DisplaySize.y/tree.uiScale()))return false;
+    if(w->name.starts_with("BankFrameItem") || w->name.starts_with("ContainerFrame")) {
+        if(engine_->executeString("__WoWPSBankPadHandled = WoWPS_LocalBankActivate and WoWPS_LocalBankActivate('"+w->name+"') or false")) {
+            auto* L=engine_->getState();lua_getglobal(L,"__WoWPSBankPadHandled");bool handled=lua_toboolean(L,-1)!=0;lua_pop(L,1);if(handled)return true;
+        }
+        w=tree.get(id);if(!w)return true;
+    }
     // Square buys through retail's confirmation handler, and sells the chosen
     // bag stack while a merchant is open. Other panels retain mouse semantics.
     if(w->name.starts_with("MerchantItem") || w->name.starts_with("ContainerFrame")) {
@@ -124,11 +121,10 @@ bool LocalFrameXml::activatePadControl(uint32_t id) {
         // A callback can rebuild the widget tree. Reacquire before geometry.
         w=tree.get(id);if(!w || !w->visible || !w->enabled)return true;
     }
-    const float es=w->effScale;
-    const float x=(w->left+(w->rectW+(w->hitInsetLeft-w->hitInsetRight)*es)*.5f)*tree.uiScale();
-    const float y=ImGui::GetIO().DisplaySize.y-
-        (w->bottom+(w->rectH+(w->hitInsetBottom-w->hitInsetTop)*es)*.5f)*tree.uiScale();
     const float screenH=ImGui::GetIO().DisplaySize.y;
+    const auto point=ui::padControlPoint(tree,w,ImGui::GetIO().DisplaySize.x/tree.uiScale(),screenH/tree.uiScale());
+    if(!point)return true;
+    const float x=point->x*tree.uiScale(),y=screenH-point->y*tree.uiScale();
     // CharacterMicroButton toggles on OnMouseUp, not OnClick. Use the same
     // complete press/release path as a mouse so IsMouseOver, checked state,
     // PreClick/PostClick and mouse-only handlers agree for every control.
@@ -164,7 +160,7 @@ bool LocalFrameXml::padPickup(const std::string& name) {
     case PadPickupTarget::Kind::Action:
         return engine_->executeString(lookup+
             "local slot=b.action or (b.GetAttribute and b:GetAttribute('action')) or b:GetID(); "
-            "if type(slot)=='number' and PickupAction then PickupAction(slot) end");
+            "if type(slot)=='number' then if GetCursorInfo and GetCursorInfo() then if PlaceAction then PlaceAction(slot) end elseif PickupAction then PickupAction(slot) end end");
     case PadPickupTarget::Kind::None:break;
     }
     return false;
@@ -180,6 +176,9 @@ bool LocalFrameXml::padPickup(const std::string& name) {
 /// real client asks nothing.
 bool LocalFrameXml::padDropCarried() {
     if(!engine_ || !carrying())return false;
+    if(engine_->executeString("__WoWPSLocalDrop = WoWPS_LocalSocialDrop and WoWPS_LocalSocialDrop() or false")){
+        auto* L=engine_->getState();lua_getglobal(L,"__WoWPSLocalDrop");const bool handled=lua_toboolean(L,-1)!=0;lua_pop(L,1);if(handled)return true;
+    }
     if(carryingBagItem()){
         LOG_INFO("[PAD_UI] Cross released a bag item outside a slot; asking before destroying it");
         engine_->fireEvent("WOWEE_DELETE_ITEM_CONFIRM");
@@ -202,17 +201,16 @@ bool LocalFrameXml::worldMapOwnsPad() const {
 /// down - Action::WorldMap, doing nothing on its own and saying who does.
 bool LocalFrameXml::padWorldMapToggle() {
 #ifdef WOWEE_PS4
-    if(!ready() || platform::ps4::keyboardCapturesInput())return false;
+    if(!ready() || platform::ps4::keyboardCapturesInput() || platform::ps4::inputTextFocus())return false;
     const auto& pad=platform::ps4::padState();
-    if(!pad.connected || ImGui::GetIO().WantTextInput ||
-       platform::ps4::inputTextFocus())return false;
+    if(!pad.connected || ImGui::GetIO().WantTextInput)return false;
     if(!(pad.pressed&kPadWorldMapButton))return false;
     auto& tree=engine_->widgets();
     const auto* top=panel(tree);
     // A dialog waiting for an answer keeps the pad: raising the map over a
     // delete confirmation would leave the question underneath it with the Yes
     // no longer reachable.
-    if(top && (top->name.starts_with("StaticPopup") || top->name.ends_with("OptionsFrame")))return false;
+    if(top && (ui::padModalPanel(top->name)))return false;
     const auto* map=tree.findByName("WorldMapFrame");
     const bool open=map && map->visible;
     LOG_INFO("[PAD_UI] World map ",open?"closed":"opened"," from the pad");
@@ -294,7 +292,15 @@ bool LocalFrameXml::navigateBars() {
     // drawn. A guard rather than a line before each of the seven returns.
     struct Anchor{LocalFrameXml* self;~Anchor(){self->publishPadCursor();}}anchor{this};
     platform::ps4::setInputActionBars(ready());
-    if(!ready() || platform::ps4::keyboardCapturesInput())return false;
+    if(!ready() || platform::ps4::keyboardCapturesInput() || platform::ps4::inputTextFocus())return false;
+    // Circle cancels a carried reference before closing a panel. Bag contents
+    // stay owned by inventory; cancelling never destroys the item.
+    if(carrying() && (platform::ps4::padState().pressed&ORBIS_PAD_BUTTON_CIRCLE)) {
+        engine_->executeString("if ClearCursor then ClearCursor() end");
+        ui::noteInterfaceConsumedKey(ImGuiKey_GamepadFaceRight);
+        ui::noteInterfaceConsumedKey(ImGuiKey_Escape);
+        padFocus_.clear();return true;
+    }
     // Before the bars, and before the panel lane the caller runs after this
     // one: the map's button has to work from wherever the player is, and while
     // the map is up nothing else may read the pad.
@@ -306,8 +312,34 @@ bool LocalFrameXml::navigateBars() {
     const auto visible=[&](const ui::Widget* w){return w && w->visible && w->alpha>.001f &&
         w->rectW>0 && w->rectH>0 && shown(tree,w);};
     const auto* top=panel(tree);
-    const bool modal=top && (top->name.starts_with("StaticPopup") || top->name.ends_with("OptionsFrame"));
-    if(modal)return false;
+    const bool modal=top && (ui::padModalPanel(top->name));
+    if(modal){padFocus_.clear();return false;}
+    // Triangle target selection releases the bar cursor. While a world unit is
+    // targeted the shoulders cannot steal Square back from talk/attack.
+    const uint64_t targetGuid=target_?target_():0;
+    if(!targetGuid || (pad.pressed&ORBIS_PAD_BUTTON_TRIANGLE))targetShouldersReleased_=false;
+    // Explicit exit keeps the unit selected, so offensive action-bar spells
+    // remain usable without reopening Options or losing their target.
+    if(!top && targetGuid && (pad.pressed&ORBIS_PAD_BUTTON_CIRCLE)) {
+        targetShouldersReleased_=true;
+        ui::noteInterfaceConsumedKey(ImGuiKey_GamepadFaceRight);
+    }
+    bool nonCombatTarget=false;
+    if(const auto* realm=realm_?realm_():nullptr)
+        for(const auto& npc:realm->npcs())if(npc.guid==targetGuid){nonCombatTarget=!npc.hostile || npc.dead;break;}
+    // A nearby mailbox owns contextual Square unless an enemy or explicitly
+    // selected menu icon owns the action. Old spell focus must not hide mail access.
+    if(!top && !carrying() && (!targetGuid || nonCombatTarget) &&
+       padFocus_.lane!=ui::LocalPadFocus::Lane::Menus &&
+       !(pad.pressed&(ORBIS_PAD_BUTTON_L2|ORBIS_PAD_BUTTON_R2))) {
+        if(const auto* realm=realm_?realm_():nullptr)
+            if(const auto* player=realm->localPlayer();player && game::nearbyLocalMailbox(realm->content(),*player)) {
+                padFocus_.clear();return false;
+            }
+    }
+    if(!carrying() && ui::localTargetOwnsShoulders(targetGuid,top!=nullptr,(pad.pressed&ORBIS_PAD_BUTTON_TRIANGLE)!=0,targetShouldersReleased_,nonCombatTarget)) {
+        padFocus_.clear();return false;
+    }
     const bool dpad=(pad.pressed&(ORBIS_PAD_BUTTON_UP|ORBIS_PAD_BUTTON_DOWN|ORBIS_PAD_BUTTON_LEFT|ORBIS_PAD_BUTTON_RIGHT))!=0;
     const bool holding=carrying();
     if(top && dpad){
@@ -319,11 +351,12 @@ bool LocalFrameXml::navigateBars() {
         if(holding && padFocus_.lane==ui::LocalPadFocus::Lane::Actions)focus_=padFocus_.widget;
         padFocus_.clear();
     }
-    const int actions=((pad.pressed&ORBIS_PAD_BUTTON_R1)?1:0)-((pad.pressed&ORBIS_PAD_BUTTON_L1)?1:0);
+    const int actions=(top && !holding)?0:
+        ((pad.pressed&ORBIS_PAD_BUTTON_R1)?1:0)-((pad.pressed&ORBIS_PAD_BUTTON_L1)?1:0);
     const int menus=((pad.pressed&ORBIS_PAD_BUTTON_R2)?1:0)-((pad.pressed&ORBIS_PAD_BUTTON_L2)?1:0);
     // Opening a panel through an action (for example talking to a quest NPC)
-    // hands Square over to that panel. An explicit subsequent shoulder press
-    // selects a bar again. Menu-icon ownership is retained so Square toggles it.
+    // hands Square over to that panel. L1/R1 now scroll the open panel unless
+    // carrying. Menu-icon ownership is retained so Square toggles it.
     // Not while carrying: the bar is the destination then, and taking the
     // selection away because the spellbook opened is taking away the target.
     if(top && top->id!=navigationRoot_ && !actions && !menus && !holding &&
@@ -358,7 +391,8 @@ bool LocalFrameXml::navigateBars() {
         }
         if(!ids.empty())padFocus_.select(menus?ui::LocalPadFocus::Lane::Menus:ui::LocalPadFocus::Lane::Actions,
             ui::LocalPadFocus::step(ids,padFocus_.widget,menus?menus:actions));
-        ui::noteInterfaceConsumedKey(ImGuiKey_GamepadL1);ui::noteInterfaceConsumedKey(ImGuiKey_GamepadR1);
+        if(actions){ui::noteInterfaceConsumedKey(ImGuiKey_GamepadL1);ui::noteInterfaceConsumedKey(ImGuiKey_GamepadR1);}
+        if(menus){ui::noteInterfaceConsumedKey(ImGuiKey_GamepadL2);ui::noteInterfaceConsumedKey(ImGuiKey_GamepadR2);}
         consumed=true;
     }
     const auto* selected=tree.get(padFocus_.widget);
@@ -367,9 +401,7 @@ bool LocalFrameXml::navigateBars() {
     if((pad.pressed&ORBIS_PAD_BUTTON_CROSS) && !(pad.pressed&ORBIS_PAD_BUTTON_TRIANGLE) &&
        padFocus_.lane==ui::LocalPadFocus::Lane::Actions && !actions && !menus){
         // Cross is pick up / put down on the bars as it is inside a panel.
-        // PickupAction implements both halves against the cursor, so one press
-        // lifts this slot's action and the next drops what is carried into it,
-        // handing whatever it displaced back to the cursor.
+        // Empty cursor picks up; carrying replaces this slot and clears the cursor.
         //
         // Never on the frame the lane was entered. Cross is a world button too,
         // and a shoulder and a face button pressed together is a thing hands do;
@@ -423,17 +455,24 @@ bool LocalFrameXml::navigate() {
     platform::ps4::setInputMenuNavigation(platform::ps4::MenuOwner::FrameXml,root!=nullptr);
 #endif
     if(!root){focus_=0;navigationRoot_=0;return false;}
+#ifdef WOWEE_PS4
+    if(platform::ps4::keyboardCapturesInput() || platform::ps4::inputTextFocus())return false;
+#endif
     const auto rootId=root->id;
     // Read before anything can run Lua: the tree owns a vector and a callback
     // reallocating it leaves this pointer dangling. A modal owns the pad
     // outright - the delete confirmation this file raises is one, and its Yes
     // has to stay reachable rather than being read as another press to let go.
-    const bool modalRoot=root->name.starts_with("StaticPopup") || root->name.ends_with("OptionsFrame");
+    const bool modalRoot=ui::padModalPanel(root->name);
     const bool rootChanged=navigationRoot_!=rootId;
     navigationRoot_=rootId;
+    if(modalRoot)padFocus_.clear();
     auto& tree=engine_->widgets();const auto& io=ImGui::GetIO();
     if(rootChanged){
         focus_=0;
+        // A press opening a dialog belongs to the preceding screen. Keep it
+        // consumed through release so holding Cross cannot accept the quest.
+        if(ImGui::IsKeyDown(ImGuiKey_GamepadFaceDown))padCrossHandled_=true;
         engine_->dispatchMouse(-1,-1,io.DisplaySize.y,{false,false,false});
         if(!ready())return true;
     }
@@ -444,21 +483,24 @@ bool LocalFrameXml::navigate() {
     // where a shoulder press selects them and Square casts. And never under a
     // modal, which owns the pad outright - see modalRoot.
     const bool holding=carrying() && !modalRoot;
+    const auto controlPoint=[&](const ui::Widget* w){
+        return ui::padControlPoint(tree,w,io.DisplaySize.x/tree.uiScale(),io.DisplaySize.y/tree.uiScale());
+    };
     const auto eligible=[&](const ui::Widget* w){
-        if(!w || !w->visible || !w->mouseEnabled || !w->enabled || w->alpha<=.001f)return false;
-        if(w->objectType!="Button" && w->objectType!="CheckButton" && w->objectType!="Slider" && w->objectType!="EditBox")return false;
-        if(!shown(tree,w))return false;
-        if(!descendant(tree,w,rootId) &&
-           !(holding && padPickupTargetForName(w->name).kind==PadPickupTarget::Kind::Action))return false;
-        const float x=w->left+w->rectW*.5f,y=w->bottom+w->rectH*.5f;
-        return x>=0 && y>=0 && x*tree.uiScale()<=io.DisplaySize.x && y*tree.uiScale()<=io.DisplaySize.y && tree.hitTest(x,y)==w->id;
+        // Reject non-controls before walking ancestors in a large FrameXML tree.
+        if(!w || !w->visible || !w->enabled || !w->mouseEnabled || w->alpha<=.001f)return false;
+        if(w->objectType!="Button" && w->objectType!="CheckButton" &&
+           w->objectType!="Slider" && w->objectType!="EditBox")return false;
+        const auto* active=tree.get(rootId);
+        return w && active && ui::padPanelAllows(tree,*active,*w,
+            holding && padPickupTargetForName(w->name).kind==PadPickupTarget::Kind::Action) && controlPoint(w).has_value();
     };
     const ui::Widget* focused=tree.get(focus_);
     if(!eligible(focused)){
-        focused=nullptr;
         // Buttons are containers whose child textures draw. drawOrder omits
         // those containers, so navigation must inspect the widget tree itself.
-        for(uint32_t id=1;id<tree.size();++id)if(const auto* w=tree.get(id);eligible(w)){focused=w;break;}
+        focused=ui::padInitialControl(tree,rootId,eligible);
+        if(focused && rootChanged)LOG_INFO("[PAD_UI] initial dialog focus=",focused->name);
     }
     int dx=0,dy=0;
     if(ImGui::IsKeyPressed(ImGuiKey_GamepadDpadUp))dy=1;
@@ -481,7 +523,8 @@ bool LocalFrameXml::navigate() {
             const float vx=w->left+w->rectW*.5f-x,vy=w->bottom+w->rectH*.5f-y;
             const float along=vx*dx+vy*dy,across=std::abs(vx*dy-vy*dx);
             if(along>1 && along+across*3<score){score=along+across*3;best=w;}
-        }if(best)focused=best;
+        }
+        if(best)focused=best;
     }
     focus_=focused?focused->id:0;
     if(ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight,false) ||
@@ -492,6 +535,7 @@ bool LocalFrameXml::navigate() {
         // at once loses the navigation context behind a modal dialog. Names
         // come exclusively from the fixed panel list above.
         const auto* active=tree.get(rootId);
+        if(!modalRoot && focused)if(const auto* owner=ui::padOwningPanel(tree,focused))active=owner;
         const std::string name=active?active->name:std::string{};
         focus_=0;
         engine_->dispatchMouse(-1,-1,io.DisplaySize.y,{false,false,false});
@@ -507,6 +551,8 @@ bool LocalFrameXml::navigate() {
                     "if info then if info.OnCancel and not info.noCancelOnEscape then "
                     "info.OnCancel(f,f.data,\"clicked\") end; f:Hide(); "
                     "elseif StaticPopupSpecial_Hide then StaticPopupSpecial_Hide(f) end end");
+            } else if (name.starts_with("DropDownList")) {
+                engine_->executeString("CloseDropDownMenus()");
             } else {
                 engine_->executeString("local f=_G[\""+name+"\"]; if f then if HideUIPanel then HideUIPanel(f) else f:Hide() end end");
             }
@@ -538,7 +584,7 @@ bool LocalFrameXml::navigate() {
         // goes into a bag slot or onto a bar, a spell only onto a bar.
         const bool accepts=target.kind==PadPickupTarget::Kind::Action ||
             (target.kind==PadPickupTarget::Kind::Container && carryingBagItem());
-        const auto* activeRoot=tree.get(rootId);
+        const auto* activeRoot=ui::padOwningPanel(tree,focused);
         const bool inSlotWindow=activeRoot && padWindowBearsSlots(activeRoot->name);
         bool handled=false;
         if(holding && !accepts && target.kind!=PadPickupTarget::Kind::None){
@@ -573,10 +619,14 @@ bool LocalFrameXml::navigate() {
         }
     }
     // Shoulder scrolling uses the same clipped hit-test path as a real wheel.
-    if(focused && (ImGui::IsKeyPressed(ImGuiKey_GamepadL1) || ImGui::IsKeyPressed(ImGuiKey_GamepadR1))) {
+    if(focused && ((ImGui::IsKeyPressed(ImGuiKey_GamepadL1) && !ui::interfaceConsumedKey(ImGuiKey_GamepadL1)) ||
+                  (ImGui::IsKeyPressed(ImGuiKey_GamepadR1) && !ui::interfaceConsumedKey(ImGuiKey_GamepadR1)))) {
         const auto focusedId=focused->id;
-        engine_->dispatchMouseWheel((focused->left+focused->rectW*.5f)*tree.uiScale(),(focused->bottom+focused->rectH*.5f)*tree.uiScale(),
+        const auto point=controlPoint(focused);
+        if(!point)return true;
+        engine_->dispatchMouseWheel(point->x*tree.uiScale(),point->y*tree.uiScale(),
                                     ImGui::IsKeyPressed(ImGuiKey_GamepadL1)?1:-1);
+        ui::noteInterfaceConsumedKey(ImGuiKey_GamepadL1);ui::noteInterfaceConsumedKey(ImGuiKey_GamepadR1);
         // OnMouseWheel can create/reparent/hide controls. WidgetTree owns a
         // vector, so the pointer from before a Lua callback may be dangling.
         if (!ready()) return true;
@@ -586,8 +636,10 @@ bool LocalFrameXml::navigate() {
     if(!focused)return false;
     const float scale=tree.uiScale();
     drawPadFocus(*focused,tree,scale,io.DisplaySize.y);
-    const float centreX=(focused->left+focused->rectW*.5f)*scale;
-    const float centreY=io.DisplaySize.y-(focused->bottom+focused->rectH*.5f)*scale;
+    const auto point=controlPoint(focused);
+    if(!point){focus_=0;return true;}
+    const float centreX=point->x*scale;
+    const float centreY=io.DisplaySize.y-point->y*scale;
     // Pointer mode still uses the real cursor; D-pad navigation chooses this control.
     // The press this frame may already have been spent on a pickup, in which
     // case the button must not also be held down here: a synthetic press at the
@@ -598,6 +650,7 @@ bool LocalFrameXml::navigate() {
         engine_->dispatchMouse(centreX,centreY,io.DisplaySize.y,
             {crossDown,false,false});return true;
     }
-    return false;
+    // Do not let the generic mouse lane reuse the dialog-opening press.
+    return rootChanged || padCrossHandled_;
 }
 }

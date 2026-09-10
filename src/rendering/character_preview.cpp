@@ -273,6 +273,7 @@ void CharacterPreview::shutdown() {
 }
 
 bool CharacterPreview::failPreview(const std::string& message) {
+    if(lastError_==message)return false;
     lastError_ = message;
     LOG_ERROR("CharacterPreview: ", message);
     return false;
@@ -580,54 +581,6 @@ bool CharacterPreview::loadCharacter(game::Race race, game::Gender gender,
 
     std::string m2Path = game::getPlayerModelPath(race, gender, useFemaleModel);
 
-    auto m2Data = assetManager_->readFile(m2Path);
-    if (m2Data.empty()) {
-        LOG_WARNING("CharacterPreview: failed to read M2: ", m2Path);
-        return false;
-    }
-
-    auto modelAsset = std::make_shared<pipeline::M2Model>(pipeline::M2Loader::load(m2Data));
-    auto& model = *modelAsset;
-    if (model.name.empty()) model.name = m2Path;
-
-    // M2 version 264+ (WotLK) stores submesh/bone data in external .skin files.
-    // Earlier versions (Classic ≤256, TBC ≤263) have skin data embedded in the M2.
-    std::string skinPath = pipeline::skinPathForM2(m2Path);
-    auto skinData = assetManager_->readFile(skinPath);
-    if (!skinData.empty() && model.version >= 264) {
-        pipeline::M2Loader::loadSkin(skinData, model);
-    }
-    std::vector<uint8_t>().swap(skinData);
-
-    if (!model.isValid()) {
-        LOG_WARNING("CharacterPreview: invalid model: ", m2Path);
-        return false;
-    }
-
-    if (camera_) {
-        glm::vec3 frameMin = model.boundMin;
-        glm::vec3 frameMax = model.boundMax;
-        if (!model.vertices.empty()) {
-            glm::vec3 tightMin(std::numeric_limits<float>::max());
-            glm::vec3 tightMax(-std::numeric_limits<float>::max());
-            for (const auto& v : model.vertices) {
-                if (!isFiniteVec3(v.position)) continue;
-                tightMin = glm::min(tightMin, v.position);
-                tightMax = glm::max(tightMax, v.position);
-            }
-            if (tightMin.x <= tightMax.x && tightMin.y <= tightMax.y && tightMin.z <= tightMax.z) {
-                frameMin = tightMin;
-                frameMax = tightMax;
-            }
-        }
-        frameCameraForModelBounds(*camera_, frameMin, frameMax);
-        modelBoundMinZ_ = frameMin.z;
-        modelBoundMaxZ_ = frameMax.z;
-        readPortraitFraming(model);
-        modelBoundMin_=frameMin; modelBoundMax_=frameMax; previewFitScale_=-1;
-        fullBodyDistance_ = camera_->getPosition().y;
-    }
-
     // Look up CharSections.dbc for all appearance textures
     uint32_t targetRaceId = static_cast<uint32_t>(race);
     uint32_t targetSexId = (gender == game::Gender::FEMALE ||
@@ -638,6 +591,7 @@ bool CharacterPreview::loadCharacter(game::Race race, game::Gender gender,
     std::string hairScalpPath;
     std::vector<std::string> underwearPaths;
     bodySkinPath_.clear();
+    skinExtraPath_.clear();
     baseLayers_.clear();
 
     auto charSectionsDbc = assetManager_->loadDBC("CharSections.dbc");
@@ -685,40 +639,44 @@ bool CharacterPreview::loadCharacter(game::Race race, game::Gender gender,
         LOG_WARNING("CharSections.dbc not loaded - no character textures");
     }
 
-    // Assign texture filenames on model before GPU upload
-    // pipeline/char_sections.hpp fills the runtime slots. This copy still
-    // guarded types 1 and 6 with "only if the slot is empty", which is the trap
-    // the skin-extra slot was already fixed for: a name in a runtime slot is not
-    // a filename, and 'Ohren' is what a model in the wild puts there.
-    {
-        pipeline::CharacterSectionTextures resolved;
-        resolved.bodySkin  = bodySkinPath_;
-        resolved.skinExtra = skinExtraPath_;
-        resolved.hair      = hairScalpPath;
-        resolved.underwear = underwearPaths;
-        // The race folder is the second component of the model path:
-        // Character\Human\Female\HumanFemale.m2 -> Human. Taken from the path
-        // rather than restated, so the two cannot disagree.
-        std::string raceFolder;
-        {
-            const size_t first = m2Path.find('\\');
-            const size_t second = (first == std::string::npos)
-                ? std::string::npos : m2Path.find('\\', first + 1);
-            if (first != std::string::npos && second != std::string::npos) {
-                raceFolder = m2Path.substr(first + 1, second - first - 1);
+    // Only CPU model data is shared. Composites, geosets and GPU state stay private.
+    pipeline::CharacterSectionTextures resolved;
+    resolved.bodySkin=bodySkinPath_;resolved.skinExtra=skinExtraPath_;
+    resolved.faceLower=faceLowerPath;resolved.faceUpper=faceUpperPath;
+    resolved.hair=hairScalpPath;resolved.underwear=underwearPaths;
+    const size_t first=m2Path.find('\\');
+    const size_t second=first==std::string::npos?std::string::npos:m2Path.find('\\',first+1);
+    const std::string raceFolder=second==std::string::npos?std::string{}:m2Path.substr(first+1,second-first-1);
+    auto modelAsset=pipeline::loadCharacterPreviewModel(*assetManager_,m2Path,resolved,raceFolder);
+    if (!modelAsset) {
+        LOG_WARNING("CharacterPreview: failed to prepare model: ",m2Path);
+        return false;
+    }
+    const auto& model=*modelAsset;
+
+    if (camera_) {
+        glm::vec3 frameMin = model.boundMin;
+        glm::vec3 frameMax = model.boundMax;
+        if (!model.vertices.empty()) {
+            glm::vec3 tightMin(std::numeric_limits<float>::max());
+            glm::vec3 tightMax(-std::numeric_limits<float>::max());
+            for (const auto& v : model.vertices) {
+                if (!isFiniteVec3(v.position)) continue;
+                tightMin = glm::min(tightMin, v.position);
+                tightMax = glm::max(tightMax, v.position);
+            }
+            if (tightMin.x <= tightMax.x && tightMin.y <= tightMax.y && tightMin.z <= tightMax.z) {
+                frameMin = tightMin;
+                frameMax = tightMax;
             }
         }
-        pipeline::applyCharacterTextures(model, resolved, raceFolder);
+        frameCameraForModelBounds(*camera_, frameMin, frameMax);
+        modelBoundMinZ_ = frameMin.z;
+        modelBoundMaxZ_ = frameMax.z;
+        readPortraitFraming(model);
+        modelBoundMin_=frameMin; modelBoundMax_=frameMax; previewFitScale_=-1;
+        fullBodyDistance_ = camera_->getPosition().y;
     }
-
-    // Load external .anim files for sequences that store keyframes outside the M2.
-    // Flag 0x20 = embedded data; when clear, animation lives in {ModelName}{SeqID}-{Var}.anim
-    // This preview only plays Stand. Loading combat, swimming, death and all
-    // emotes on every target selection costs megabytes without ever using
-    // those tracks. Preserve every variation of the displayed animation.
-    pipeline::loadExternalAnimations(*assetManager_, m2Path, m2Data, model,
-                                     {rendering::anim::STAND});
-    std::vector<uint8_t>().swap(m2Data);
 
     if (!charRenderer_->loadSharedModel(modelAsset, PREVIEW_MODEL_ID)) {
         LOG_WARNING("CharacterPreview: failed to load model to GPU");
@@ -1816,12 +1774,15 @@ void CharacterPreview::readPortraitFraming(const pipeline::M2Model& model) {
         isFiniteVec3(cam.targetBase) && isFiniteVec3(cam.positionBase)) {
         portraitCameraPosition_ = cam.positionBase + glue::samplePosition(cam.positions,0,0,0,model.globalSequenceDurations);
         portraitCameraTarget_ = cam.targetBase + glue::samplePosition(cam.targets,0,0,0,model.globalSequenceDurations);
+        const float cameraDistance=glm::length(portraitCameraPosition_-portraitCameraTarget_);
+        if (!isFiniteVec3(portraitCameraPosition_) || !isFiniteVec3(portraitCameraTarget_) ||
+            !std::isfinite(cameraDistance) || cameraDistance<=.05f ||
+            !std::isfinite(cam.fov) || cam.fov<=.05f || cam.fov>=3.f) continue;
         metrics.hasPortraitCamera = true;
         metrics.cameraTargetZ = portraitCameraTarget_.z;
-        metrics.cameraDistance = glm::length(portraitCameraPosition_ - portraitCameraTarget_);
+        metrics.cameraDistance = cameraDistance;
         metrics.cameraFovRadians = cam.fov;
-        hasAuthoredPortrait_ = metrics.cameraDistance > .05f &&
-            std::isfinite(cam.fov) && cam.fov > .05f && cam.fov < 3.f;
+        hasAuthoredPortrait_ = true;
         break;
     }
     const auto framing = ui::portraitFraming(metrics);

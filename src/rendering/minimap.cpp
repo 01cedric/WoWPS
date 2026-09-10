@@ -15,6 +15,7 @@
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <array>
+#include <algorithm>
 #include <sstream>
 #include <cmath>
 
@@ -503,10 +504,40 @@ void Minimap::compositePass(VkCommandBuffer cmd, const glm::vec3& centerWorldPos
 void Minimap::render(VkCommandBuffer cmd, const Camera& playerCamera,
                      const glm::vec3& centerWorldPos,
                      int screenWidth, int screenHeight,
+                     VkExtent2D displayExtent,
                      float playerOrientation, bool hasPlayerOrientation) {
     if (!enabled || !hasCachedFrame || !displayPipeline) return;
+    if (screenWidth <= 0 || screenHeight <= 0 || !displayExtent.width || !displayExtent.height) return;
+    // Reject invalid UI/world data before worldToTile's float-to-int conversion
+    // or recording GPU commands. A hidden/zero authored rectangle must not
+    // reappear at the fallback top-right position.
+    if (!std::isfinite(centerWorldPos.x) || !std::isfinite(centerWorldPos.y) ||
+        std::abs(centerWorldPos.x)>1e9f || std::abs(centerWorldPos.y)>1e9f ||
+        !std::isfinite(viewRadius) || viewRadius<=0 || !std::isfinite(opacity_)) return;
+    if (haveRect_ && (!std::isfinite(rectX_) || !std::isfinite(rectY_) ||
+        !std::isfinite(rectW_) || !std::isfinite(rectH_) || rectW_<=0 || rectH_<=0)) return;
+    if (!haveRect_ && mapSize<=0) return;
+    if (hasPlayerOrientation && !std::isfinite(playerOrientation)) return;
+    if (rotateWithCamera || !hasPlayerOrientation) {
+        const auto fwd=playerCamera.getForward();
+        if (!std::isfinite(fwd.x) || !std::isfinite(fwd.y)) return;
+    }
+
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, displayPipeline);
+
+    // The display shader normalizes the authored rectangle against the window.
+    // Its viewport must cover the current framebuffer, including a scaled
+    // scene target. Dynamic state left by another draw (or another command
+    // buffer) can otherwise move/clip the map independently of its UI ring.
+    VkViewport viewport{};
+    viewport.width = static_cast<float>(displayExtent.width);
+    viewport.height = static_cast<float>(displayExtent.height);
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    VkRect2D scissor{};
+    scissor.extent = displayExtent;
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
 
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             displayPipelineLayout, 0, 1,
@@ -593,7 +624,7 @@ void Minimap::render(VkCommandBuffer cmd, const Camera& playerCamera,
     push.arrowRotation = arrowRotation;
     push.zoomRadius = zoomRadius;
     push.squareShape = squareShape ? 1 : 0;
-    push.opacity = opacity_;
+    push.opacity = std::clamp(opacity_,0.f,1.f);
 
     vkCmdPushConstants(cmd, displayPipelineLayout,
                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,

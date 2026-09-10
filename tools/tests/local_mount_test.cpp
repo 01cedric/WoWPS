@@ -13,14 +13,14 @@ static std::vector<uint8_t> table(const std::vector<uint32_t>& fields,const std:
 }
 int main() {
     std::vector<uint32_t> row(234);row[0]=6648;row[28]=1;row[39]=20;row[136]=1;
-    row[71]=row[72]=6;row[86]=row[87]=1;row[95]=78;row[96]=31;row[80+1]=59;row[110]=284;
+    row[71]=row[72]=6;row[86]=row[87]=1;row[95]=78;row[96]=32;row[80+1]=59;row[110]=284;
     pipeline::DBCFile spells,casts;assert(spells.load(table(row,std::string("\0Test mount\0",12))));assert(casts.load(table({1,0,0,0})));
     detail::ClientSpellTables source;source.spells=&spells;source.casts=&casts;source.castIndex={{1,0}};
     LocalSpellDefinition mount;assert(detail::decodeClientGroundMount(source,0,mount));
     assert(mount.mountDisplayId==2404 && mount.mountCreatureId==284 && mount.mountSpeedPercent==60);
     row[96]=206;assert(spells.load(table(row,std::string("\0Flight mount\0",14))));
     LocalSpellDefinition flight;assert(!detail::decodeClientGroundMount(source,0,flight));
-    row[96]=31;row[110]=999999;assert(spells.load(table(row,std::string("\0Missing mount\0",15))));
+    row[96]=32;row[110]=999999;assert(spells.load(table(row,std::string("\0Missing mount\0",15))));
     LocalSpellDefinition missing;assert(!detail::decodeClientGroundMount(source,0,missing));
     auto content=std::make_shared<LocalWorldContent>();content->spells.push_back(mount);
     LocalSpellDefinition rune;rune.id=900001;rune.name="Rune authority test";rune.clientSpell=true;
@@ -29,7 +29,7 @@ int main() {
     auto castRune=rune;castRune.id=900002;castRune.castTimeMs=1000;content->spells.push_back(castRune);
     auto castMount=mount;castMount.id=900003;castMount.castTimeMs=1000;content->spells.push_back(castMount);
     LocalItemDefinition item;item.id=5655;item.name="Mount item";item.stack=1;content->items.push_back(item);
-    LocalGameplay game;game.useContent(content);LocalRealmPlayer p;p.guid=1;p.name="Human";p.level=20;p.inventory={{5655,1}};
+    LocalGameplay game;game.useContent(content);LocalRealmPlayer p;p.guid=1;p.name="Human";p.level=20;p.ridingSkill=75;p.inventory={{5655,1}};
     std::vector<LocalRealmPlayer*> players{&p};std::string result;
     assert(localMountSupported(*content,5655));
     p.level=1;assert(!game.execute(p,{LocalAction::UseItem,0,5655},players,result) && p.inventory.size()==1);
@@ -51,7 +51,7 @@ int main() {
     // transport must not restore an earlier mount when the trip finishes.
     p.mountSpellId=6648;p.flight.active=true;game.tick(.25f,players);assert(!p.mountSpellId);
     p.flight.active=false;p.mountSpellId=6648;p.transportEntry=999999;game.tick(.25f,players);assert(!p.mountSpellId);
-    p.knownSpells.push_back(900003);p.globalCooldownMs=0;
+    p.transportEntry=0;p.knownSpells.push_back(900003);p.globalCooldownMs=0;
     assert(game.execute(p,{LocalAction::CastSpell,p.guid,900003},players,result));assert(!p.mountSpellId);
     p.x+=1;game.tick(.25f,players);assert(!p.castingSpellId && !p.mountSpellId);
     assert(game.execute(p,{LocalAction::CastSpell,p.guid,900003},players,result));

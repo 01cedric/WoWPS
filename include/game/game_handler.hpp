@@ -3185,6 +3185,7 @@ public:
     /// twelve from TBC on. The compose window used to offer twelve regardless
     /// and quietly send the first.
     void mailTakeMoney(uint32_t mailId);
+    void autoLootLocalMail(uint32_t mailId);
     void mailTakeItem(uint32_t mailId, uint32_t itemGuidLow);
     void mailDelete(uint32_t mailId);
     /// Send a letter back where it came from, with whatever is still attached.
@@ -3227,7 +3228,8 @@ public:
     void setGuildBankActiveTab(uint8_t tab);
 
     // Auction House
-    void setLocalAuctionRealm(std::function<LocalRealm*()> provider) { localAuctionRealm_ = std::move(provider); }
+    void setLocalAuctionRealm(std::function<LocalRealm*()> provider) { localAuctionRealm_ = std::move(provider); localPartyDataRevision_=UINT64_MAX; localPartyDataRealm_=nullptr; localReadyDismissed_=0; }
+    LocalRealm* localServiceRealm() const { return localExploration_ && localAuctionRealm_ ? localAuctionRealm_() : nullptr; }
     void refreshLocalAuctions(bool force = false);
     const ItemSlot* localBagSlot(int index, uint64_t* guid = nullptr);
     void cacheLocalAuctionItem(uint32_t itemId);
@@ -3434,6 +3436,7 @@ public:
      */
     void update(float deltaTime);
     void updateNetworking();
+    void pumpLocalSocial();
     void updateTimers(float deltaTime);
     void updateEntityInterpolation(float deltaTime);
     void updateTaxiAndMountState(float deltaTime);
@@ -4681,7 +4684,11 @@ private:
     };
     AuctionSearchParams localAuctionQuery_;
     std::vector<AuctionSortKey> localAuctionSort_;
+    uint32_t localReadyDismissed_=0;
     std::function<LocalRealm*()> localAuctionRealm_;
+    mutable GroupListData localPartyData_;
+    mutable uint64_t localPartyDataRevision_ = UINT64_MAX;
+    mutable const LocalRealm* localPartyDataRealm_ = nullptr;
     uint64_t localAuctionFingerprint_ = 0;
     std::array<ItemSlot, 24> localBagSlots_;
     std::unordered_map<uint64_t, std::string> localAuctionNames_;

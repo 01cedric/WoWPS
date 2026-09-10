@@ -59,12 +59,19 @@ wrap('HideRepairCursor',function()end)
 wrap('CanGuildBankRepair',function()return false end)
 wrap('GetGuildBankWithdrawMoney',function()return 0 end)
 wrap('CloseMerchant',function()return command('merchant_close')end)
--- The local realm has no buyback ledger yet. Do not accidentally show the
--- online connection's stale buyback items as local goods.
-wrap('GetNumBuybackItems',function()return 0 end)
-wrap('GetBuybackItemInfo',function()end)
-wrap('GetBuybackItemLink',function()end)
-wrap('BuybackItem',function()return false end)
+local function buyback(i)
+    local m=merchant()
+    if not m or not m.open or not m.buyback or type(i)~='number' or i%1~=0 or i<1 or i>#m.buyback then return nil end
+    -- The C++ publisher already reverses the durable newest-first ledger.
+    -- Keep that visible order: the last index is the newest sale.
+    return m.buyback[i]
+end
+wrap('GetNumBuybackItems',function()local m=merchant();return m and m.open and m.buyback and #m.buyback or 0 end)
+wrap('GetBuybackItemInfo',function(i)local v=buyback(i);if v then
+    return v.name,v.icon,v.price,v.count,-1,true end end)
+wrap('GetBuybackItemLink',function(i)local v=buyback(i);if v then
+    return '|cffffffff|Hitem:'..v.itemId..':0:0:0:0:0:0:0|h['..v.name..']|h|r' end end)
+wrap('BuybackItem',function(i)local v=buyback(i);if v then return command('merchant_buyback',v.id) end;return false end)
 local useContainer=UseContainerItem
 local function sell(bag,slot)
     local s=state();local v=s and bag==0 and s.bags[slot]
@@ -81,6 +88,9 @@ function WoWPS_LocalMerchantActivate(name)
     local b=rawget(_G,name);if not b then return false end
     if name:match('^MerchantItem%d+ItemButton$') and MerchantItemButton_OnClick then
         MerchantItemButton_OnClick(b,'RightButton');return true
+    end
+    if name=='MerchantBuyBackItemItemButton' then
+        BuybackItem(GetNumBuybackItems());return true
     end
     if name:match('^ContainerFrame%d+Item%d+$') then
         local parent=b:GetParent();if parent then UseContainerItem(parent:GetID(),b:GetID());return true end

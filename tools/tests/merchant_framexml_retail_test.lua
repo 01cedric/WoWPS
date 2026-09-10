@@ -82,6 +82,24 @@ local bag=widget('ContainerFrame1');bag.id=0
 local button=widget('ContainerFrame1Item24');button.id=1;button.parent=bag
 assert(WoWPS_LocalMerchantActivate('ContainerFrame1Item24'))
 assert(commands[#commands][1]=='merchant_sell' and commands[#commands][2]==117 and commands[#commands][3]==3)
+-- Replicated owner ledger uses stable IDs; retail's compact widget selects
+-- its newest row through the last visible index.
+m.buyback={{id=40,itemId=117,name='Old sale',icon='old',price=6,count=3},
+ {id=44,itemId=2392,name='New sale',icon='new',price=25,count=1}}
+MerchantFrame_OnEvent(MerchantFrame,'MERCHANT_UPDATE')
+assert(GetNumBuybackItems()==2 and MerchantBuyBackItemName.text=='New sale' and MerchantBuyBackItemMoneyFrame.price==25)
+assert(WoWPS_LocalMerchantActivate('MerchantBuyBackItemItemButton'))
+assert(commands[#commands][1]=='merchant_buyback' and commands[#commands][2]==44)
+MERCHANT_BUYBACK='Buyback';MerchantFrame.selectedTab=2;MerchantFrame_Update()
+assert(MerchantItem1Name.text=='Old sale' and MerchantItem2Name.text=='New sale' and not MerchantItem3ItemButton.shown)
+assert(WoWPS_LocalMerchantActivate('MerchantItem1ItemButton'))
+assert(commands[#commands][1]=='merchant_buyback' and commands[#commands][2]==40)
+assert(GetBuybackItemLink(1):find('item:117:',1,true))
+local countBefore=#commands;assert(not BuybackItem(0) and not BuybackItem(13));assert(#commands==countBefore)
+table.remove(m.buyback,1);MerchantFrame_OnEvent(MerchantFrame,'MERCHANT_UPDATE')
+assert(MerchantItem1Name.text=='New sale' and not MerchantItem2ItemButton.shown)
+assert(WoWPS_LocalMerchantActivate('MerchantItem1ItemButton') and commands[#commands][2]==44)
+MerchantFrame.selectedTab=1;MerchantFrame_Update()
 assert(GetNumGossipOptions()==1 and select(2,GetGossipOptions())=='vendor')
 SelectGossipOption(1);assert(commands[#commands][1]=='merchant_open')
 m.repair=true;MerchantFrame_OnEvent(MerchantFrame,'MERCHANT_UPDATE');assert(MerchantRepairAllButton.shown)
@@ -92,4 +110,4 @@ MerchantFrame_OnHide();assert(commands[#commands][1]=='merchant_close')
 m.open=false;assert(not WoWPS_LocalMerchantActivate('ContainerFrame1Item24'))
 assert(UseContainerItem(0,1)=='online-use') -- delegates to earlier local bag API in the real VM
 __WoWPSLocal=nil;assert(UnitName('NPC')=='Online')
-print('PASS actual MerchantFrame Lua: stock/paging, bundle purchase, high-price confirmation, selected bag sale, gossip, repair, close and controller activation')
+print('PASS actual MerchantFrame Lua: stock/paging, bundle purchase, high-price confirmation, selected bag sale, stable-ID buyback tab/compact widget, gossip, repair, close and controller activation')

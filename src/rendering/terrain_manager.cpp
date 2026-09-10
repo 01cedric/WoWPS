@@ -313,7 +313,7 @@ void TerrainManager::update(const Camera& camera, float deltaTime) {
     }
 }
 
-bool TerrainManager::enqueueTile(int x, int y) {
+bool TerrainManager::enqueueTile(int x, int y, bool priority) {
     if (x < 0 || x >= 64 || y < 0 || y >= 64) return false;
     TileCoord coord = {.x = x, .y = y};
     if (loadedTiles.find(coord) != loadedTiles.end()) {
@@ -325,8 +325,14 @@ bool TerrainManager::enqueueTile(int x, int y) {
 
     {
         std::lock_guard<std::mutex> lock(queueMutex);
-        if (pendingTiles.find(coord) != pendingTiles.end()) return true;
-        loadQueue.push_back(coord);
+        if (pendingTiles.find(coord) != pendingTiles.end()) {
+            if(priority) {
+                auto it=std::find(loadQueue.begin(),loadQueue.end(),coord);
+                if(it!=loadQueue.end()){loadQueue.erase(it);loadQueue.push_front(coord);}
+            }
+            return true;
+        }
+        if(priority)loadQueue.push_front(coord);else loadQueue.push_back(coord);
         pendingTiles[coord] = true;
     }
     queueCV.notify_all();
@@ -706,6 +712,7 @@ std::shared_ptr<PendingTile> TerrainManager::prepareTile(int x, int y, bool obje
                 if (wmoData.empty()) { pending->objectsIncomplete = true; continue; }
 
                 wmoModel = pipeline::WMOLoader::load(wmoData);
+                std::vector<uint8_t>{}.swap(wmoData);
                 if (wmoModel.nGroups > 0) {
                     bool groupsComplete = true;
                     for (uint32_t gi = 0; gi < wmoModel.nGroups; gi++) {
@@ -1321,7 +1328,10 @@ bool TerrainManager::advanceFinalization(FinalizingTile& ft) {
                     continue;
                 }
                 const auto result = wmoRenderer->loadModelIncremental(
-                    wmoReady.model, wmoReady.modelId, kWmoGroupBudgetMs);
+                    wmoReady.model, wmoReady.modelId, kWmoGroupBudgetMs, /*terrainManaged=*/true);
+#ifdef WOWEE_PS4
+                wmoRenderer->releaseUploadedGeometry(wmoReady.model, wmoReady.modelId);
+#endif
                 if (result == WMORenderer::ModelLoadResult::InProgress) {
                     break;  // same model resumes on the next call
                 }
@@ -2098,6 +2108,11 @@ void TerrainManager::releaseSharedDoodads(SharedTerrainDoodads& references,
         sharedDoodads_.erase(shared->uniqueId);
     }
     references.clear();
+}
+
+void TerrainManager::collectPendingWmoModels(std::unordered_set<uint32_t>& ids) const {
+    for (const auto& ft : finalizingTiles_) if (ft.pending)
+        for (const auto& model : ft.pending->wmoModels) ids.insert(model.modelId);
 }
 
 void TerrainManager::collectPendingM2Models(std::unordered_set<uint32_t>& ids) const {

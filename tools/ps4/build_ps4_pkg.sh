@@ -27,7 +27,7 @@ Environment:
   OO_PS4_TOOLCHAIN         Root of the OpenOrbis PS4 Toolchain.
   WOWEE_PS4_LIBSSL11_DIR   Optional directory with OpenSSL 1.1 host libraries.
   WOWEE_PS4_TITLE          Package title; defaults to WoWPS.
-  WOWEE_PS4_VERSION        Package version; defaults to 01.61.
+  WOWEE_PS4_VERSION        Package version; defaults to 01.90.
   WOWEE_PS4_CONTENT_ID     Optional full content ID override.
 
 Required external link inputs:

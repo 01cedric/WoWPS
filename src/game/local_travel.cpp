@@ -455,13 +455,24 @@ bool LocalTravelNetwork::beginFlight(uint32_t fromNode, uint32_t toNode,
     flight.travelled = 0.0f;
     flight.totalLength = length;
     flight.speed = DefaultFlightSpeed;
+    if(const auto* origin=node(fromNode)){flight.originMap=origin->mapId;flight.originX=origin->x;flight.originY=origin->y;flight.originZ=origin->z;}
     return true;
 }
 
 bool LocalTravelNetwork::advanceFlight(LocalFlightState& flight, float seconds, uint32_t& mapId,
                                        float& x, float& y, float& z, float& orientation) const {
     if (!flight.active) return false;
-    if (seconds > 0.0f) {
+    if(!loaded())return true;
+    const auto* route=path(flight.pathId);
+    const float length=pathLength(flight.pathId);
+    if(!route || route->toNode!=flight.destinationNode || !node(flight.destinationNode) || length<=0 ||
+       !std::isfinite(flight.travelled) || flight.travelled<0 ||
+       std::abs(length-flight.totalLength)>0.1f || flight.travelled>length){
+        mapId=flight.originMap;x=flight.originX;y=flight.originY;z=flight.originZ;orientation=flight.originOrientation;
+        flight={};return false;
+    }
+    flight.speed=DefaultFlightSpeed;
+    if (std::isfinite(seconds) && seconds > 0.0f) {
         flight.travelled += flight.speed * seconds;
     }
 
@@ -471,7 +482,8 @@ bool LocalTravelNetwork::advanceFlight(LocalFlightState& flight, float seconds, 
     if (!samplePath(flight.pathId, flight.travelled, mapId, x, y, z, orientation)) {
         // The path went away underneath the flight (a content reload). End it
         // rather than leaving the player suspended on a route that is gone.
-        flight.active = false;
+        mapId=flight.originMap;x=flight.originX;y=flight.originY;z=flight.originZ;orientation=flight.originOrientation;
+        flight = {};
         return false;
     }
 

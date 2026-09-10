@@ -22,8 +22,8 @@
 
 namespace wowee::core {
 namespace {
-constexpr float kStreamTimeoutSeconds = 30.0f;
-constexpr uint32_t kLookaheadMs[] = {750, 1500, 3000};
+constexpr float kStreamTimeoutSeconds = 60.0f;
+constexpr uint32_t kLookaheadMs[] = {750, 1500, 3000, 6000, 10000};
 constexpr size_t kNoShot = std::numeric_limits<size_t>::max();
 
 bool usablePosition(const glm::vec3& position) {
@@ -50,10 +50,10 @@ bool applyFrame(rendering::Camera& camera, const CharacterIntroFrame& frame) {
     return true;
 }
 
-bool requestPosition(rendering::TerrainManager& terrain, const glm::vec3& position) {
+bool requestPosition(rendering::TerrainManager& terrain, const glm::vec3& position, bool priority=false) {
     if (!usablePosition(position)) return false;
     const auto tile = coords::worldToTile(position.x, position.y);
-    return terrain.enqueueTile(tile.first, tile.second);
+    return terrain.enqueueTile(tile.first, tile.second, priority);
 }
 } // namespace
 
@@ -250,6 +250,8 @@ void Application::updateCharacterIntro(float deltaTime) {
     if (platform::ps4::padState().pressed & ORBIS_PAD_BUTTON_CIRCLE) introSkipRequested_ = true;
 #endif
     if (introSkipRequested_) {
+        const auto skipped=characterIntro_->frame();
+        LOG_INFO("[INTRO] User skip at tMs=",skipped?skipped->sequenceTimeMs:0);
         stopCharacterIntro(true);
         return;
     }
@@ -270,10 +272,18 @@ void Application::updateCharacterIntro(float deltaTime) {
     const auto pending = characterIntro_->peekAhead(aheadMs);
     if (!pending || !applyFrame(*camera, *pending)) { beginReturn(false); return; }
     const auto pendingPosition = camera->getPosition();
-    const bool requested = requestPosition(*terrain, pendingPosition);
+    const bool requested = requestPosition(*terrain, pendingPosition, true);
     bool ready = requested && terrain->isTileLoadedAt(pendingPosition.x, pendingPosition.y);
 
-    // Stage the next three seconds of the authored camera path, but only in
+    // Require nearby scenery in the viewing direction, not just the tile
+    // underneath the camera. A flyover can look into an unfinished neighbour.
+    const auto direction=glm::normalize(coords::canonicalToRender(pending->canonicalTarget)-pendingPosition);
+    for(float distance:{75.f,150.f}) {
+        const auto visible=pendingPosition+direction*distance;
+        if(requestPosition(*terrain,visible,true))
+            ready=terrain->isTileLoadedAt(visible.x,visible.y)&&ready;
+    }
+    // Stage the next ten seconds of the authored camera path, but only in
     // adjacent tiles that the active streaming window can retain. There is no
     // full-route preload and no permanently raised world draw distance.
     for (const uint32_t leadMs : kLookaheadMs) {
@@ -289,8 +299,7 @@ void Application::updateCharacterIntro(float deltaTime) {
     }
     // Finish initial/cut uploads behind the existing buffering overlay instead
     // of starting narration as soon as the first terrain tile becomes ready.
-    if (introNarrationShot_ != pending->shotIndex)
-        ready = introWarmup_.ready(pending->shotIndex, ready,
+    ready = introWarmup_.ready(pending->shotIndex, ready,
                                   terrain->hasFinalizationWork(), elapsed);
     const bool wasBuffering = introBuffering_;
     introBuffering_ = !ready;

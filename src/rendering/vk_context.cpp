@@ -3685,6 +3685,14 @@ void VkContext::endUploadBatch() { finishUploadBatch(false); }
 
 void VkContext::endUploadBatchSync() { finishUploadBatch(true); }
 
+void VkContext::finishInterruptedUploadBatch() {
+    if (uploadBatchDepth_ <= 0) return;
+    // All scopes above the application's update boundary have unwound. Their
+    // missing end calls must not accumulate into a never-submitted batch.
+    uploadBatchDepth_ = 1;
+    finishUploadBatch(false);
+}
+
 void VkContext::finishUploadBatch(bool synchronous) {
     if (uploadBatchDepth_ <= 0) return;
     if (uploadBatchDepth_ > 1) { --uploadBatchDepth_; return; }

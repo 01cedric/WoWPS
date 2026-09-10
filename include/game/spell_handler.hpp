@@ -184,6 +184,7 @@ public:
         return (it != learnedTalents_[activeTalentSpec_].end()) ? it->second : 0;
     }
     void learnTalent(uint32_t talentId, uint32_t requestedRank);
+    void syncLocalTalents(const std::vector<std::pair<uint32_t,uint8_t>>& talents,uint8_t level);
     void switchTalentSpec(uint8_t newSpec);
 
     // Talent DBC access

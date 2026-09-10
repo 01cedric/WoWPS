@@ -13,7 +13,7 @@ namespace wowee::game::lan {
 // Discovery is deliberately separate from the authenticated gameplay messages.
 // No user identity, character data or address is advertised in the payload.
 inline constexpr uint16_t Port = 3725;
-inline constexpr uint8_t GameplayVersion = 14;
+inline constexpr uint8_t GameplayVersion = 34; // Saved physical backpack cells and checked rearrangement commands.
 inline constexpr size_t MaxRealms = 32, MaxName = 48, QuerySize = 16, ReplySize = 80;
 inline constexpr double ScanSeconds = 3.0, ExpirySeconds = 10.0;
 inline bool validName(const std::string& name) {

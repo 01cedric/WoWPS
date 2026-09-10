@@ -101,6 +101,8 @@ struct LocalFlightState {
     float travelled = 0;
     float totalLength = 0;
     float speed = 32.0f;   // world units per second
+    uint32_t originMap = 0;
+    float originX = 0, originY = 0, originZ = 0, originOrientation = 0;
 };
 
 class LocalTravelNetwork {

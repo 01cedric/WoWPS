@@ -882,7 +882,7 @@ bool installAltStackForCurrentThread(const char* name) {
 
 void reportCrashReporterState() {
     const bool ok = g_crashReporterAltStack && g_crashReporterSignalMask == 0x1fu;
-    reportBootStage("01.61: distance-bounded terrain, object repair, resource retirement, quest tracking and controller UI fixes");
+    reportBootStage("01.90: action cursor, combat targeting, mailbox sites and cinematic streaming, save19 and LAN34");
     reportBootStage("memory: realloc shrink guard active; bounded copy, retain on allocation failure");
     reportBootStage("memory: heap arena growth reserve capped at 2 MiB; 16 KiB page fallback; native allocator bins retained");
     reportBootStage(ok ? "platform: crash reporter installed (alt stack, siginfo); terminate diagnostic active"

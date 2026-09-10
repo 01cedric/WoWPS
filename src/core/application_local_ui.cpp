@@ -4,6 +4,7 @@
 #include "addons/addon_manager.hpp"
 #include "core/coordinates.hpp"
 #include "game/local_realm.hpp"
+#include "game/local_services.hpp"
 #include "game/local_target_selection.hpp"
 #include "game/local_quest_dialogue.hpp"
 #include "game/game_handler.hpp"
@@ -136,7 +137,12 @@ void Application::renderLocalRealmOverlay() {
         if (!npc) { localRealmNpcPanelOpen_ = true; return; }
         interactWith(*npc);
     };
+    if(keys && game::nearbyLocalMailbox(content,self))
+        ImGui::GetForegroundDrawList()->AddText(ImVec2(24.f,io.DisplaySize.y*.58f),IM_COL32(255,220,130,255),"Square: Mailbox");
     auto primaryAction = [&](bool contextual) {
+        if(contextual && gameHandler)if(const auto* mailbox=game::nearbyLocalMailbox(content,self)) {
+            gameHandler->openMailbox(mailbox->guid);return;
+        }
         const auto* npc = target();
         // The snapshot's hostile flag is personalized by the authoritative
         // realm using LocalGameplay::canAttack, including neutral mobs. A
@@ -148,7 +154,7 @@ void Application::renderLocalRealmOverlay() {
         const game::LocalSpellDefinition* unavailable=nullptr;
         for(auto id:self.knownSpells) {
             const auto* spell=content.spell(id);if(!spell)continue;
-            if(heal?spell->heal>0:spell->damage>0||spell->periodicDamage>0) {
+            if(heal?(spell->heal>0||spell->periodicHeal>0):spell->damage>0||spell->periodicDamage>0) {
                 if(spell->unsupportedReason.empty())return spell;
                 if(!unavailable)unavailable=spell;
             } else if(!heal&&!unavailable&&!spell->unsupportedReason.empty())unavailable=spell;
@@ -492,7 +498,20 @@ void Application::renderLocalRealmOverlay() {
                 }
                 ImGui::Spacing();ImGui::TextUnformatted("Rewards");
                 ImGui::Text("%u XP | %u Copper",selected->xp,selected->money);
-                if(selected->rewardItem)ImGui::TextWrapped("%s x%u",itemName(content,selected->rewardItem).c_str(),selected->rewardCount);
+                for(size_t i=0;i<game::localQuestRewardCount(*selected);++i) {
+                    const auto reward=game::localQuestRewardAt(*selected,i);
+                    ImGui::TextWrapped("%s x%u",itemName(content,reward.itemId).c_str(),reward.count);
+                }
+                if(!selected->rewardChoices.empty())ImGui::TextUnformatted("Choose one reward:");
+                for(size_t i=0;i<selected->rewardChoices.size();++i) {
+                    const auto reward=selected->rewardChoices[i];
+                    const auto label=itemName(content,reward.itemId)+" x"+std::to_string(reward.count);
+                    ImGui::PushID(int(i));ImGui::BeginDisabled(!progress || progress->status!=game::LocalQuestStatus::Complete);
+                    if(ImGui::Button(label.c_str()) && localRealm_->turnInQuest(selected->id,npc.guid,uint32_t(i+1))) {
+                        localRealmDialogueQuest_=0;localRealmDialogueFocus_=true;
+                    }
+                    ImGui::EndDisabled();ImGui::PopID();
+                }
             } else {
                 ImGui::TextWrapped("%s",game::localNpcGreeting(self,npc,content).c_str());
                 ImGui::Spacing();
@@ -514,6 +533,8 @@ void Application::renderLocalRealmOverlay() {
                 // cannot invent a route, and the price is the one the client's
                 // own TaxiPath row states.
                 if (npc.flightMaster) {
+                    if(std::find(self.knownTaxiNodes.begin(),self.knownTaxiNodes.end(),npc.taxiNodeId)==self.knownTaxiNodes.end())
+                        if(ImGui::Selectable("Discover this flight point"))localRealm_->discoverTaxi(npc.guid);
                     const auto destinations = localRealm_->flightDestinations();
                     if (destinations.empty()) {
                         ImGui::Spacing();
@@ -574,7 +595,7 @@ void Application::renderLocalRealmOverlay() {
                 if (npc.innkeeper) {
                     ImGui::Spacing();
                     if (ImGui::Selectable("Make this inn my home##innkeeper", false, 0, ImVec2(0, 26 * s)))
-                        localRealm_->setHome();
+                        localRealm_->setHome(npc.guid);
                 }
                 // A civilian still has a greeting even when no quest is offered.
             }
@@ -583,7 +604,7 @@ void Application::renderLocalRealmOverlay() {
             if(selected) {
                 const bool complete=progress && progress->status==game::LocalQuestStatus::Complete;
                 const bool accept=!progress && self.quests.size()<game::LocalGameplay::MaxQuests;
-                ImGui::BeginDisabled(!complete&&!accept);
+                ImGui::BeginDisabled((!complete&&!accept) || (complete&&!selected->rewardChoices.empty()));
                 if(ImGui::Button(complete?"Complete Quest":progress?"In Progress":"Accept",ImVec2(138*s,24*s))) {
                     const bool okay=complete?localRealm_->turnInQuest(selected->id,npc.guid):localRealm_->acceptQuest(selected->id,npc.guid);
                     if(okay) {localRealmDialogueQuest_=0;localRealmDialogueFocus_=true;}
@@ -630,9 +651,10 @@ void Application::renderLocalRealmOverlay() {
             ImGui::Separator();
             ImGui::TextWrapped("Portal: %s", portal.name.c_str());
             ImGui::BeginDisabled(self.dead);
-            if (ImGui::Button(portal.instanceMap ? "Enter Together" : "Use Portal"))
+            const bool grouped=localRealm_->partyView().partyId!=0;
+            if (ImGui::Button(portal.instanceMap ? (grouped ? "Enter Party Instance" : "Enter Shared Instance") : "Use Portal"))
                 enterLocalRealmPortal(portal.id, false);
-            if (portal.instanceMap) {
+            if (portal.instanceMap && !grouped) {
                 ImGui::SameLine();
                 if (ImGui::Button("Private Instance")) enterLocalRealmPortal(portal.id, true);
             }
@@ -786,7 +808,7 @@ void Application::renderLocalRealmOverlay() {
             if(!spell->unsupportedReason.empty())ImGui::TextWrapped("Unavailable: %s",spell->unsupportedReason.c_str());
             else {
                 ImGui::BeginDisabled(self.dead||self.castingSpellId||cooldown);
-                if(ImGui::Button("Cast"))localRealm_->castSpell(id,spell->heal?self.guid:localRealmTarget_);
+                if(ImGui::Button("Cast"))localRealm_->castSpell(id,(spell->heal||spell->periodicHeal)?self.guid:localRealmTarget_);
                 ImGui::EndDisabled();
             }
             ImGui::PopID();

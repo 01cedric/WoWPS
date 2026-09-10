@@ -1,4 +1,6 @@
+#include "game/local_chat_client.hpp"
 #include "game/local_realm.hpp"
+#include "game/local_party_client.hpp"
 #include "game/game_handler.hpp"
 #include "game/item_text.hpp"
 #include "game/achievement_criteria.hpp"
@@ -331,6 +333,7 @@ void GameHandler::updateNetworking() {
     // socket below would be a tick later than it needs to be; before it means
     // a line waits one extra tick at most.
     if (chatHandler_) chatHandler_->expireChatAwaitingName();
+
 
     // Update socket (processes incoming data and triggers callbacks)
     if (socket) {
@@ -696,6 +699,7 @@ void GameHandler::updateTimers(float deltaTime) {
 }
 
 void GameHandler::update(float deltaTime) {
+    pumpLocalSocial();
     // The char-create callback used to be deferred to here, out of the packet
     // handler and so out of any render pass. It is not any more: the
     // SMSG_CHAR_CREATE handler calls charCreateCallback_ itself, and nothing
@@ -2095,38 +2099,50 @@ void GameHandler::declineSummon() {
 // ---------------------------------------------------------------------------
 
 void GameHandler::acceptTradeRequest() {
+    if(localExploration_){if(auto* r=localAuctionRealm_?localAuctionRealm_():nullptr){const auto& t=r->tradeView();r->tradeAction(LocalAction::TradeOpen,t.id,t.revision);}return;}
     if (inventoryHandler_) inventoryHandler_->acceptTradeRequest();
 }
 
 void GameHandler::declineTradeRequest() {
+    if(localExploration_){if(auto* r=localAuctionRealm_?localAuctionRealm_():nullptr){const auto& t=r->tradeView();r->tradeAction(LocalAction::TradeCancel,t.id,t.revision);}return;}
     if (inventoryHandler_) inventoryHandler_->declineTradeRequest();
 }
 
 void GameHandler::acceptTrade() {
+    if(localExploration_){if(auto* r=localAuctionRealm_?localAuctionRealm_():nullptr){const auto& t=r->tradeView();r->tradeAction(LocalAction::TradeAccept,t.id,t.revision);}return;}
     if (inventoryHandler_) inventoryHandler_->acceptTrade();
 }
 
 void GameHandler::unacceptTrade() {
+    if(localExploration_){if(auto* r=localAuctionRealm_?localAuctionRealm_():nullptr){const auto& t=r->tradeView();r->tradeAction(LocalAction::TradeUnaccept,t.id,t.revision);}return;}
     if (inventoryHandler_) inventoryHandler_->unacceptTrade();
 }
 
 void GameHandler::cancelTrade() {
+    if(localExploration_){if(auto* r=localAuctionRealm_?localAuctionRealm_():nullptr){const auto& t=r->tradeView();r->tradeAction(LocalAction::TradeCancel,t.id,t.revision);}return;}
     if (inventoryHandler_) inventoryHandler_->cancelTrade();
 }
 
 void GameHandler::setTradeItem(uint8_t tradeSlot, uint8_t bag, uint8_t bagSlot) {
+    if(localExploration_){if(auto* r=localAuctionRealm_?localAuctionRealm_():nullptr){const auto* p=r->localPlayer();
+        const unsigned index=bag==0xFF && bagSlot>=23?unsigned(bagSlot)-23:unsigned(bagSlot);
+        if((bag==0 || (bag==0xFF && bagSlot>=23)) && p && index<p->inventory.size()){const auto& item=p->inventory[index];const auto& t=r->tradeView();
+            r->tradeAction(LocalAction::TradeOffer,t.id,t.revision,item.count,index,tradeSlot,item.itemId,item.count);}}return;}
     if (inventoryHandler_) inventoryHandler_->setTradeItem(tradeSlot, bag, bagSlot);
 }
 
 void GameHandler::clearTradeItem(uint8_t tradeSlot) {
+    if(localExploration_){if(auto* r=localAuctionRealm_?localAuctionRealm_():nullptr){const auto& t=r->tradeView();r->tradeAction(LocalAction::TradeOffer,t.id,t.revision,0,0,tradeSlot);}return;}
     if (inventoryHandler_) inventoryHandler_->clearTradeItem(tradeSlot);
 }
 
 void GameHandler::setTradeGold(uint64_t copper) {
+    if(localExploration_){if(auto* r=localAuctionRealm_?localAuctionRealm_():nullptr){const auto& t=r->tradeView();r->tradeAction(LocalAction::TradeMoney,t.id,t.revision,copper);}return;}
     if (inventoryHandler_) inventoryHandler_->setTradeGold(copper);
 }
 
 void GameHandler::resetTradeState() {
+    if(localExploration_)return; // LocalRealm owns and clears its session on departure.
     if (inventoryHandler_) inventoryHandler_->resetTradeState();
 }
 
@@ -3436,10 +3452,19 @@ const std::vector<GameHandler::WhoEntry>& GameHandler::getWhoResults() const {
 }
 
 bool GameHandler::isInGroup() const {
+    if(auto* realm=localAuctionRealm_?localAuctionRealm_():nullptr;realm && realm->ready())return !realm->partyView().members.empty();
     return socialHandler_ ? socialHandler_->isInGroup() : !partyData.isEmpty();
 }
 
 const GroupListData& GameHandler::getPartyData() const {
+    if(auto* realm=localAuctionRealm_?localAuctionRealm_():nullptr;realm && realm->ready()) {
+        if(localPartyDataRealm_!=realm || localPartyDataRevision_!=realm->partyRevision()) {
+            updateLocalPartyClientData(localPartyData_,realm->partyView(),realm->localPlayer()->guid);
+            localPartyDataRealm_=realm;localPartyDataRevision_=realm->partyRevision();
+        }
+        return localPartyData_;
+    }
+    localPartyDataRealm_=nullptr;localPartyDataRevision_=UINT64_MAX;
     if (socialHandler_) return socialHandler_->getPartyData();
     return partyData;
 }
@@ -3697,20 +3722,26 @@ bool GameHandler::hasPetitionSignaturesUI() const {
 }
 
 bool GameHandler::hasPendingReadyCheck() const {
+    if(localExploration_){auto* r=localAuctionRealm_?localAuctionRealm_():nullptr;if(!r || !r->ready() || !r->localPlayer())return false;
+        const auto& c=r->readyCheck();if(c.state!=1 || c.id==localReadyDismissed_)return false;
+        for(const auto& m:c.members)if(m.guid==r->localPlayer()->guid)return !m.answer;return false;}
     return socialHandler_ ? socialHandler_->hasPendingReadyCheck() : false;
 }
 
 void GameHandler::dismissReadyCheck() {
+    if(localExploration_){if(auto* r=localAuctionRealm_?localAuctionRealm_():nullptr)localReadyDismissed_=r->readyCheck().id;return;}
     if (socialHandler_) socialHandler_->dismissReadyCheck();
 }
 
 const std::string& GameHandler::getReadyCheckInitiator() const {
+    if(localExploration_){static const std::string empty;if(auto* r=localAuctionRealm_?localAuctionRealm_():nullptr){const auto& c=r->readyCheck();for(const auto& m:c.members)if(m.guid==c.initiator)return m.name;}return empty;}
     if (socialHandler_) return socialHandler_->getReadyCheckInitiator();
     static const std::string empty;
     return empty;
 }
 
 const std::vector<GameHandler::ReadyCheckResult>& GameHandler::getReadyCheckResults() const {
+    if(localExploration_){static std::vector<ReadyCheckResult> rows;rows.clear();if(auto* r=localAuctionRealm_?localAuctionRealm_():nullptr)for(const auto& m:r->readyCheck().members)if(m.answer)rows.push_back({m.name,m.answer==1});return rows;}
     if (socialHandler_) return socialHandler_->getReadyCheckResults();
     static const std::vector<ReadyCheckResult> empty;
     return empty;
@@ -4393,3 +4424,18 @@ bool GameHandler::isKnownTaxiNode(uint32_t nodeId) const {
 
 } // namespace game
 } // namespace wowee
+
+namespace wowee::game {
+void GameHandler::pumpLocalSocial(){
+    if(inventoryHandler_)inventoryHandler_->pumpLocalMail();
+    if(localExploration_ && chatHandler_ && localAuctionRealm_) {
+        if(auto* realm=localAuctionRealm_();realm && realm->ready()) {
+            for(const auto& line:realm->takeChatMessages()) {
+                if(line.channel==LocalChatChannel::Whisper)lastWhisperSenderRef()=line.senderName;
+                chatHandler_->addLocalChatMessage(localChatClientMessage(line));
+            }
+        }
+    }
+}
+void GameHandler::autoLootLocalMail(uint32_t id){if(inventoryHandler_)inventoryHandler_->autoLootLocalMail(id);}
+}

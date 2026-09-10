@@ -18,5 +18,6 @@ struct LocalPadFocus {
         return ids[(at+ids.size()+(direction>0?1:-1))%ids.size()];
     }
 };
+inline bool localTargetOwnsShoulders(uint64_t target,bool panelOpen,bool trianglePressed,bool released=false,bool nonCombat=false){return trianglePressed || (target && nonCombat && !panelOpen && !released);}
 inline uint64_t toggledLocalTarget(uint64_t current,uint64_t nearest){return current?0:nearest;}
 } // namespace wowee::ui

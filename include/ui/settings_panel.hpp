@@ -97,18 +97,9 @@ public:
     // ---- Pending UI / interface ----
     int pendingUiOpacity = 65;
     float pendingWindowUiScale = 1.0f;
-    /// Title-safe margin, as a percentage of each screen edge.
-    ///
-    /// A television magnifies the picture slightly and loses whatever falls
-    /// outside its panel - which is exactly where the action bar, the chat
-    /// frame and the minimap sit. A monitor loses nothing, so this is zero
-    /// there and four on a console, the conservative end of the range
-    /// broadcast has used for decades. See WidgetTree::setSafeAreaInset.
-#if defined(WOWEE_PS4)
-    int pendingSafeArea = 4;
-#else
+    /// Optional TV overscan margin. Use the full display by default; players
+    /// whose TV crops its edges can choose an inset in Interface settings.
     int pendingSafeArea = 0;
-#endif
 
     /// What something drawn in pixels should be scaled to on a screen of a
     /// given height, before the player says otherwise.
