@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="ps4/sce\_sys/icon0.png" alt="WoWPS" width="160">
+  <img src="ps4/sce_sys/icon0.png" alt="WoWPS" width="160">
 </p>
 
 <h1 align="center">WoWPS</h1>
