@@ -51,6 +51,16 @@ static inline void vk_ps4_cpu_store_fence(void) {
 extern "C" {
 #endif
 
+/* Sparse wall-time sampling; never presented as GPU or CPU-cycle timing. */
+static inline uint64_t vk_ps4_record_clock_us(void) {
+#if defined(__ORBIS__)
+    extern uint64_t sceKernelGetProcessTime(void);
+    return sceKernelGetProcessTime();
+#else
+    return 0;
+#endif
+}
+
 /* === Version === */
 #define VK_PS4_API_VERSION VK_API_VERSION_1_0
 #define VK_PS4_DRIVER_VERSION VK_MAKE_VERSION(0, 1, 0)
@@ -361,7 +371,19 @@ struct VkPs4CommandBuffer {
     uint32_t pm4_used;         /* in dwords */
     uint32_t pm4_high_water;   /* lifetime high-water mark, in dwords */
     uint32_t pm4_world_recordings; /* sparse capacity diagnostics */
+    struct {
+        uint64_t draw_calls, draw_samples, draw_us, draw_max_us;
+        uint64_t descriptor_calls, descriptor_samples, descriptor_us, descriptor_max_us;
+    } recording_perf;
+
     uint32_t compute_dispatch_count; /* B18: trace first compute submissions */
+    /* CPU packet receipts, not proof of GPU depth coverage. */
+    struct {
+        bool active;
+        uint32_t passes, attempts, emitted, no_pipeline, raster_discard;
+        uint32_t recording_failed, no_fetch, vertex_table, index_buffer, index_range;
+        uint32_t emitter_failed;
+    } depth_draw_diagnostics;
     bool is_recording;
     VkResult recording_error; /* unsupported/invalid meta operation: never submit */
     bool is_begin;
@@ -384,6 +406,12 @@ struct VkPs4CommandBuffer {
     } current_render_pass;
     /* Current pipeline */
     VkPs4Pipeline *current_pipeline;
+    bool pipeline_rebind_required; /* dynamic commands overwrote static state */
+    /* Direct draw registers survive pipeline binds; raw/indirect draws invalidate. */
+    bool direct_draw_state_valid;
+    uint32_t *graphics_sync_endptr; /* exact stream position after full release/acquire */
+    bool graphics_sync_shader_reads;
+    uint32_t direct_draw_instances, direct_draw_vertex_offset;
     VkPs4PipelineLayout *graphics_descriptor_layout;
     uint32_t graphics_push_constants[2][32]; /* VS/PS 128-byte limit */
     bool graphics_push_valid[2];
@@ -437,6 +465,11 @@ struct VkPs4CommandBuffer {
      * first scene draw read its camera UBO through an unwritten SGPR pair)
      * and left the second to the application. */
     GnmBuffer *graphics_dynamic_table;  /* latest snapshot for the graphics sets */
+    /* CPU-cached copies: never read write-combined Garlic to deduplicate. */
+    GnmBuffer graphics_dynamic_shadow[VK_PS4_MAX_DYNAMIC_DESCRIPTORS];
+    GnmBuffer compute_dynamic_shadow[VK_PS4_MAX_DYNAMIC_DESCRIPTORS];
+    uint32_t graphics_dynamic_shadow_count;
+    uint32_t compute_dynamic_shadow_count;
     GnmBuffer *compute_dynamic_table;
     bool graphics_tables_dirty;
     bool compute_tables_dirty;
@@ -454,6 +487,7 @@ struct VkPs4CommandBuffer {
         VkDeviceSize offset;
         VkIndexType type;
     } index_buffer;
+    bool index_buffer_state_valid; /* CP base/type shadow, invalid after secondary */
     /* Shadow stencil state for read-modify-write on dynamic stencil commands.
      * Without this, each CmdSetStencil* would clobber the other fields of
      * DB_STENCILREFMASK / DB_STENCILREFMASK_BF. */
@@ -966,10 +1000,8 @@ struct VkPs4QueryPool {
     VkPs4ObjectType type;
     VkPs4Device *device;
     VkQueryPoolCreateInfo create_info;
-    /* GPU-visible memory for query results.
-     * Each query slot stores a uint64_t result.
-     * For occlusion queries: ZPASS count.
-     * For timestamp queries: GPU timestamp value. */
+    /* Reserved legacy query storage. Query creation is currently unsupported;
+     * payload alone cannot establish availability or calibrated timing. */
     GnmDirectMemory gnm_mem;     /* full direct memory handle for release */
     void *result_buffer;         /* CPU-mapped pointer to result memory */
     uint64_t result_gpu_addr;    /* GPU address of result memory */

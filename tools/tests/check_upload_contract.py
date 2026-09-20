@@ -11,7 +11,9 @@ def section(start, end):
 
 
 finish = section("void VkContext::finishUploadBatch(", "void VkContext::pollUploadBatches(")
-assert finish.index("inFlightBatches_.reserve") < finish.index("vkQueueSubmit")
+begin = section("void VkContext::beginUploadBatch(", "void VkContext::ensureBatchCmd(")
+assert begin.index("inFlightBatches_.reserve(16)") < begin.index("uploadBatchDepth_++")
+assert "inFlightBatches_.reserve" not in finish
 assert finish.index("inFlightBatches_.push_back") < finish.index("vkQueueSubmit")
 assert "const VkResult submitted = vkQueueSubmit" in finish
 assert "const VkResult created = vkCreateFence" in finish

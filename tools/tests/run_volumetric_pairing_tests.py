@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""Execute paired production GLSL versus the the implementation kernel and occlusion fixtures.
+Synthetic CPU evidence, not a console render/performance certification.
+"""
+from pathlib import Path
+import ast,json,os,re,subprocess,tempfile
+import numpy as np
+root=Path(__file__).resolve().parents[2]
+adapter=root/'tools/tests/run_volumetric_reconstruction_resolve_tests.py'
+tree=ast.parse(adapter.read_text()); ns={'re':re}
+for node in tree.body:
+ if isinstance(node,ast.FunctionDef) and node.name=='translate':exec(compile(ast.Module(body=[node],type_ignores=[]),str(adapter),'exec'),ns)
+ if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='preamble' for t in node.targets):exec(compile(ast.Module(body=[node],type_ignores=[]),str(adapter),'exec'),ns)
+preamble=ns['preamble'].replace('unsigned nearReads=0,farReads=0;','unsigned nearReads=0,farReads=0; float fixtureBlocker=.271f;').replace('float d=1;if(closedShadow)','float d=1;if(shadowPattern==6)d=fixtureBlocker;if(closedShadow)')
+# Emulate the dedicated linear radiance sampler, retaining nearest shadow depth.
+preamble=preamble.replace('vec4 textureLod(int id,vec2 uv,float){', 'vec4 textureLod(int id,vec2 uv,float){\n if(id==scattering){\n  vec2 q=uv*vec2(volumeExtent)-.5f;ivec2 a=ivec2(floor(q));vec2 t=fract(q);\n  auto at=[](ivec2 p){p=clamp(p,ivec2(0),volumeExtent-1);return samples[p.y*volumeExtent.x+p.x];};\n  return mix(mix(at(a),at(a+ivec2(1,0)),t.x),mix(at(a+ivec2(0,1)),at(a+ivec2(1)),t.x),t.y);\n }\n')
+preamble=preamble.replace('#include <glm/glm.hpp>', '#include <glm/glm.hpp>\n#include <glm/gtc/matrix_transform.hpp>\n#include <glm/ext/matrix_clip_space.hpp>')
+preamble=preamble.replace('unsigned nearReads=0,farReads=0;', 'unsigned linearFetches=0; bool quantizedFiltering=false; unsigned nearReads=0,farReads=0;')
+preamble=preamble.replace('if(id==scattering){', 'if(id==scattering){ ++linearFetches;')
+preamble=preamble.replace('vec2 t=fract(q);', 'vec2 t=fract(q);if(quantizedFiltering)t=floor(t*256.f+.5f)/256.f;')
+read=lambda name:(root/'assets/shaders'/name).read_text()
+march=read('volumetric.frag.glsl');common=march[march.index('bool clipAxis('):march.index('void main()')]
+resolve=read('volumetric_resolve.frag.glsl');assert resolve[resolve.index('bool clipAxis('):resolve.index('// Scene material fog')]==common
+resolve=resolve[resolve.index('float volumeCoordinate('):].replace('void main()','void resolveRaw()')
+composite=read('volumetric_composite.frag.glsl');composite=composite[composite.index('float volumeDisplayScale('):].replace('void main()','void composite()')
+legacy=(root/'tools/tests/fixtures/volumetric_composite_smooth_fixture.glsl').read_text();legacy=legacy[legacy.index('float volumeDisplayScale('):]
+for name in ('volumeDisplayScale','heightFogOpticalDepth','volumeCoordinate','volumeFilterWeight'):legacy=legacy.replace(name,'legacy_'+name)
+legacy=legacy.replace('void main()','void legacyComposite()')
+baseline=(root/'tools/tests/fixtures/volumetric_composite_radiance_fixture.glsl').read_text()
+baseline=baseline[baseline.index('float volumeDisplayScale('):]
+for name in ('volumeDisplayScale','heightFogOpticalDepth','filteredRadiance'):
+ baseline=baseline.replace(name,'baseline_'+name)
+baseline=baseline.replace('void main()','void baselineComposite()')
+checks=r'''
+void generate(){for(int y=0;y<volumeExtent.y;++y)for(int x=0;x<volumeExtent.x;++x){gl_FragCoord=vec4(x+.5f,y+.5f,0,1);march();samples[y*volumeExtent.x+x]=outColor;}}
+void fullResolve(){std::vector<vec4> raw(sceneExtent.x*sceneExtent.y);for(int y=0;y<sceneExtent.y;++y)for(int x=0;x<sceneExtent.x;++x){TexCoord=(vec2(x,y)+.5f)/vec2(sceneExtent);resolveRaw();raw[y*sceneExtent.x+x]=outColor;}volumeExtent=sceneExtent;samples=raw;}
+vec3 filtered(int x,int y){return filteredRadiance(ivec2(x,y),sceneExtent,depths[y*sceneExtent.x+x]);}
+int main(int argc,char**argv){
+ // Verify the actual Camera construction contract across rotated views,
+ // FOVs, near/far ratios and XY jitter, including Vulkan's flipped Y.
+ for(float fov:{30.f,60.f,110.f})for(float aspect:{.75f,1.777f})
+ for(float nearPlane:{.1f,1.f})for(float farPlane:{200.f,2000.f})
+ for(float yaw:{0.f,.7f,2.8f})for(float jitter:{0.f,.001f}){
+  mat4 projection=perspectiveRH_ZO(radians(fov),aspect,nearPlane,farPlane);
+  projection[1][1]*=-1.f;projection[2][0]+=jitter;projection[2][1]-=jitter;
+  mat4 rotation=rotate(rotate(mat4(1),yaw,vec3(0,0,1)),.4f,vec3(1,0,0));
+  mat4 inverseVP=transpose(mat4(mat3(rotation)))*inverse(projection);
+  check(inverseVP[0][3]==0.f&&inverseVP[1][3]==0.f,"perspective reciprocal depth is exactly independent of UV");
+  for(float depth:{0.f,.5f,.99f}){
+   float actual=(inverseVP*vec4(-.63f,.81f,depth,1.f)).w;
+   float reduced=inverseVP[3][3]+inverseVP[2][3]*depth;
+   check(abs(actual-reduced)<.000001f,"reduced reciprocal depth matches rotated jittered camera");
+  }
+ }
+ v.inverseRelativeViewProjection=mat4(1);v.inverseRelativeViewProjection[2][3]=-.99f;
+ v.sunColor=vec4(1,.65f,.3f,0);v.parameters=vec4(160,.002f,12,.9f);
+ float maximumError=0.f,maximumDisplayError=0.f;
+ for(int filterPrecision:{0,1})for(int factor:{2,4})for(int kind=0;kind<5;++kind)for(ivec2 shape:{ivec2(1),ivec2(3,7),ivec2(31,23)}){
+  quantizedFiltering=filterPrecision!=0;
+  v.sunDirection.w=float(factor);extent(shape.x,shape.y);volumeExtent=sceneExtent;samples.resize(shape.x*shape.y);
+  for(int y=0;y<shape.y;++y)for(int x=0;x<shape.x;++x){
+   int i=y*shape.x+x;float eye=20.f;
+   if(kind==1)eye=1.f/(.05f-.0002f*x-.00013f*y);
+   if(kind==2)eye=(x%3==0||y%5==0)?4.f:80.f;
+   if(kind==3)eye=4.f+float((i*13)%11)*.0001f;
+   if(kind==4)eye=4.f+float((i*17)%31)*3.f;
+   depths[i]=encode(eye);samples[i]=vec4(float((i*37+13)%127)/16.f);
+  }
+  for(int y=0;y<shape.y;++y)for(int x=0;x<shape.x;++x){
+   linearFetches=0;
+   vec3 actual=filteredRadiance(ivec2(x,y),sceneExtent,depths[y*shape.x+x]);
+   check(linearFetches<=unsigned(factor==2?15:9),"paired shader fetch bound");
+   vec3 expected=baseline_filteredRadiance(ivec2(x,y),sceneExtent,depths[y*shape.x+x]);
+   if(!quantizedFiltering)maximumError=max(maximumError,length(actual-expected));
+   float displayError=length(actual/(1.f+actual.r)-expected/(1.f+expected.r));
+   maximumDisplayError=max(maximumDisplayError,displayError);
+   check(displayError<.001f,"8-bit subtexel linear filtering stays within display tolerance");
+   check(quantizedFiltering||length(actual-expected)<.00004f,"paired depth-gated denoise vs original25-tap kernel including silhouettes and clamp edges");
+  }
+ }
+ printf("paired fullres denoise max raw RGB error=%g max displayed error including8-bit interpolation=%g\n",maximumError,maximumDisplayError);
+ quantizedFiltering=false;
+ for(int radius:{1,2})for(int y=-radius;y<=radius;++y)for(int x=-radius;x<=radius;++x){
+ vec3 axis=radius==1?vec3(1,.6065306597f,0):vec3(1,.8007374029f,.4111122905f);
+ check(abs(axis[abs(x)]*axis[abs(y)]-exp(-float(x*x+y*y)/(radius==1?2.f:4.5f)))<.0000001f,"constant separable Gaussian matches original exponential kernel");
+ }
+ // Exact same-texel depth coverage against high-resolution quadrature, both
+ // depth directions. Crossing a lateral texel MUST keep sampled visibility.
+ for(float tau:{0.00001f,0.0005f,0.002f,.05f,.5f})for(int direction:{-1,1})for(int k=0;k<=20;++k){
+ float a=direction>0?.1f:.9f,b=direction>0?.9f:.1f,blocker=float(k)*.05f;
+ float got=stratumVisibility(blocker,.5f,a,b,vec2(4.2f,5.2f),vec2(4.8f,5.8f),tau);
+ double ref=0,den=0;for(int j=0;j<20000;++j){double t=(j+.5)/20000.,w=std::exp(-double(tau)*t);den+=w;if(a+(b-a)*t-.0001<=blocker)ref+=w;}
+ check(abs(got-float(ref/den))<.00006f,"same texel analytic depth crossing vs quadrature");
+ float crossing=stratumVisibility(blocker,.5f,a,b,vec2(4.2f,5.2f),vec2(5.1f,5.8f),tau);
+ check(crossing==(.5f-.0001f<=blocker?1.f:0.f),"lateral blocker/leaf boundary never extrapolates a sampled blocker");
+ }
+check(argc==2,"output argument");FILE*f=fopen(argv[1],"wb");check(f,"output file");
+ v.inverseRelativeViewProjection=mat4(1);v.inverseRelativeViewProjection[2][3]=-.99f;
+ v.lightMatrix=mat4(.005f);v.lightMatrix[3][3]=1;v.lightMatrix[3][2]=.1f;v.nearLightMatrix=v.lightMatrix;
+ v.camera=vec4(0,0,0,1);v.sunColor=vec4(1,.65f,.3f,0);v.sunDirection=vec4(0,0,1,2);v.parameters=vec4(160,.002f,8,.9f);
+ for(int factor:{2,4}){v.sunDirection.w=float(factor);
+ // Constants on flat/slope planes must preserve exact energy and color.
+ for(int shape=0;shape<3;++shape){extent(32,24);volumeExtent=sceneExtent;samples.assign(32*24,vec4(.2f,.3f,.4f,0));for(int y=0;y<24;++y)for(int x=0;x<32;++x)depths[y*32+x]=encode(1.f/(.05f-.0002f*x*(shape>0)-.00013f*y*(shape>1)));
+ for(int y=0;y<24;++y)for(int x=0;x<32;++x)check(length(filtered(x,y)-(vec3(v.sunColor)*.2f))<.000002f,"constant raw radiance on projected planes");}
+ // Full-resolution bright sky cannot leak across thin foreground/close doors.
+ for(float farDepth:{80.f,4.04f}){extent(32,24);volumeExtent=sceneExtent;samples.resize(32*24);for(int y=0;y<24;++y)for(int x=0;x<32;++x){bool foreground=x<16||x==21;depths[y*32+x]=encode(foreground?4.f:farDepth);samples[y*32+x]=vec4(foreground?vec3(0):vec3(100),0);}
+ for(int y=0;y<24;++y)for(int x=0;x<32;++x)check(length(filtered(x,y)-(x<16||x==21?vec3(0):vec3(v.sunColor)*100.f))<.0001f,"no cross-depth light leakage including one-pixel foreground");}
+ // Isolated endpoints cannot borrow unsafe light: retain exact center.
+ extent(9,9);volumeExtent=sceneExtent;samples.assign(81,vec4(100));depths.assign(81,encode(80));depths[40]=encode(4);samples[40]=vec4(.2f,.3f,.4f,0);check(length(filtered(4,4)-(vec3(v.sunColor)*.2f))<.000001f,"isolated endpoint retains safe radiance");
+ // Closed shadow field passes the actual reduced march, full resolve and filter.
+ extent(32,24);closedShadow=true;generate();fullResolve();for(int y=0;y<24;++y)for(int x=0;x<32;++x)check(length(filtered(x,y))==0,"blocked air stays zero through all three passes");closedShadow=false;
+ for(ivec2 size:{ivec2(1),ivec2(3,7),ivec2(19,13)}){extent(size.x,size.y);volumeExtent=sceneExtent;samples.assign(size.x*size.y,vec4(.2f,.3f,.4f,0));for(int y=0;y<size.y;++y)for(int x=0;x<size.x;++x)check(length(filtered(x,y)-(vec3(v.sunColor)*.2f))<.000002f,"odd extents stable");}
+ // Coherent distant layer punctured by leaf endpoints AT every lowres source:
+ // old the implementation forced 32/48-step unfiltered fallbacks across the distant layer.
+ v.inverseRelativeViewProjection[0][0]=.001f;v.inverseRelativeViewProjection[1][1]=.001f;
+ for(int count:{8,12}){v.parameters.z=float(count);
+ for(float blocker:{.171f,.223f,.271f,.333f}){extent(128,128);shadowPattern=6;fixtureBlocker=blocker;
+ for(int y=0;y<128;++y)for(int x=0;x<128;++x)depths[y*128+x]=encode((x%factor==factor/2&&y%factor==factor/2)?4:80);
+ generate();unsigned fallbacks=0;for(int y=4;y<124;++y)for(int x=4;x<124;++x){if(depths[y*128+x]==encode(4))continue;TexCoord=(vec2(x,y)+.5f)/128.f;nearReads=farReads=0;resolveRaw();check(nearReads+farReads==unsigned(count*4),"fixture proves actual exact-fallback path");vec3 raw=vec3(v.sunColor)*outColor.r;nearReads=farReads=0;legacyComposite();if(nearReads+farReads==unsigned(count*4))check(length(vec3(outColor)-raw*volumeDisplayScale(max(raw.r,max(raw.g,raw.b))))<.000002f,"legacy reconstruction and current resolve share exact-ray integration");++fallbacks;}check(fallbacks>10000,"substantial fallback fixture");
+ fullResolve();nearReads=farReads=0;
+ for(int y=4;y<124;++y)for(int x=4;x<124;++x){if(depths[y*128+x]==encode(4))continue;float row[]={samples[y*128+x].r,filtered(x,y).r};fwrite(row,sizeof(float),2,f);}check(nearReads+farReads==0,"final filtering never marches shadows");
+ }}shadowPattern=0;v.inverseRelativeViewProjection[0][0]=1;v.inverseRelativeViewProjection[1][1]=1;
+ // Debug modes and fog preserve their original output contracts.
+ extent(8,8);volumeExtent=sceneExtent;samples.assign(64,vec4(.2f,.3f,.4f,20));TexCoord=vec2(.5f);v.sunColor.w=1;composite();check(abs(outColor.r-.125f)<.00001f,"scene depth diagnostic");v.sunColor.w=2;closedShadow=true;composite();check(length(vec3(outColor))==0,"raw shadow depth diagnostic");closedShadow=false;v.sunColor.w=3;v.fogParameters=vec4(.006f,0,.1f,160);composite();check(length(vec3(outColor)-(vec3(v.sunColor)*.2f)/1.2f)<.000002f,"volume diagnostic excludes fog");v.sunColor.w=0;v.fogColor=vec4(.3f,.4f,.5f,0);composite();check(outColor.a>=0&&outColor.a<=1,"fog blend coverage bounded");v.fogParameters=vec4(0);
+ }
+ // R16F stores only red/peak; green/blue sampler channels are zero.
+ // Verify reconstruction for non-red peak, moonlight, zero and negative inputs.
+ for(vec3 color:{vec3(.2f,1.f,.7f),vec3(.01f,.2f,2.f),vec3(0),vec3(-1.f),vec3(-.1f,.4f,.2f)}){
+ v.sunColor=vec4(color,0);extent(8,8);volumeExtent=sceneExtent;
+ samples.assign(64,vec4(float(_Float16(.2345f)),0,0,1));
+ vec3 positive=max(color,vec3(0));float peak=max(positive.r,max(positive.g,positive.b));
+ vec3 expected=peak>0?positive*(samples[0].r/peak):vec3(0);
+ check(length(filtered(3,3)-expected)<.000002f,"R16 peak reconstructs all light colors and clamps negative channels");
+ }
+ fclose(f);puts("PASS actual production GLSL: full-resolution fallback filtering, occlusion, blocked zero, constants, odd extents, diagnostics, no extra shadow reads");
+}
+'''
+source=ns['translate'](common+march[march.index('void main()'):].replace('void main()','void march()')+resolve+composite+legacy+baseline).replace('center.rgb','vec3(center)')
+out=root/'build-test-results/paired-denoise';out.mkdir(parents=True,exist_ok=True)
+with tempfile.TemporaryDirectory(prefix='wowps-strata-') as tmp:
+ p=Path(tmp);(p/'test.cpp').write_text(preamble+source+checks)
+ flags=['-std=c++17','-O1','-g','-I'+str(root/'extern/glm')]
+ if os.environ.get('SANITIZE')=='1':flags+=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
+ subprocess.run([os.environ.get('CXX','c++'),*flags,str(p/'test.cpp'),'-o',str(p/'test')],check=True)
+ subprocess.run([str(p/'test'),str(p/'samples.bin')],check=True,env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0','UBSAN_OPTIONS':'halt_on_error=1'})
+ data=np.fromfile(p/'samples.bin',dtype=np.float32).reshape(-1,2).astype(float)
+metrics=[];offset=0
+for factor in (2,4):
+ n=120*120-(120//factor)**2
+ for count in (8,12):
+  part=data[offset:offset+4*n].reshape(4,n,2);offset+=4*n
+  var=part.var(axis=1).mean(axis=0)
+  m={'resolution_factor':factor,'fallback_steps':count*4,'variance_ratio_after_before':float(var[1]/var[0]),'mean_relative_error':float(abs(part[:,:,1].mean()/part[:,:,0].mean()-1))}
+  m['raw_variance']=float(var[0]);m['filtered_variance']=float(var[1])
+  assert var[0]<1e-8,m
+  assert m['mean_relative_error']<.01,m
+  metrics.append(m)
+assert offset==len(data)
+(out/'metrics.json').write_text(json.dumps(metrics,indent=2)+'\n');print(json.dumps(metrics,indent=2))
+print('PASS coherent depth crossing has raw variance <1e-8; lateral texel boundaries preserve sampled visibility; console acceptance still required.')

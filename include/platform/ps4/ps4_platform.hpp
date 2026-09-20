@@ -106,6 +106,8 @@ struct MouseState {
 const MouseState& mouseState();
 /// Cursor mode is explicit on console; camera drag need not enable SDL relative mode.
 bool inputCursorVisible();
+/// True only while the input backend owns a camera drag, including stick look.
+bool inputCameraLooking();
 
 /// Whether the given SDL scancode is currently held through the pad mapping.
 /// (Input::update merges this with its own state on PS4.)

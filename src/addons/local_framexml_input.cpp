@@ -24,10 +24,17 @@ extern "C" {
 #endif
 namespace wowee::addons {
 namespace {
-/// Whether the interface's cursor is holding something. The icon is set on
-/// every pickup and cleared on every put-down, so its presence is the one
-/// answer both lanes here can ask for without reaching into the bindings.
-bool carrying() { return !ui::frameXmlCursorItem().empty(); }
+/// Cursor ownership comes from its payload, not its artwork: a macro or a
+/// spell with a missing icon still needs cancellation and a destination slot.
+bool carrying(LuaEngine* engine) {
+    auto* L=engine?engine->getState():nullptr;
+    if(!L)return false;
+    const int stack=lua_gettop(L);
+    lua_getglobal(L,"GetCursorInfo");
+    const bool held=lua_isfunction(L,-1) && lua_pcall(L,0,1,0)==0 && !lua_isnil(L,-1);
+    lua_settop(L,stack);
+    return held;
+}
 /// ...and whether that something is an item out of a bag or off the paperdoll,
 /// which is the only kind that is destroyed rather than merely dropped.
 bool carryingBagItem() { uint8_t bag=0,slot=0; return ui::frameXmlCursorWireSlot(bag,slot); }
@@ -175,7 +182,7 @@ bool LocalFrameXml::padPickup(const std::string& name) {
 /// rather than the thing itself, so letting go is all there is to do and the
 /// real client asks nothing.
 bool LocalFrameXml::padDropCarried() {
-    if(!engine_ || !carrying())return false;
+    if(!engine_ || !carrying(engine_))return false;
     if(engine_->executeString("__WoWPSLocalDrop = WoWPS_LocalSocialDrop and WoWPS_LocalSocialDrop() or false")){
         auto* L=engine_->getState();lua_getglobal(L,"__WoWPSLocalDrop");const bool handled=lua_toboolean(L,-1)!=0;lua_pop(L,1);if(handled)return true;
     }
@@ -293,9 +300,29 @@ bool LocalFrameXml::navigateBars() {
     struct Anchor{LocalFrameXml* self;~Anchor(){self->publishPadCursor();}}anchor{this};
     platform::ps4::setInputActionBars(ready());
     if(!ready() || platform::ps4::keyboardCapturesInput() || platform::ps4::inputTextFocus())return false;
+    // A released spirit's Square is a corpse-reclaim request before any
+    // action bar, spell cursor, mailbox, NPC or combat interaction. Mark both
+    // raw and mapped actions consumed so the overlay cannot send it twice.
+    if(auto* realm=realm_?realm_():nullptr) {
+        if(const auto* player=realm->localPlayer();player && player->dead) {
+            padFocus_.clear();
+            const auto& deathPad=platform::ps4::padState();
+            if(player->ghost && deathPad.connected &&
+               (deathPad.pressed&ORBIS_PAD_BUTTON_SQUARE) &&
+               !(deathPad.pressed&ORBIS_PAD_BUTTON_TRIANGLE)) {
+                realm->reclaimCorpse();
+                ui::noteInterfaceConsumedKey(ImGuiKey_GamepadFaceLeft);
+                ui::noteInterfaceConsumedKey(ImGuiKey_1);
+                return true;
+            }
+            // Menus/world map remain usable, but stale bar focus cannot cast.
+            if(padWorldMapToggle() || padWorldMapFrame())return true;
+            return false;
+        }
+    }
     // Circle cancels a carried reference before closing a panel. Bag contents
     // stay owned by inventory; cancelling never destroys the item.
-    if(carrying() && (platform::ps4::padState().pressed&ORBIS_PAD_BUTTON_CIRCLE)) {
+    if(carrying(engine_) && (platform::ps4::padState().pressed&ORBIS_PAD_BUTTON_CIRCLE)) {
         engine_->executeString("if ClearCursor then ClearCursor() end");
         ui::noteInterfaceConsumedKey(ImGuiKey_GamepadFaceRight);
         ui::noteInterfaceConsumedKey(ImGuiKey_Escape);
@@ -317,11 +344,10 @@ bool LocalFrameXml::navigateBars() {
     // Triangle target selection releases the bar cursor. While a world unit is
     // targeted the shoulders cannot steal Square back from talk/attack.
     const uint64_t targetGuid=target_?target_():0;
-    if(!targetGuid || (pad.pressed&ORBIS_PAD_BUTTON_TRIANGLE))targetShouldersReleased_=false;
-    // Explicit exit keeps the unit selected, so offensive action-bar spells
-    // remain usable without reopening Options or losing their target.
+    // Back releases a bar selection without changing the unit. A friendly
+    // target must keep its talk action even after this press.
     if(!top && targetGuid && (pad.pressed&ORBIS_PAD_BUTTON_CIRCLE)) {
-        targetShouldersReleased_=true;
+        padFocus_.clear();
         ui::noteInterfaceConsumedKey(ImGuiKey_GamepadFaceRight);
     }
     bool nonCombatTarget=false;
@@ -329,7 +355,7 @@ bool LocalFrameXml::navigateBars() {
         for(const auto& npc:realm->npcs())if(npc.guid==targetGuid){nonCombatTarget=!npc.hostile || npc.dead;break;}
     // A nearby mailbox owns contextual Square unless an enemy or explicitly
     // selected menu icon owns the action. Old spell focus must not hide mail access.
-    if(!top && !carrying() && (!targetGuid || nonCombatTarget) &&
+    if(!top && !carrying(engine_) && (!targetGuid || nonCombatTarget) &&
        padFocus_.lane!=ui::LocalPadFocus::Lane::Menus &&
        !(pad.pressed&(ORBIS_PAD_BUTTON_L2|ORBIS_PAD_BUTTON_R2))) {
         if(const auto* realm=realm_?realm_():nullptr)
@@ -337,11 +363,11 @@ bool LocalFrameXml::navigateBars() {
                 padFocus_.clear();return false;
             }
     }
-    if(!carrying() && ui::localTargetOwnsShoulders(targetGuid,top!=nullptr,(pad.pressed&ORBIS_PAD_BUTTON_TRIANGLE)!=0,targetShouldersReleased_,nonCombatTarget)) {
+    if(!carrying(engine_) && ui::localTargetOwnsShoulders(targetGuid,top!=nullptr,(pad.pressed&ORBIS_PAD_BUTTON_TRIANGLE)!=0,nonCombatTarget)) {
         padFocus_.clear();return false;
     }
     const bool dpad=(pad.pressed&(ORBIS_PAD_BUTTON_UP|ORBIS_PAD_BUTTON_DOWN|ORBIS_PAD_BUTTON_LEFT|ORBIS_PAD_BUTTON_RIGHT))!=0;
-    const bool holding=carrying();
+    const bool holding=carrying(engine_);
     if(top && dpad){
         // From icon focus into the opened panel - but while carrying, the two
         // are one navigation space rather than two lanes: the panel lane below
@@ -482,7 +508,7 @@ bool LocalFrameXml::navigate() {
     // while carrying: with an empty cursor the bars belong to their own lane,
     // where a shoulder press selects them and Square casts. And never under a
     // modal, which owns the pad outright - see modalRoot.
-    const bool holding=carrying() && !modalRoot;
+    const bool holding=carrying(engine_) && !modalRoot;
     const auto controlPoint=[&](const ui::Widget* w){
         return ui::padControlPoint(tree,w,io.DisplaySize.x/tree.uiScale(),io.DisplaySize.y/tree.uiScale());
     };

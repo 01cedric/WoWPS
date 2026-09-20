@@ -1,0 +1,22 @@
+{
+  "upstream": "https://github.com/azerothcore/azerothcore-wotlk",
+  "commit": "4e80596cdaa21fa31830522f6f2d7ed8750bfffd",
+  "sourceURL": "https://github.com/azerothcore/azerothcore-wotlk/blob/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/graveyard_zone.sql",
+  "sourceSHA256": "9887ca06c8af0a55959980c457919140d0ff53133d39645f86aa4c3d7eab8c17",
+  "table": "graveyard_zone",
+  "sourceRows": 704,
+  "outputRows": 704,
+  "uniqueSafeLocationIds": 582,
+  "teamCounts": {
+    "469": 66,
+    "0": 573,
+    "67": 65
+  },
+  "coordinateSource": "Pinned game_graveyard.sql via local_graveyard_sites.hpp; only referenced IDs eligible",
+  "teamSemantics": {
+    "0": "neutral",
+    "67": "Horde",
+    "469": "Alliance"
+  },
+  "eligibility": "Per graveyard ID and GhostZone; never merge faction masks across different zones"
+}

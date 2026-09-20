@@ -453,9 +453,9 @@ inline uint32_t capCount(uint32_t value, uint32_t maxValue, const char* what) {
     return value;
 }
 
-template<typename T>
-std::vector<T> readArray(const std::vector<uint8_t>& data, uint32_t offset, uint32_t count) {
-    std::vector<T> result;
+template<typename T, typename Array = std::vector<T>>
+Array readArray(const std::vector<uint8_t>& data, uint32_t offset, uint32_t count) {
+    Array result;
     if (count == 0) return result;
     // Overflow-safe bounds check: avoid uint32 wrap on count * sizeof(T)
     size_t totalBytes = static_cast<size_t>(count) * sizeof(T);
@@ -1735,7 +1735,7 @@ M2Model M2Loader::load(const std::vector<uint8_t>& m2Data) {
         }
     }
     if (header.nBoundingTriangles > 0 && header.ofsBoundingTriangles > 0) {
-        model.collisionIndices = readArray<uint16_t>(m2Data, header.ofsBoundingTriangles, header.nBoundingTriangles);
+        model.collisionIndices = readArray<uint16_t, decltype(model.collisionIndices)>(m2Data, header.ofsBoundingTriangles, header.nBoundingTriangles);
     }
     if (header.nBoundingNormals > 0 && header.ofsBoundingNormals > 0) {
         struct Vec4Disk { float x, y, z, w; };

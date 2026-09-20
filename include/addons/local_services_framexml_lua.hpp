@@ -172,7 +172,6 @@ local function options()
     end
     if s.banker then t[#t+1]={'I would like to check my bank.','banker','bank_open',0}end
     if s.classTrainer then t[#t+1]={'Reset my talents (free local testing).','trainer','talents_reset',0}end
-    if s.innkeeper then t[#t+1]={'I would like to check my mail.','chat','mail_open',0}end
     if s.trainer then
         t[#t+1]={'I would like some training.','trainer','trainer_open',0}
         for _,skill in ipairs(s.professions)do if skill.id==s.trainerSkill then t[#t+1]={'Practice '..skill.name..'.','trainer','craft_open',skill.id}end end

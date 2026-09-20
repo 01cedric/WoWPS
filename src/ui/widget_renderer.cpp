@@ -1,3 +1,6 @@
+#ifdef WOWEE_PS4
+#include "platform/ps4/ps4_platform.hpp"
+#endif
 #include <cstring>
 #include "ui/widget_renderer.hpp"
 #include "ui/text_markup.hpp"
@@ -1901,7 +1904,11 @@ void WidgetRenderer::draw(WidgetTree& tree, float screenW, float screenH) {
     // The item on the cursor, drawn over everything. FrameXML never draws this
     // - in WoW the client does - so without it picking something up looked
     // exactly like nothing happening.
-    if (const std::string& carried = frameXmlCursorItem(); !carried.empty()) {
+    if (const std::string& carried = frameXmlCursorItem(); !carried.empty()
+#ifdef WOWEE_PS4
+        && !platform::ps4::inputCameraLooking()
+#endif
+    ) {
         if (VkDescriptorSet icon = texture(carried); icon != kMissing) {
             const float side = 32.0f * tree.uiScale();
             // On a pad there is no pointer to ride, so the icon sits on the

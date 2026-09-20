@@ -20,6 +20,11 @@ static std::unique_ptr<DBCFile> table(const std::vector<std::vector<uint32_t>>& 
 static std::vector<uint32_t> spellRow(uint32_t id) {
     std::vector<uint32_t> row(234);
     row[0]=id;row[28]=1;row[37]=6;row[39]=2;row[40]=1;row[42]=15;row[46]=1;row[68]=UINT32_MAX;
+    // Column 46 is the range index; casting interruption is a separate field.
+    // Without it the fixture imports interruptFlags=0 and the movement
+    // interruption this file asserts could never fire. Name the column through
+    // the shipping constant so a layout correction reaches the fixture too.
+    row[spell335::InterruptFlags]=1; // Stop the cast when the caster moves.
     row[71]=6;row[74]=3;row[77]=bits(2);row[80]=9;row[86]=21;row[95]=8;row[98]=1000;
     return row;
 }
@@ -48,12 +53,26 @@ static LocalSpellImport imported() {
 static LocalRealmPlayer player(uint64_t guid) {
     LocalRealmPlayer p;p.guid=guid;p.name="Healing fixture";p.classId=5;p.level=8;
     p.x=p.y=p.z=0;p.health=10;p.maxHealth=1000;p.mana=p.maxMana=100000;
-    p.regenerationTimer=-10000; // isolate spell healing from the independent regeneration system
     for(uint32_t id=900001;id<=900018;++id)p.knownSpells.push_back(id);
     return p;
 }
 static void advance(LocalGameplay& game,const std::vector<LocalRealmPlayer*>& players,unsigned milliseconds) {
-    while(milliseconds) {const auto step=std::min(milliseconds,250u);game.tick(float(step)/1000,players);milliseconds-=step;}
+    while(milliseconds) {
+        // Isolate spell healing from the independent regeneration system: its
+        // two-second health cadence never completes while every player's
+        // accumulator is held below one whole tick.
+        for(auto* p:players)p->regenerationTickMs=0;
+        // Frame sizes have to be exactly representable as float seconds: x/1000
+        // is dyadic only when 125 divides x, so a tail step like float(249)/1000
+        // is really 248.99999797ms. The engine banks the shortfall in its
+        // sub-millisecond remainder rather than losing it, so the requested
+        // window still ends one whole millisecond short and a periodic tick that
+        // should land on the boundary silently does not. Quarter seconds for the
+        // bulk, one-millisecond frames for the tail - 0.001f rounds up, so N of
+        // them deliver exactly N milliseconds.
+        const auto step=milliseconds>=250?250u:1u;
+        game.tick(float(step)/1000,players);milliseconds-=step;
+    }
 }
 struct Fixture {
     LocalGameplay game;
@@ -69,7 +88,13 @@ struct Fixture {
 static void testImportAndTicks() {
     Fixture f;const auto* spell=f.game.content().spell(900001);assert(spell);
     assert(spell->unsupportedReason.empty() && spell->periodicHeal==10 && spell->periodicHealMax==12);
-    assert(spell->periodicHealPerLevel==2 && spell->baseLevel==2 && spell->maxLevel==6);
+    // The fixture's row sets column 39 (SpellLevel) to 2 and leaves column 38
+    // (BaseLevel) at 0. previously the importer read column 39 into baseLevel,
+    // so this asserted baseLevel == 2; since the implementation each column lands in its own
+    // field and both are checked here. The scaled amounts below are unchanged,
+    // because SpellEffectInfo::CalcValue (SpellInfo.cpp:414-431) subtracts
+    // max(BaseLevel, SpellLevel), which is this row's 2 either way.
+    assert(spell->periodicHealPerLevel==2 && spell->baseLevel==0 && spell->spellLevel==2 && spell->maxLevel==6);
     assert(spell->durationMs==3000 && spell->periodicIntervalMs==1000 && spell->range==30);
     assert(spell->supercededBySpell==900002 && spell->allowableClasses==(1u<<4));
     for(uint32_t id=900005;id<=900009;++id)assert(!f.game.content().spell(id));
@@ -85,13 +110,20 @@ static void testRefreshAndRanks() {
     Fixture f;assert(f.cast());advance(f.game,f.players,500);assert(f.cast());
     advance(f.game,f.players,500);assert(f.target.health==10);
     advance(f.game,f.players,500);assert(f.target.health==29);
-    assert(f.cast(900002));const auto money=f.caster.mana,revision=f.caster.castRevision;
-    assert(!f.cast(900001));assert(f.caster.mana==money && f.caster.castRevision==revision);
-    advance(f.game,f.players,1000);assert(f.target.health==50); // upgraded rank replaces the previous aura
+    assert(f.cast(900002));
+    advance(f.game,f.players,1000);assert(f.target.health==50); // upgraded rank replaces the previous aura (one aura: rank 2's 21)
+    // the implementation (P04 competing auras): the lower rank cast back over the higher
+    // one REPLACES it as well - Aura::CanStackWith -> IsRankOf -> false ->
+    // RemoveOwnedAuras (SpellAuras.cpp:2160-2177); the reference has no rank
+    // comparison and no "downgrade" refusal. This fixture used to assert the
+    // build's own atomic refusal, which had no source, and was rewritten.
+    const auto money=f.caster.mana,revision=f.caster.castRevision;
+    assert(f.cast(900001));assert(f.caster.mana<money && f.caster.castRevision!=revision);
+    advance(f.game,f.players,1000);assert(f.target.health==69); // one aura again, rank 1's 19
     auto second=player(3);f.players.push_back(&second);
     assert(f.game.execute(second,{LocalAction::CastSpell,f.target.guid,900002},f.players,f.result));
-    advance(f.game,f.players,1000);assert(f.target.health==92); // separate casters retain their own effects
-    std::cout<<"PASS HoT refresh/ranks: recast resets timer, source-linked upgrade replaces, downgrade rejection is atomic, independent casters\n";
+    advance(f.game,f.players,1000);assert(f.target.health==109); // separate casters retain their own effects: 19 + 21
+    std::cout<<"PASS HoT refresh/ranks: recast resets timer, source-linked upgrade replaces, the downgrade replaces too (SpellAuras.cpp:2160-2177), independent casters\n";
 }
 static void testRejectionAndInterruption() {
     Fixture f;const auto resource=f.caster.mana;
@@ -100,7 +132,12 @@ static void testRejectionAndInterruption() {
     std::array<uint32_t,12> raceFactions{};raceFactions[1]=1;raceFactions[2]=2;
     assert(f.game.setFactionTemplates({friendly,enemy},raceFactions,f.result));
     f.target.race=2;assert(!f.cast());f.target.race=1;
-    f.target.x=31;assert(!f.cast());f.target.x=0;
+    // the implementation (P05-5): Spell::CheckRange adds both units' combat reach
+    // (Unit::IsWithinCombatRange, Unit.cpp:766-780), so a 30 yd friendly row
+    // reaches 30 + 1.5 + 1.5 = 33 yd between two players. This fixture asserted
+    // a refusal at 31 yd, which was the reach-blind behaviour; the refusal is
+    // now measured just past the reference's own maximum.
+    f.target.x=34;assert(!f.cast());f.target.x=0;
     f.target.mapId=1;assert(!f.cast());f.target.mapId=0;
     f.target.instanceId=1;assert(!f.cast());f.target.instanceId=0;
     f.target.dead=true;assert(!f.cast());f.target.dead=false;

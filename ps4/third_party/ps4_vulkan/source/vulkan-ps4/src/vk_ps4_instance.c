@@ -103,7 +103,7 @@ vk_ps4_CreateInstance(
     phys->features.multiViewport = VK_TRUE;
     phys->features.samplerAnisotropy = VK_TRUE;
     phys->features.textureCompressionBC = VK_TRUE;
-    phys->features.occlusionQueryPrecise = VK_TRUE;
+    phys->features.occlusionQueryPrecise = VK_FALSE; /* bundled query helper writes zero, not ZPASS */
     phys->features.pipelineStatisticsQuery = VK_FALSE;
     phys->features.vertexPipelineStoresAndAtomics = VK_TRUE;
     phys->features.fragmentStoresAndAtomics = VK_TRUE;
@@ -245,8 +245,10 @@ vk_ps4_CreateInstance(
 
     /* Missing required limits — spec minimums / feature consistency */
     l->maxSampleMaskWords = 1;
-    l->timestampComputeAndGraphics = VK_TRUE;  /* queue reports timestampValidBits=64 */
-    l->timestampPeriod = 1.0f;                  /* ns per timestamp tick */
+    /* No sourced clock period, counter width or stage contract is available
+     * for the bundled GNM timestamp selector. Do not manufacture nanoseconds. */
+    l->timestampComputeAndGraphics = VK_FALSE;
+    l->timestampPeriod = 0.0f; /* unsupported; every queue reports zero valid bits */
     l->maxClipDistances = 8;                     /* shaderClipDistance = VK_TRUE */
     l->maxCullDistances = 8;                     /* shaderCullDistance = VK_TRUE */
     l->maxCombinedClipAndCullDistances = 8;
@@ -345,7 +347,7 @@ vk_ps4_GetPhysicalDeviceQueueFamilyProperties(
             pQueueFamilyProperties[0].queueFlags =
                 VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT;
             pQueueFamilyProperties[0].queueCount = 1;
-            pQueueFamilyProperties[0].timestampValidBits = 64;
+            pQueueFamilyProperties[0].timestampValidBits = 0;
             pQueueFamilyProperties[0].minImageTransferGranularity = (VkExtent3D){1, 1, 1};
         }
         return;
@@ -354,7 +356,7 @@ vk_ps4_GetPhysicalDeviceQueueFamilyProperties(
     pQueueFamilyProperties[0].queueFlags =
         VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT;
     pQueueFamilyProperties[0].queueCount = 1;
-    pQueueFamilyProperties[0].timestampValidBits = 64;
+    pQueueFamilyProperties[0].timestampValidBits = 0;
     pQueueFamilyProperties[0].minImageTransferGranularity = (VkExtent3D){1, 1, 1};
 
     /* Family 1: Compute + Transfer (async compute queue).
@@ -365,7 +367,7 @@ vk_ps4_GetPhysicalDeviceQueueFamilyProperties(
     pQueueFamilyProperties[1].queueFlags =
         VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT;
     pQueueFamilyProperties[1].queueCount = 1;
-    pQueueFamilyProperties[1].timestampValidBits = 64;
+    pQueueFamilyProperties[1].timestampValidBits = 0;
     pQueueFamilyProperties[1].minImageTransferGranularity = (VkExtent3D){1, 1, 1};
 
     *pQueueFamilyPropertyCount = VK_PS4_NUM_QUEUE_FAMILIES;

@@ -1,4 +1,6 @@
 #include "ui/settings_schema.hpp"
+#include "rendering/volumetric_fog_intensity.hpp"
+#include "rendering/bloom_settings.hpp"
 
 #include "ui/graphics_defaults.hpp"
 #include "ui/interface_layout.hpp"
@@ -90,16 +92,9 @@ constexpr SettingDesc kSchema[] = {
     {"antialiasing", "Multisampling", SettingKind::Enum, 0, 3, 1, "Graphics", "Anti-aliasing",
      "Costs memory as well as time, and has no effect while FSR 3 is\n"
      "upscaling - FSR does its own.",
-     "Off|2x MSAA|4x MSAA|8x MSAA", 1, "upscaling!=2"},
-    // Two, not off, and not four.
-    //
-    // Off was the right default for the hardware this game shipped on, and it
-    // left a fresh install with no anti-aliasing of any kind - no
-    // multisampling, FXAA off, upscaling off. Nothing that can run this
-    // renderer at all is troubled by 2x over geometry this light. Not 4x or 8x
-    // because the memory is the part that still costs, and an integrated GPU
-    // driving a high resolution display is a real case; the panel offers both
-    // to anyone who wants them.
+     "Off|2x MSAA|4x MSAA|8x MSAA", kDefaultAntiAliasing, "upscaling!=2"},
+    // PS4 defaults to single sampling so the world can use its 720p target.
+    // Other platforms retain 2x; explicitly saved choices take precedence.
     {"fxaa", "FXAA", SettingKind::Bool, 0, 0, 0, "Graphics", "",
      "Smooths edges after everything else is drawn. Cheap, slightly soft,\n"
      "and can be used together with MSAA or FSR.", "", 0},
@@ -135,11 +130,30 @@ constexpr SettingDesc kSchema[] = {
      "How many steps each surface is traced with: 16, 32 or 64.",
      "Low|Medium|High", 1, "parallax"},
 
-    // Carries the Sky heading now. It used to sit under the sun-ray row, and
-    // when that row was retired the heading went with it - leaving the flare
-    // and the stars filed under Surfaces, which is where the row above them
-    // happens to be rather than where they belong.
-    {"lensflare", "Lens flare", SettingKind::Float, 0, 2, 0.1f, "Effects", "Sky",
+    {"volumetricquality", "Volumetric quality", SettingKind::Enum, 0, 2, 1, "Lighting", "Sky",
+     "Quality of three-dimensional mist and light shafts. Low costs less.\n"
+     "Requires Multisampling Off and FSR 3 Off. Shafts also require shadows.", "Off|Low|High", rendering::kDefaultVolumetricQuality},
+    {"volumetricraysenabled", "Sun / moon rays", SettingKind::Bool, 0, 0, 0, "Lighting", "Sky",
+     "Show directional shafts in the air. Requires shadows and Volumetric quality Low or High. Turning these off keeps fog available.", "", 1},
+    {"volumetricintensity", "Light shaft intensity", SettingKind::Float, 0, 2, 0.05f, "Lighting", "Sky",
+     "Strength of shadowed sun and moon shafts.\nZero disables shafts. Does not brighten surfaces or halos.",
+     "", 1.35f, "volumetricraysenabled"},
+    {"volumetricfogenabled", "Volumetric fog", SettingKind::Bool, 0, 0, 0, "Lighting", "Sky",
+     "Show three-dimensional mist. Turning this off keeps light shafts available.", "", 1},
+    {"volumetricfogintensity", "Fog density", SettingKind::Float, 0, 1, 0.05f, "Lighting", "Sky",
+     "Density of the three-dimensional mist. Off removes mist while keeping light shafts.\n"
+     "Requires Volumetric quality Low or High and its rendering requirements.", "", rendering::kDefaultVolumetricFogIntensity, "volumetricfogenabled"},
+    {"volumetricdebug", "Lighting inspection", SettingKind::Enum, 0, 4, 1, "Effects", "Sky",
+     "Show lighting buffers to identify a rendering problem. Normal restores the game view.\n"
+     "Depth and scattering views require rays enabled. Surface shadow factor requires shadows.\n"
+     "Surface shadow: black blocked, white lit, magenta skipped or disabled.\n"
+     "Use Normal for playing. Restarts reset inspection to Normal.",
+     "Normal|Linear scene depth|Shadow depth|Scattering|Surface shadow factor", 0},
+    {"bloomenabled", "Bloom", SettingKind::Bool, 0, 0, 0, "Lighting", "Glow",
+     "Soft glow around bright light sources. Independent of shafts and fog.", "", rendering::kDefaultBloomEnabled},
+    {"bloomintensity", "Bloom intensity", SettingKind::Float, 0, 1, 0.05f, "Lighting", "Glow",
+     "Strength of the glow around bright areas.", "", rendering::kDefaultBloomIntensity, "bloomenabled"},
+    {"lensflare", "Lens flare", SettingKind::Float, 0, 2, 0.1f, "Effects", "",
      "How strong the sun's flare is. It warms toward amber as the sun nears\n"
      "the horizon, which is the dawn and dusk look; 0 turns it off entirely.",
      "", 1.0f},

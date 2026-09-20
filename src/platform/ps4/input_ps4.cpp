@@ -761,8 +761,10 @@ void pumpInput() {
 
 const MouseState& mouseState() { return s_mouse; }
 
+bool inputCameraLooking() { return s_relativeMode || s_lookEngaged; }
+
 bool inputCursorVisible() {
-    if (s_relativeMode || s_lookEngaged) return false;
+    if (inputCameraLooking()) return false;
     return !s_inWorld || s_cursorMode || s_textFocus || s_uiFocus || s_menuOwners || s_applicationKeyboardOpen;
 }
 

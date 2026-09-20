@@ -45,9 +45,12 @@ struct WaterPushConstants {
     float liquidBasicType; // 0=water, 1=ocean, 2=magma, 3=slime
     glm::vec2 screenSize;  // target size, for screen-space UVs
     glm::vec2 depthRange;  // camera near, far - the shader linearises SceneDepth with these
+    glm::vec2 captureValid; // explicit scene/reflection availability, never infer from brightness
 };
 
 
+
+static_assert(sizeof(WaterPushConstants) == 104, "Water shader push ABI");
 
 WaterRenderer::WaterRenderer() = default;
 
@@ -1273,6 +1276,8 @@ void WaterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
         // how the two came to disagree: the shader linearised the depth buffer
         // against a near plane of 0.05 while the camera's is 0.5.
         push.depthRange = glm::vec2(camera.getNearPlane(), camera.getFarPlane());
+        push.captureValid = glm::vec2(refractionEnabled && sceneHistoryReady ? 1.0f : 0.0f,
+                                     reflectionReady ? 1.0f : 0.0f);
 
         vkCmdPushConstants(cmd, pipelineLayout,
                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -1287,6 +1292,10 @@ void WaterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
 
         vkCmdDrawIndexed(cmd, static_cast<uint32_t>(surface.indexCount), 1, 0, 0, 0);
     }
+    // Consume captures: skipped/disabled next-frame passes must not reuse stale
+    // camera projections or a different scene-history frame slot.
+    sceneHistoryReady = false;
+    reflectionReady = false;
 }
 
 void WaterRenderer::captureSceneHistory(VkCommandBuffer cmd,
@@ -1297,6 +1306,7 @@ void WaterRenderer::captureSceneHistory(VkCommandBuffer cmd,
                                         uint32_t frameIndex) {
     uint32_t fi = frameIndex % SCENE_HISTORY_FRAMES;
     auto& sh = sceneHistory[fi];
+    sceneHistoryReady = false;
     if (!vkCtx || !cmd || !sh.sceneSet || !sh.colorImage || !sh.depthImage || srcExtent.width == 0 || srcExtent.height == 0) {
         return;
     }
@@ -1929,6 +1939,7 @@ void WaterRenderer::destroyReflectionResources() {
         reflectionUBOMapped = nullptr;
     }
     reflectionColorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    reflectionReady = false;
 }
 
 // ==============================================================
@@ -1963,6 +1974,9 @@ bool WaterRenderer::beginReflectionPass(VkCommandBuffer cmd) {
 void WaterRenderer::endReflectionPass(VkCommandBuffer cmd) {
     if (!cmd) return;
     vkCmdEndRenderPass(cmd);
+    // Renderer skips scene reflection drawing when MSAA pipelines cannot
+    // match this 1x pass. A clear-only black target is not a captured sky.
+    reflectionReady = vkCtx && vkCtx->getMsaaSamples() == VK_SAMPLE_COUNT_1_BIT;
     reflectionColorLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     // Update only the current frame's scene descriptor set with the reflection texture.
@@ -1989,6 +2003,7 @@ void WaterRenderer::endReflectionPass(VkCommandBuffer cmd) {
 }
 
 void WaterRenderer::updateReflectionUBO(const glm::mat4& reflViewProj) {
+    reflectionReady = false; // a new projection must not sample the previous capture
     frameUBO_.reflViewProj = reflViewProj;
     uploadFrameUBO();
 }

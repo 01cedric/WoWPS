@@ -1,4 +1,5 @@
 #include "rendering/celestial.hpp"
+#include "rendering/celestial_lighting.hpp"
 #include "rendering/vk_context.hpp"
 #include "rendering/vk_shader.hpp"
 #include "rendering/vk_pipeline.hpp"
@@ -121,10 +122,9 @@ void Celestial::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
         return;
     }
 
-    // Update moon phases from server game time if provided
-    if (gameTime >= 0.0f) {
-        updatePhasesFromGameTime(gameTime);
-    }
+    // This input is hours since midnight, not elapsed seconds or a date.
+    // Decorative phase cycling runs once in update(), never once per view.
+    (void)gameTime;
 
     // Bind pipeline and per-frame descriptor set once - reused for all draws
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
@@ -138,9 +138,9 @@ void Celestial::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
 
     // Draw sun, then moon(s) - each call pushes different constants
     renderSun(cmd, perFrameSet, timeOfDay, sunDir, sunColor);
-    renderMoon(cmd, perFrameSet, timeOfDay, nightFactor);
+    renderMoon(cmd, perFrameSet, timeOfDay, nightFactor, sunDir, sunColor);
     if (dualMoonMode_) {
-        renderBlueChild(cmd, perFrameSet, timeOfDay, nightFactor);
+        renderBlueChild(cmd, perFrameSet, timeOfDay, nightFactor, sunDir, sunColor);
     }
 }
 
@@ -151,17 +151,10 @@ void Celestial::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
 void Celestial::renderSun(VkCommandBuffer cmd, VkDescriptorSet /*perFrameSet*/,
                            float timeOfDay,
                            const glm::vec3* sunDir, const glm::vec3* sunColor) {
-    // Sun visible 5:00–19:00
-    if (timeOfDay < 5.0f || timeOfDay >= 19.0f) {
-        return;
-    }
-
-    // Resolve sun direction - prefer opposite of incoming light ray, clamp below horizon
-    glm::vec3 lightDir = sunDir ? glm::normalize(*sunDir) : glm::vec3(0.0f, 0.0f, -1.0f);
-    glm::vec3 dir = -lightDir;
-    if (dir.z < 0.0f) {
-        dir = lightDir;
-    }
+    const glm::vec3 lightDir = celestialSolarTravelDirection(
+        sunDir ? *sunDir : glm::vec3(0.0f), timeOfDay);
+    const glm::vec3 dir = -lightDir;
+    if (dir.z <= 0.0f) return;
 
     const float sunDistance = 800.0f;
     glm::vec3 sunPos = dir * sunDistance;
@@ -170,10 +163,8 @@ void Celestial::renderSun(VkCommandBuffer cmd, VkDescriptorSet /*perFrameSet*/,
     model = glm::translate(model, sunPos);
     model = glm::scale(model, glm::vec3(95.0f, 95.0f, 1.0f));
 
-    glm::vec3 color = sunColor ? *sunColor : getSunColor(timeOfDay);
-    const glm::vec3 warmSun(1.0f, 0.88f, 0.55f);
-    color = glm::mix(color, warmSun, 0.52f);
-    float intensity = getSunIntensity(timeOfDay) * 0.92f;
+    const glm::vec3 color = celestialDiscColor(sunColor ? *sunColor : getSunColor(timeOfDay));
+    const float intensity = celestialDiscStrength(lightDir, false) * 0.92f;
 
     CelestialPush push{};
     push.model          = model;
@@ -190,32 +181,22 @@ void Celestial::renderSun(VkCommandBuffer cmd, VkDescriptorSet /*perFrameSet*/,
 }
 
 void Celestial::renderMoon(VkCommandBuffer cmd, VkDescriptorSet /*perFrameSet*/,
-                            float timeOfDay, float nightFactor) {
-    // Moon (White Lady) visible 19:00–5:00
-    if (timeOfDay >= 5.0f && timeOfDay < 19.0f) {
-        return;
-    }
-    // Scale by actual sky darkness - the DBC sky can stay daylight-bright
-    // well past 19:00, and a full-brightness moon on a blue sky reads as a
-    // second sun.
-    if (nightFactor < 0.01f) {
-        return;
-    }
-
-    glm::vec3 moonPos = getMoonPosition(timeOfDay);
+                            float timeOfDay, float nightFactor, const glm::vec3* sunDir, const glm::vec3* sunColor) {
+    // The primary moon is opposite the same resolved sun vector used for
+    // world lighting. A separately animated x/z orbit previously disagreed
+    // with every tree shadow and every volumetric ray at night.
+    const glm::vec3 moonDir = celestialSolarTravelDirection(
+        sunDir ? *sunDir : glm::vec3(0.0f), timeOfDay);
+    if (nightFactor < 0.01f || moonDir.z <= 0.0f) return;
+    const glm::vec3 moonPos = moonDir * 800.0f;
 
     glm::mat4 model = glm::mat4(1.0f);
     model = glm::translate(model, moonPos);
     model = glm::scale(model, glm::vec3(40.0f, 40.0f, 1.0f));
 
-    glm::vec3 color = glm::vec3(0.8f, 0.85f, 1.0f);
+    glm::vec3 color = celestialDiscColor(sunColor ? *sunColor : glm::vec3(0.8f, 0.85f, 1.0f));
 
-    float intensity = nightFactor;
-    if (timeOfDay >= 19.0f && timeOfDay < 21.0f) {
-        intensity *= (timeOfDay - 19.0f) / 2.0f; // Fade in
-    } else if (timeOfDay >= 3.0f && timeOfDay < 5.0f) {
-        intensity *= 1.0f - (timeOfDay - 3.0f) / 2.0f; // Fade out
-    }
+    float intensity = glm::clamp(nightFactor, 0.0f, 1.0f) * celestialDiscStrength(moonDir, true);
 
     CelestialPush push{};
     push.model          = model;
@@ -232,17 +213,12 @@ void Celestial::renderMoon(VkCommandBuffer cmd, VkDescriptorSet /*perFrameSet*/,
 }
 
 void Celestial::renderBlueChild(VkCommandBuffer cmd, VkDescriptorSet /*perFrameSet*/,
-                                 float timeOfDay, float nightFactor) {
-    // Blue Child visible 19:00–5:00
-    if (timeOfDay >= 5.0f && timeOfDay < 19.0f) {
-        return;
-    }
-    if (nightFactor < 0.01f) {
-        return;
-    }
-
-    // Offset slightly from White Lady
-    glm::vec3 moonPos = getMoonPosition(timeOfDay);
+                                 float timeOfDay, float nightFactor, const glm::vec3* sunDir, const glm::vec3* sunColor) {
+    const glm::vec3 moonDir = celestialSolarTravelDirection(
+        sunDir ? *sunDir : glm::vec3(0.0f), timeOfDay);
+    if (nightFactor < 0.01f || moonDir.z <= 0.0f) return;
+    // The secondary moon remains decorative; one shadow map uses White Lady.
+    glm::vec3 moonPos = moonDir * 800.0f;
     moonPos.x += 80.0f;
     moonPos.z -= 40.0f;
 
@@ -250,15 +226,9 @@ void Celestial::renderBlueChild(VkCommandBuffer cmd, VkDescriptorSet /*perFrameS
     model = glm::translate(model, moonPos);
     model = glm::scale(model, glm::vec3(30.0f, 30.0f, 1.0f));
 
-    glm::vec3 color = glm::vec3(0.7f, 0.8f, 1.0f);
+    glm::vec3 color = celestialDiscColor(sunColor ? *sunColor : glm::vec3(0.7f, 0.8f, 1.0f));
 
-    float intensity = nightFactor;
-    if (timeOfDay >= 19.0f && timeOfDay < 21.0f) {
-        intensity *= (timeOfDay - 19.0f) / 2.0f;
-    } else if (timeOfDay >= 3.0f && timeOfDay < 5.0f) {
-        intensity *= 1.0f - (timeOfDay - 3.0f) / 2.0f;
-    }
-    intensity *= 0.7f; // Blue Child is dimmer
+    float intensity = 0.7f * glm::clamp(nightFactor, 0.0f, 1.0f) * celestialDiscStrength(moonDir, true);
 
     CelestialPush push{};
     push.model          = model;
@@ -279,23 +249,11 @@ void Celestial::renderBlueChild(VkCommandBuffer cmd, VkDescriptorSet /*perFrameS
 // ---------------------------------------------------------------------------
 
 glm::vec3 Celestial::getSunPosition(float timeOfDay) const {
-    float angle = calculateCelestialAngle(timeOfDay, 6.0f, 18.0f);
-    const float radius = 800.0f;
-    const float height = 600.0f;
-    float x = radius * std::cos(angle);
-    float z = height * std::sin(angle);
-    return glm::vec3(x, 0.0f, z);
+    return -sunTravelDirection(timeOfDay / 24.0f) * 800.0f;
 }
 
 glm::vec3 Celestial::getMoonPosition(float timeOfDay) const {
-    float moonTime = timeOfDay + 12.0f;
-    if (moonTime >= 24.0f) moonTime -= 24.0f;
-    float angle = calculateCelestialAngle(moonTime, 6.0f, 18.0f);
-    const float radius = 800.0f;
-    const float height = 600.0f;
-    float x = radius * std::cos(angle);
-    float z = height * std::sin(angle);
-    return glm::vec3(x, 0.0f, z);
+    return sunTravelDirection(timeOfDay / 24.0f) * 800.0f;
 }
 
 glm::vec3 Celestial::getSunColor(float timeOfDay) const {
@@ -317,23 +275,7 @@ glm::vec3 Celestial::getSunColor(float timeOfDay) const {
 }
 
 float Celestial::getSunIntensity(float timeOfDay) const {
-    if (timeOfDay >= 5.0f && timeOfDay < 6.0f) {
-        return timeOfDay - 5.0f;          // Fade in
-    }
-    if (timeOfDay >= 6.0f && timeOfDay < 18.0f) {
-        return 1.0f;                       // Full day
-    }
-    if (timeOfDay >= 18.0f && timeOfDay < 19.0f) {
-        return 1.0f - (timeOfDay - 18.0f); // Fade out
-    }
-    return 0.0f;
-}
-
-float Celestial::calculateCelestialAngle(float timeOfDay, float riseTime, float setTime) const {
-    float duration = setTime - riseTime;
-    float elapsed  = timeOfDay - riseTime;
-    float t = elapsed / duration;
-    return t * static_cast<float>(M_PI);
+    return celestialDiscStrength(sunTravelDirection(timeOfDay / 24.0f), false);
 }
 
 // ---------------------------------------------------------------------------
@@ -353,27 +295,14 @@ void Celestial::update(float deltaTime) {
         return;
     }
 
-    moonPhaseTimer_ += deltaTime;
-    whiteLadyPhase_ = std::fmod(moonPhaseTimer_ / MOON_CYCLE_DURATION, 1.0f);
+    moonPhaseTimer_ += std::max(deltaTime, 0.0f);
+    whiteLadyPhase_ = animatedMoonPhase(0.5f, moonPhaseTimer_, MOON_CYCLE_DURATION);
 
     constexpr float BLUE_CHILD_CYCLE = 210.0f; // Slightly faster: 3.5 minutes
-    blueChildPhase_ = std::fmod(moonPhaseTimer_ / BLUE_CHILD_CYCLE, 1.0f);
+    blueChildPhase_ = animatedMoonPhase(0.25f, moonPhaseTimer_, BLUE_CHILD_CYCLE);
 }
 void Celestial::setBlueChildPhase(float phase) {
     blueChildPhase_ = glm::clamp(phase, 0.0f, 1.0f);
-}
-
-float Celestial::computePhaseFromGameTime(float gameTime, float cycleDays) const {
-    constexpr float SECONDS_PER_GAME_DAY = 1440.0f; // 24 real minutes
-    float gameDays = gameTime / SECONDS_PER_GAME_DAY;
-    float phase    = std::fmod(gameDays / cycleDays, 1.0f);
-    if (phase < 0.0f) phase += 1.0f;
-    return phase;
-}
-
-void Celestial::updatePhasesFromGameTime(float gameTime) {
-    whiteLadyPhase_ = computePhaseFromGameTime(gameTime, WHITE_LADY_CYCLE_DAYS);
-    blueChildPhase_ = computePhaseFromGameTime(gameTime, BLUE_CHILD_CYCLE_DAYS);
 }
 
 // ---------------------------------------------------------------------------

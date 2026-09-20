@@ -329,8 +329,8 @@
   "Talent": {
     "Column": 3,
     "ID": 0,
-    "PrereqRank0": 12,
-    "PrereqTalent0": 9,
+    "PrereqRank0": 16,
+    "PrereqTalent0": 13,
     "RankSpell0": 4,
     "Row": 2,
     "TabID": 1

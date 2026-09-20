@@ -1814,6 +1814,15 @@ void GameScreen::saveSettings() {
     // back at the next login with the control still reading Off - which is the
     // fault test_settings_apply_on_load exists to catch.
     out << "shadow_quality=" << settingsPanel_.pendingShadowQuality << "\n";
+    out << "volumetric_quality=" << settingsPanel_.pendingVolumetricQuality << "\n";
+    out << "volumetric_fog_intensity=" << rendering::clampVolumetricFogIntensity(settingsPanel_.pendingVolumetricFogIntensity) << "\n";
+    out << "volumetric_rays_enabled=" << (settingsPanel_.pendingVolumetricRaysEnabled ? 1 : 0) << "\n";
+    out << "volumetric_fog_enabled=" << (settingsPanel_.pendingVolumetricFogEnabled ? 1 : 0) << "\n";
+    out << "bloom_enabled=" << (settingsPanel_.pendingBloomEnabled ? 1 : 0) << "\n";
+    out << "bloom_intensity=" << rendering::clampBloomIntensity(settingsPanel_.pendingBloomIntensity) << "\n";
+    out << "volumetric_intensity=" << rendering::clampVolumetricIntensity(settingsPanel_.pendingVolumetricIntensity) << "\n";
+    // Inspection is session-only: restarting must always restore the game view.
+    out << "volumetric_debug=0\n";
     out << "water_reflections=" << (settingsPanel_.pendingWaterReflections ? 1 : 0) << "\n";
     out << "frame_cap=" << settingsPanel_.pendingFrameCap << "\n";
     out << "pom=" << (settingsPanel_.pendingPOM ? 1 : 0) << "\n";
@@ -2072,6 +2081,20 @@ void GameScreen::loadSettings() {
             else if (key == "lens_flare") settingsPanel_.pendingLensFlare = std::clamp(std::stof(val), 0.0f, 2.0f);
             else if (key == "shadow_quality") settingsPanel_.pendingShadowQuality =
                 std::clamp(std::stoi(val), 0, static_cast<int>(rendering::kShadowQualityMaxLevel));
+            else if (key == "volumetric_quality") settingsPanel_.pendingVolumetricQuality =
+                std::clamp(std::stoi(val), 0, 2);
+            else if (key == "volumetric_fog_intensity") settingsPanel_.pendingVolumetricFogIntensity =
+                rendering::clampVolumetricFogIntensity(std::stof(val));
+            else if (key == "volumetric_rays_enabled") settingsPanel_.pendingVolumetricRaysEnabled = (std::stoi(val) != 0);
+            else if (key == "volumetric_fog_enabled") settingsPanel_.pendingVolumetricFogEnabled = (std::stoi(val) != 0);
+            else if (key == "bloom_enabled") settingsPanel_.pendingBloomEnabled = (std::stoi(val) != 0);
+            else if (key == "bloom_intensity") settingsPanel_.pendingBloomIntensity = rendering::clampBloomIntensity(std::stof(val));
+            else if (key == "volumetric_intensity") settingsPanel_.pendingVolumetricIntensity =
+                rendering::clampVolumetricIntensity(std::stof(val));
+            else if (key == "volumetric_debug") {
+                // Ignore old persisted diagnostics, including malformed values.
+                // Keep an explicit current-session choice on a settings reload.
+            }
             else if (key == "water_reflections") settingsPanel_.pendingWaterReflections = val != "0";
             else if (key == "frame_cap") settingsPanel_.pendingFrameCap = std::clamp(std::stoi(val), 0, 6);
             else if (key == "pom") settingsPanel_.pendingPOM = (std::stoi(val) != 0);

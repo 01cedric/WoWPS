@@ -605,6 +605,14 @@ void SpellVisualSystem::update(float deltaTime) {
     }
 }
 
+void SpellVisualSystem::synchronizePrecastRemaining(uint32_t attachInstanceId, uint32_t remainingMs) {
+    if (!attachInstanceId) return;
+    const auto remaining = float(std::min(remainingMs, 60000u)) / 1000.0f;
+    for (auto& effect : activeSpellVisuals_)
+        if (effect.isPrecast && effect.attachInstanceId == attachInstanceId)
+            effect.duration = effect.elapsed + remaining;
+}
+
 void SpellVisualSystem::cancelAllPrecastVisuals() {
     if (!m2Renderer_) return;
     for (auto it = activeSpellVisuals_.begin(); it != activeSpellVisuals_.end(); ) {

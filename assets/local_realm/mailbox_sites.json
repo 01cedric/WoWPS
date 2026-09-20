@@ -1,0 +1,585 @@
+{
+  "repository": "https://github.com/azerothcore/azerothcore-wotlk",
+  "commit": "4e80596cdaa21fa31830522f6f2d7ed8750bfffd",
+  "license": "LICENSE-AC-GPL-2.0.txt",
+  "source_sha256": {
+    "gameobject": "3e5713c2a0fa480c82b1753bfea6f1b94a4dec4f29a052ba979c049915a90a42",
+    "gameobject_template": "5878b10d2ad512f9385be22a44e6f62f45fb59b7cca0187c13a64e2d14c79140"
+  },
+  "selection": "Explicit bank/auction service-district authored mailbox subset; coordinates unchanged. Nearby NPCs identify service district, not certified doorway geometry. No synthetic innkeeper offsets or starter hubs.",
+  "sites": [
+    {
+      "guid": 100156,
+      "id": 195603,
+      "map": 0,
+      "zoneid": 0,
+      "areaid": 0,
+      "spawnmask": 1,
+      "phasemask": 1,
+      "position_x": -8815.17,
+      "position_y": 652.927,
+      "position_z": 94.8966,
+      "orientation": 4.8782,
+      "rotation0": 0,
+      "rotation1": 0,
+      "rotation2": -0.646124,
+      "rotation3": 0.763233,
+      "spawntimesecs": 120,
+      "animprogress": 255,
+      "state": 1,
+      "scriptname": "",
+      "verifiedbuild": 48632,
+      "comment": null,
+      "site": "Stormwind auction house",
+      "nearby_services": [
+        {
+          "distance": 7.63,
+          "entry": 15659,
+          "name": "Auctioneer Jaxon",
+          "subname": null
+        },
+        {
+          "distance": 9.77,
+          "entry": 8719,
+          "name": "Auctioneer Fitch",
+          "subname": null
+        },
+        {
+          "distance": 15.91,
+          "entry": 8670,
+          "name": "Auctioneer Chilton",
+          "subname": null
+        }
+      ],
+      "placement_evidence": "Same original GO position at AC2020 commit0858526c9a678e90ffa830182c25434b36fee2c5; auctioneer Jaxon7.63m, innkeeperAllison56.6m; lower elevation than counter supports exterior approach, not geometry certification."
+    },
+    {
+      "guid": 10107,
+      "id": 173221,
+      "map": 1,
+      "zoneid": 0,
+      "areaid": 0,
+      "spawnmask": 1,
+      "phasemask": 1,
+      "position_x": 1615.58,
+      "position_y": -4391.6,
+      "position_z": 10.335,
+      "orientation": 3.94445,
+      "rotation0": 0,
+      "rotation1": 0,
+      "rotation2": -0.920505,
+      "rotation3": 0.390732,
+      "spawntimesecs": 120,
+      "animprogress": 255,
+      "state": 1,
+      "scriptname": "",
+      "verifiedbuild": 47720,
+      "comment": null,
+      "site": "Orgrimmar bank",
+      "nearby_services": [
+        {
+          "distance": 19.45,
+          "entry": 3318,
+          "name": "Koma",
+          "subname": "Banker"
+        },
+        {
+          "distance": 19.54,
+          "entry": 3309,
+          "name": "Karus",
+          "subname": "Banker"
+        },
+        {
+          "distance": 23.76,
+          "entry": 3320,
+          "name": "Soran",
+          "subname": "Banker"
+        }
+      ]
+    },
+    {
+      "guid": 150747,
+      "id": 195554,
+      "map": 1,
+      "zoneid": 0,
+      "areaid": 0,
+      "spawnmask": 1,
+      "phasemask": 1,
+      "position_x": 1657.87,
+      "position_y": -4433.03,
+      "position_z": 17.4818,
+      "orientation": 5.58505,
+      "rotation0": 0,
+      "rotation1": 0,
+      "rotation2": -0.34202,
+      "rotation3": 0.939693,
+      "spawntimesecs": 120,
+      "animprogress": 255,
+      "state": 1,
+      "scriptname": "",
+      "verifiedbuild": 47720,
+      "comment": null,
+      "site": "Orgrimmar auction house",
+      "nearby_services": [
+        {
+          "distance": 32.37,
+          "entry": 8724,
+          "name": "Auctioneer Wabang",
+          "subname": null
+        },
+        {
+          "distance": 43.31,
+          "entry": 8673,
+          "name": "Auctioneer Thathung",
+          "subname": null
+        },
+        {
+          "distance": 44.31,
+          "entry": 9856,
+          "name": "Auctioneer Grimful",
+          "subname": null
+        },
+        {
+          "distance": 57.32,
+          "entry": 3318,
+          "name": "Koma",
+          "subname": "Banker"
+        },
+        {
+          "distance": 64.86,
+          "entry": 3309,
+          "name": "Karus",
+          "subname": "Banker"
+        }
+      ]
+    },
+    {
+      "guid": 866,
+      "id": 171699,
+      "map": 0,
+      "zoneid": 0,
+      "areaid": 0,
+      "spawnmask": 1,
+      "phasemask": 1,
+      "position_x": -4910.38,
+      "position_y": -976.212,
+      "position_z": 501.408,
+      "orientation": 2.26893,
+      "rotation0": 0,
+      "rotation1": 0,
+      "rotation2": 0.906307,
+      "rotation3": 0.422619,
+      "spawntimesecs": 120,
+      "animprogress": 255,
+      "state": 1,
+      "scriptname": "",
+      "verifiedbuild": 48632,
+      "comment": null,
+      "site": "Ironforge bank",
+      "nearby_services": [
+        {
+          "distance": 32.12,
+          "entry": 2461,
+          "name": "Bailey Stonemantle",
+          "subname": "Banker"
+        },
+        {
+          "distance": 32.15,
+          "entry": 5099,
+          "name": "Soleil Stonemantle",
+          "subname": "Banker"
+        },
+        {
+          "distance": 35.83,
+          "entry": 2460,
+          "name": "Barnum Stonemantle",
+          "subname": "Banker"
+        }
+      ]
+    },
+    {
+      "guid": 20426,
+      "id": 143985,
+      "map": 1,
+      "zoneid": 0,
+      "areaid": 0,
+      "spawnmask": 1,
+      "phasemask": 1,
+      "position_x": -1263.31,
+      "position_y": 44.5451,
+      "position_z": 127.545,
+      "orientation": 4.72984,
+      "rotation0": 0,
+      "rotation1": 0,
+      "rotation2": -0.700909,
+      "rotation3": 0.713251,
+      "spawntimesecs": 120,
+      "animprogress": 255,
+      "state": 1,
+      "scriptname": "",
+      "verifiedbuild": 48632,
+      "comment": null,
+      "site": "Thunder Bluff bank",
+      "nearby_services": [
+        {
+          "distance": 20.56,
+          "entry": 8357,
+          "name": "Atepa",
+          "subname": "Banker"
+        },
+        {
+          "distance": 22.42,
+          "entry": 8356,
+          "name": "Chesmu",
+          "subname": "Banker"
+        },
+        {
+          "distance": 25.64,
+          "entry": 2996,
+          "name": "Torn",
+          "subname": "Banker"
+        },
+        {
+          "distance": 73.48,
+          "entry": 8674,
+          "name": "Auctioneer Stampi",
+          "subname": null
+        }
+      ]
+    },
+    {
+      "guid": 49532,
+      "id": 142110,
+      "map": 1,
+      "zoneid": 0,
+      "areaid": 0,
+      "spawnmask": 1,
+      "phasemask": 1,
+      "position_x": 9943,
+      "position_y": 2497.74,
+      "position_z": 1317.69,
+      "orientation": 3.63029,
+      "rotation0": 0,
+      "rotation1": 0,
+      "rotation2": -0.970295,
+      "rotation3": 0.241925,
+      "spawntimesecs": 120,
+      "animprogress": 255,
+      "state": 1,
+      "scriptname": "",
+      "verifiedbuild": 48632,
+      "comment": null,
+      "site": "Darnassus bank",
+      "nearby_services": [
+        {
+          "distance": 20.76,
+          "entry": 4208,
+          "name": "Lairn",
+          "subname": "Banker"
+        },
+        {
+          "distance": 21.52,
+          "entry": 4209,
+          "name": "Garryeth",
+          "subname": "Banker"
+        },
+        {
+          "distance": 24.15,
+          "entry": 4155,
+          "name": "Idriana",
+          "subname": "Banker"
+        }
+      ]
+    },
+    {
+      "guid": 22851,
+      "id": 182356,
+      "map": 530,
+      "zoneid": 0,
+      "areaid": 0,
+      "spawnmask": 1,
+      "phasemask": 1,
+      "position_x": 9548.13,
+      "position_y": -7263.01,
+      "position_z": 14.1176,
+      "orientation": 4.69494,
+      "rotation0": 0,
+      "rotation1": 0,
+      "rotation2": -0.713249,
+      "rotation3": 0.700911,
+      "spawntimesecs": 120,
+      "animprogress": 255,
+      "state": 1,
+      "scriptname": "",
+      "verifiedbuild": 48632,
+      "comment": null,
+      "site": "Silvermoon bank east side",
+      "nearby_services": [
+        {
+          "distance": 43.44,
+          "entry": 17633,
+          "name": "Hatheon",
+          "subname": "Banker"
+        },
+        {
+          "distance": 47.17,
+          "entry": 17631,
+          "name": "Ceera",
+          "subname": "Banker"
+        },
+        {
+          "distance": 52.8,
+          "entry": 17632,
+          "name": "Elana",
+          "subname": "Banker"
+        }
+      ]
+    },
+    {
+      "guid": 22852,
+      "id": 182357,
+      "map": 530,
+      "zoneid": 0,
+      "areaid": 0,
+      "spawnmask": 1,
+      "phasemask": 1,
+      "position_x": 9515.66,
+      "position_y": -7262.47,
+      "position_z": 14.1913,
+      "orientation": 4.72984,
+      "rotation0": 0,
+      "rotation1": 0,
+      "rotation2": -0.70091,
+      "rotation3": 0.71325,
+      "spawntimesecs": 120,
+      "animprogress": 255,
+      "state": 1,
+      "scriptname": "",
+      "verifiedbuild": 48632,
+      "comment": null,
+      "site": "Silvermoon bank west side",
+      "nearby_services": [
+        {
+          "distance": 40.9,
+          "entry": 17632,
+          "name": "Elana",
+          "subname": "Banker"
+        },
+        {
+          "distance": 41.81,
+          "entry": 17631,
+          "name": "Ceera",
+          "subname": "Banker"
+        },
+        {
+          "distance": 45.03,
+          "entry": 17633,
+          "name": "Hatheon",
+          "subname": "Banker"
+        }
+      ]
+    },
+    {
+      "guid": 26176,
+      "id": 185473,
+      "map": 530,
+      "zoneid": 0,
+      "areaid": 0,
+      "spawnmask": 1,
+      "phasemask": 1,
+      "position_x": 9657.66,
+      "position_y": -7116.19,
+      "position_z": 14.2875,
+      "orientation": 4.27606,
+      "rotation0": 0,
+      "rotation1": 0,
+      "rotation2": -0.84339,
+      "rotation3": 0.537301,
+      "spawntimesecs": 120,
+      "animprogress": 255,
+      "state": 1,
+      "scriptname": "",
+      "verifiedbuild": 51943,
+      "comment": null,
+      "site": "Silvermoon Bazaar auction house",
+      "nearby_services": [
+        {
+          "distance": 16.31,
+          "entry": 17627,
+          "name": "Jenath",
+          "subname": "Auctioneer"
+        },
+        {
+          "distance": 19.62,
+          "entry": 18761,
+          "name": "Darise",
+          "subname": "Auctioneer"
+        },
+        {
+          "distance": 25.15,
+          "entry": 17628,
+          "name": "Vynna",
+          "subname": "Auctioneer"
+        },
+        {
+          "distance": 28.12,
+          "entry": 17629,
+          "name": "Feynna",
+          "subname": "Auctioneer"
+        }
+      ]
+    },
+    {
+      "guid": 25036,
+      "id": 184135,
+      "map": 530,
+      "zoneid": 0,
+      "areaid": 0,
+      "spawnmask": 1,
+      "phasemask": 1,
+      "position_x": -2034.09,
+      "position_y": 5336.11,
+      "position_z": -9.37981,
+      "orientation": 3.7001,
+      "rotation0": 0,
+      "rotation1": 0,
+      "rotation2": -0.961262,
+      "rotation3": 0.275637,
+      "spawntimesecs": 120,
+      "animprogress": 255,
+      "state": 1,
+      "scriptname": "",
+      "verifiedbuild": 49345,
+      "comment": null,
+      "site": "Shattrath Aldor bank first side",
+      "nearby_services": [
+        {
+          "distance": 36.94,
+          "entry": 19338,
+          "name": "L'lura Goldspun",
+          "subname": "Banker"
+        },
+        {
+          "distance": 41.03,
+          "entry": 19246,
+          "name": "Berudan Keysworn",
+          "subname": "Banker"
+        }
+      ]
+    },
+    {
+      "guid": 25037,
+      "id": 184136,
+      "map": 530,
+      "zoneid": 0,
+      "areaid": 0,
+      "spawnmask": 1,
+      "phasemask": 1,
+      "position_x": -2041.2,
+      "position_y": 5350.26,
+      "position_z": -9.38034,
+      "orientation": 3.49067,
+      "rotation0": 0,
+      "rotation1": 0,
+      "rotation2": -0.984807,
+      "rotation3": 0.173652,
+      "spawntimesecs": 120,
+      "animprogress": 255,
+      "state": 1,
+      "scriptname": "",
+      "verifiedbuild": 49345,
+      "comment": null,
+      "site": "Shattrath Aldor bank second side",
+      "nearby_services": [
+        {
+          "distance": 37.02,
+          "entry": 19246,
+          "name": "Berudan Keysworn",
+          "subname": "Banker"
+        },
+        {
+          "distance": 40.57,
+          "entry": 19338,
+          "name": "L'lura Goldspun",
+          "subname": "Banker"
+        }
+      ]
+    },
+    {
+      "guid": 25038,
+      "id": 184137,
+      "map": 530,
+      "zoneid": 0,
+      "areaid": 0,
+      "spawnmask": 1,
+      "phasemask": 1,
+      "position_x": -1694.76,
+      "position_y": 5522.43,
+      "position_z": -9.81281,
+      "orientation": 3.75246,
+      "rotation0": 0,
+      "rotation1": 0,
+      "rotation2": -0.953716,
+      "rotation3": 0.300708,
+      "spawntimesecs": 120,
+      "animprogress": 255,
+      "state": 1,
+      "scriptname": "",
+      "verifiedbuild": 49345,
+      "comment": null,
+      "site": "Shattrath Scryer bank first side",
+      "nearby_services": [
+        {
+          "distance": 38.04,
+          "entry": 19318,
+          "name": "Gromden",
+          "subname": "Banker"
+        },
+        {
+          "distance": 41.73,
+          "entry": 19034,
+          "name": "Mendorn",
+          "subname": "Banker"
+        }
+      ]
+    },
+    {
+      "guid": 25039,
+      "id": 184138,
+      "map": 530,
+      "zoneid": 0,
+      "areaid": 0,
+      "spawnmask": 1,
+      "phasemask": 1,
+      "position_x": -1687.79,
+      "position_y": 5508.52,
+      "position_z": -9.80751,
+      "orientation": 3.44703,
+      "rotation0": 0,
+      "rotation1": 0,
+      "rotation2": -0.988361,
+      "rotation3": 0.152124,
+      "spawntimesecs": 120,
+      "animprogress": 255,
+      "state": 1,
+      "scriptname": "",
+      "verifiedbuild": 49345,
+      "comment": null,
+      "site": "Shattrath Scryer bank second side",
+      "nearby_services": [
+        {
+          "distance": 37.97,
+          "entry": 19034,
+          "name": "Mendorn",
+          "subname": "Banker"
+        },
+        {
+          "distance": 41.56,
+          "entry": 19318,
+          "name": "Gromden",
+          "subname": "Banker"
+        }
+      ]
+    }
+  ]
+}

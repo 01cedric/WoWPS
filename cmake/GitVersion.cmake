@@ -1,5 +1,5 @@
-# Writes core/version.hpp from `git describe`, so the version shown in the client
-# is always the last tag reachable from HEAD.
+# Writes core/version.hpp from BUILD_VERSION when present. Git provides the
+# fallback identity for development trees without an explicit release file.
 #
 # Run as a script (cmake -P) from a build-time custom target, not just at configure
 # time - otherwise tagging a release would not change the binary until someone
@@ -38,8 +38,8 @@ if(GIT_FOUND)
     endif()
 endif()
 
-# Source archives have no .git history. A delivery's explicit build identifier
-# takes precedence so rebuilding the same checkpoint preserves its identity.
+# The explicit release identity takes precedence over git metadata.
+# Rebuilding a source archive preserves the version in BUILD_VERSION.
 if(EXISTS "${SRC_DIR}/BUILD_VERSION")
     file(STRINGS "${SRC_DIR}/BUILD_VERSION" _delivery_version LIMIT_COUNT 1)
     if(_delivery_version MATCHES "^([0-9][0-9]\\.[0-9][0-9]( HF[1-9][0-9]*)?|B[0-9]+ / [0-9][0-9]\\.[0-9][0-9])$")

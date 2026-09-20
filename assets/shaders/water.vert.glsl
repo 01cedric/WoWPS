@@ -28,6 +28,7 @@ layout(push_constant) uniform Push {
     // reads it.
     vec2 screenSize;
     vec2 depthRange;
+    vec2 captureValid; // x: refraction capture; y: planar reflection rendered
 } push;
 
 layout(location = 0) in vec3 aPos;

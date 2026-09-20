@@ -220,11 +220,35 @@ wrap('StopAttack',function()cmd('stop')end)
 wrap('SpellStopCasting',function()cmd('cancelcast')end)
 wrap('Logout',function()cmd('logout')end)
 wrap('RepopMe',function()cmd('respawn')end)
-wrap('RetrieveCorpse',function()cmd('respawn')end)
+wrap('RetrieveCorpse',function()return cmd('reclaimcorpse')end)
+-- A ghost is distinct from an unreleased corpse. Preserve normal API
+-- behavior for targets/other units and when the local realm is not active.
+for _,name in ipairs({'UnitIsDead','UnitIsGhost','UnitIsDeadOrGhost'})do
+    local api=name;local previous=_G[name]
+    _G[name]=function(unit,...)
+        if state() and (unit==nil or unit=='player')then
+            if api=='UnitIsGhost'then return state().ghost or false end
+            if api=='UnitIsDead'then return state().dead and not state().ghost end
+            return state().dead or state().ghost or false
+        end
+        if previous then return previous(unit,...)end
+        return false
+    end
+end
 local function spell(id,book)
     if book then return state().spells[id]end
+    if id==6603 then return {id=id,name='Attack',icon='Interface\\Icons\\Ability_MeleeDamage',usable=not state().dead,builtin='interact_or_attack',cooldown=0}end
+    if id==8690 then return {id=id,name='Hearthstone',icon='Interface\\Icons\\INV_Misc_Rune_01',usable=not state().dead and state().hasHome and not state().inFlight,builtin='returnhome',cooldown=state().hearthCooldown or 0}end
     for _,s in ipairs(state().spells)do if s.id==id or s.name==id then return s end end
 end
+local function castLocalSpell(s)if s then if state().formSpell==s.id and state().formId<17 then return cmd('cancelform',s.id)end;if s.builtin then return cmd(s.builtin)else return cmd('cast',s.id)end end end
+wrap('GetNumShapeshiftForms',function()return #(state().forms or {})end)
+wrap('GetShapeshiftForm',function()for i,f in ipairs(state().forms or {})do if f.active then return i end end return 0 end)
+wrap('GetShapeshiftFormID',function()return state().formId or 0 end)
+wrap('GetShapeshiftFormInfo',function(i)local f=(state().forms or {})[i];if f then local s=spell(f.id);return f.icon,f.name,f.active,s and s.usable or false,f.id end end)
+wrap('CastShapeshiftForm',function(i)local f=(state().forms or {})[i];if not f then return end;if f.active and f.form<17 then cmd('cancelform',f.id)else cmd('cast',f.id)end end)
+wrap('CancelShapeshiftForm',function()cmd('cancelform',state().formSpell or 0)end)
+wrap('GetShapeshiftFormCooldown',function(i)local f=(state().forms or {})[i];local s=f and spell(f.id);local d=s and s.cooldown or 0;return d>0 and state().time or 0,d,1 end)
 -- Use compact authority metadata, never reload the full Spell.dbc merely to
 -- construct the companion tab after learning one local mount.
 local function mounts()
@@ -245,11 +269,14 @@ wrap('GetSpellTabInfo',function(i)if i==1 then local n=#state().spells;return 'S
 wrap('GetSpellName',function(i)local s=spell(i,true);if s then return s.name,'' end end)
 wrap('GetSpellTexture',function(i,b)local s=spell(i,b);return s and s.icon end)
 wrap('GetSpellCooldown',function(i,b)local s=spell(i,b);local d=s and s.cooldown or 0;return d>0 and state().time or 0,d,1 end)
-wrap('IsUsableSpell',function(i,b)local s=spell(i,b);return s and s.usable or false,false end)
-wrap('IsPassiveSpell',function()return false end)
-wrap('CastSpell',function(i)local s=spell(i,true);if s then cmd('cast',s.id)end end)
-wrap('CastSpellByID',function(id)cmd('cast',id)end)
-wrap('CastSpellByName',function(name)local s=spell(name);if s then cmd('cast',s.id)end end)
+local function usableSpell(s)
+    return s and s.usable and (not s.comboFinisher or GetComboPoints('player','target')>0) or false
+end
+wrap('IsUsableSpell',function(i,b)local s=spell(i,b);return usableSpell(s),s and s.noResource or false end)
+wrap('IsPassiveSpell',function(i,b)local s=spell(i,b);return s and s.passive or false end)
+wrap('CastSpell',function(i)castLocalSpell(spell(i,true))end)
+wrap('CastSpellByID',function(id)local s=spell(id);if s then castLocalSpell(s)else cmd('cast',id)end end)
+wrap('CastSpellByName',function(name)castLocalSpell(spell(name))end)
 -- The action bar.
 --
 -- This was an identity mapping: slot two was always the first known spell, and
@@ -330,12 +357,12 @@ wrap('IsAutoRepeatAction',function()return false end)
 wrapAction('IsUsableAction',function(online,i)
     local s=action(i)
     if not s and barSlot(i) and online then return online(i) end
-    return not state().dead and (meleeSlot(i) or (s and s.usable)) or false,false
+    return not state().dead and (meleeSlot(i) or usableSpell(s)) or false,s and s.noResource or false
 end)
 wrap('GetActionCooldown',function(i)local s=action(i);local d=s and s.cooldown or 0;return d>0 and state().time or 0,d,1 end)
 wrapAction('UseAction',function(online,i)
     local s=action(i)
-    if s then cmd('cast',s.id)
+    if s then castLocalSpell(s)
     elseif meleeSlot(i) then cmd('interact_or_attack')
     elseif barSlot(i) and online then online(i) end
 end)

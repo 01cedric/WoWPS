@@ -175,7 +175,10 @@ with tempfile.TemporaryDirectory(prefix="wowps-entity-residency-") as tmp:
     unit = Path(tmp) / "residency.cpp"
     binary = Path(tmp) / "residency"
     unit.write_text(fixture + functions + cases)
-    command = shlex.split(os.environ.get("CXX", "clang++-18"))
+    # Default to the same host compiler the rest of the native suites use, so
+    # a toolchain without clang's sanitizer runtime still runs this suite.
+    # Set CXX to build it with clang++ instead.
+    command = shlex.split(os.environ.get("CXX", "g++"))
     command += ["-std=c++20", "-O1", "-g", "-Wall", "-Wextra", "-Wno-missing-field-initializers"]
     if os.environ.get("SANITIZE") == "1":
         command += ["-fsanitize=address,undefined", "-fno-omit-frame-pointer"]

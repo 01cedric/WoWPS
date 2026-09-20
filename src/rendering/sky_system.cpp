@@ -1,6 +1,7 @@
 #include "rendering/sky_system.hpp"
 #include "rendering/skybox.hpp"
 #include "rendering/celestial.hpp"
+#include "rendering/celestial_lighting.hpp"
 #include "rendering/starfield.hpp"
 #include "rendering/clouds.hpp"
 #include "rendering/lens_flare.hpp"
@@ -141,22 +142,26 @@ void SkySystem::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
         }
     }
 
-    if (params.useOriginalSkybox && !params.originalSkyboxAllowsAtmosphere) return;
+}
+
+void SkySystem::renderAtmosphere(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
+                                 const Camera& camera, const SkyParams& params) {
+    if (!initialized_) return;
+    const bool authoredAtmosphere = !params.useOriginalSkybox || params.originalSkyboxAllowsAtmosphere;
+    if (!authoredAtmosphere && !params.terrestrialCelestials) return;
 
     // --- Celestial bodies (sun + White Lady + Blue Child) ---
     if (celestial_) {
-        // Gate moon visibility on how dark the DBC sky actually is. The
-        // hardcoded 19:00 night window can precede sky darkening by hours,
-        // and full-brightness moons on a daylight sky read as extra suns.
-        float skyLum = glm::dot(params.skyTopColor, glm::vec3(0.2126f, 0.7152f, 0.0722f));
-        float nightFactor = 1.0f - glm::smoothstep(0.08f, 0.25f, skyLum);
+        // The same solar elevation selects the world key and the visible moon.
+        // A bright authored night sky must not hide the active key's disc.
+        // Celestial applies its horizon fade and never draws a daytime moon.
         celestial_->render(cmd, perFrameSet, params.timeOfDay,
                            &params.directionalDir, &params.sunColor, params.gameTime,
-                           nightFactor);
+                           1.0f);
     }
 
     // --- Clouds (DBC-driven colors + sun lighting) ---
-    if (clouds_) {
+    if (clouds_ && authoredAtmosphere) {
         // Sync cloud density with weather/DBC-driven cloud coverage.
         // Active weather (rain/snow/storm) increases cloud density for visual consistency.
         float effectiveDensity = params.cloudDensity;
@@ -169,7 +174,7 @@ void SkySystem::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
     }
 
     // --- Lens flare (attenuated by atmosphere) ---
-    if (lensFlare_) {
+    if (lensFlare_ && authoredAtmosphere) {
         glm::vec3 sunPos = getSunPosition(params);
         lensFlare_->render(cmd, camera, sunPos, params.timeOfDay,
                            params.fogDensity, params.cloudDensity,
@@ -178,16 +183,10 @@ void SkySystem::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
 }
 
 glm::vec3 SkySystem::getSunPosition(const SkyParams& params) const {
-    float dirLenSq = glm::dot(params.directionalDir, params.directionalDir);
-    glm::vec3 dir = (dirLenSq > 1e-8f) ? params.directionalDir * glm::inversesqrt(dirLenSq) : glm::vec3(0.0f);
-    if (dirLenSq < 1e-8f) {
-        dir = glm::vec3(0.0f, 0.0f, -1.0f);
-    }
-    glm::vec3 sunDir = -dir;
-    if (sunDir.z < 0.0f) {
-        sunDir = dir;
-    }
-    return sunDir * 800.0f;
+    const glm::vec3 dir = celestialSolarTravelDirection(params.directionalDir, params.timeOfDay);
+    // The flare follows the actual sun, including below-horizon rejection.
+    // Reflecting it upward at night detached it from the celestial disc.
+    return -dir * 800.0f;
 }
 
 void SkySystem::setMoonPhaseCycling(bool enabled) {

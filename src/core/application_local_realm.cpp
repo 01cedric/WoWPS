@@ -9,12 +9,17 @@
 #include "game/local_services.hpp"
 #include "game/local_scripted_portals.hpp"
 #include "rendering/spell_visual_system.hpp"
+#include "rendering/character_renderer.hpp"
 #include "addons/addon_manager.hpp"
 #include "game/local_character_visuals.hpp"
 #include "game/local_area_trigger_import.hpp"
 #include "game/local_map_import.hpp"
 #include "game/local_spell_import.hpp"
 #include "game/local_world_catalog.hpp"
+#include "game/local_graveyard_sites.hpp"
+#include "game/local_pet.hpp"
+#include "game/local_pet_bar.hpp"
+#include "game/pet_action.hpp"
 #include "game/game_handler.hpp"
 #include "game/transport_manager.hpp"
 #include "audio/audio_coordinator.hpp"
@@ -32,11 +37,14 @@
 #include "ui/game_screen.hpp"
 #include "rendering/animation_controller.hpp"
 #include <fstream>
+#include <filesystem>
+#include <system_error>
 #include <algorithm>
 #include <imgui.h>
 #ifdef WOWEE_PS4
 #include "platform/ps4/input_ps4.hpp"
 #include "platform/ps4/cpu_memory.hpp"
+#include "platform/ps4/ps4_platform.hpp"
 #endif
 #include <cmath>
 #include <cstdlib>
@@ -102,6 +110,23 @@ std::string localSaveDirectory() {
     return "/data/wow_ps/saves/local_realm";
 #else
     return getConfigRoot() + "/saves/local_realm";
+#endif
+}
+
+/// The marker that asks for the ten level-80 test characters.
+///
+/// The console has no keyboard, so the only way a player can ask for anything
+/// is to put a file somewhere over FTP. The path is resolved through the
+/// platform's own writable-root helper - the same one the boot log, the
+/// settings and env.txt use, and the one that still answers with the legacy
+/// /data/wow_ps/wowee tree on a console that has one - rather than through a
+/// second hardcoded literal that would silently disagree with it. The client
+/// never creates this file; it only ever consumes one.
+std::string localTestCharacterMarker() {
+#ifdef WOWEE_PS4
+    return platform::ps4::writableRoot() + "/create_test_characters";
+#else
+    return getConfigRoot() + "/create_test_characters";
 #endif
 }
 }
@@ -171,6 +196,22 @@ void Application::beginLocalCharacterFlow(int mode, size_t playerLimit, const st
     localCharacterFlow_ = true;
     localCharacterMode_ = mode;
     localHostPlayerLimit_ = std::clamp(playerLimit, game::LocalRealm::MinPlayers, game::LocalRealm::MaxPlayers);
+    // Ten level-80 test characters, one per class. There is no key for this, no
+    // menu entry and no console command: the only trigger is a file the player
+    // put under the writable root over FTP, so nothing in ordinary play can
+    // reach it. The marker is consumed before anything is written, so it runs
+    // at most once however it ends.
+    std::error_code markerError;
+    if (std::filesystem::exists(localTestCharacterMarker(), markerError)) {
+        const auto& first = game::kLocalTestCharacters[0];
+        LocalRealmRequest seed{mode, first.name, "", 0, first.race, first.classId, first.slot};
+        seed.seedTestCharacters = true;
+        seed.playerLimit = localHostPlayerLimit_;
+        pendingLocalRealm_ = seed;
+        LOG_WARNING("[LOCAL_SESSION] test character marker present at ", localTestCharacterMarker(),
+                    "; seeding ", game::kLocalTestCharacterCount, " level-",
+                    int(game::kLocalTestCharacterLevel), " characters on this entry");
+    }
     refreshLocalCharacterList();
     if (uiManager) {
         auto& screen = uiManager->getCharacterScreen();
@@ -305,7 +346,7 @@ void Application::stopLocalRealm() {
     if (localRealm_) {
         const auto* saved = localRealm_->localPlayer();
         if (localRealmEntered_ && state == AppState::IN_GAME && playerCharacterSpawned && renderer && gameHandler &&
-            saved && !saved->dead && saved->positionRevision == localRealmPositionRevision_ &&
+            saved && (!saved->dead || saved->ghost) && !localWorldEntryGate_.waiting() && saved->positionRevision == localRealmPositionRevision_ &&
             saved->mapId == gameHandler->getCurrentMapId() && saved->instanceId == localRealmInstanceId_) {
             const auto p = coords::canonicalToServer(coords::renderToCanonical(renderer->getCharacterPosition()));
             localRealm_->setLocalPosition(gameHandler->getCurrentMapId(), p.x, p.y, p.z,
@@ -319,11 +360,13 @@ void Application::stopLocalRealm() {
         localRealm_.reset();
     }
     localRealmEntered_ = false;
+    localWorldEntryGate_.reset();
     localRealmInstanceId_ = 0;
     localRealmWmoOnly_ = false;
     localRealmTravelNotice_.clear();
     localRealmRemoteGuids_.release();
     localRealmNpcGuids_.release();
+    localRealmPetGuids_.release();
     localRealmTransportGuids_.release();
     localRealmPresentScratch_.release();
     localRealmMeleeScratch_.release();
@@ -377,6 +420,58 @@ void Application::prepareLocalFrameXml() {
         }, {}, gameHandler.get());
 }
 
+void Application::seedLocalTestCharacters(const std::string& saveDirectory) {
+    const auto marker = localTestCharacterMarker();
+    const auto consumed = marker + ".done";
+    std::error_code ec;
+    // Claim the marker BEFORE writing anything. A seeding run that is
+    // interrupted - by a crash, by a full disk, by the player pulling the
+    // power - must not be able to run again on the next boot and hand somebody
+    // a second set of characters they did not ask for.
+    std::filesystem::remove(consumed, ec);
+    ec.clear();
+    std::filesystem::rename(marker, consumed, ec);
+    if (ec) {
+        ec.clear();
+        std::filesystem::remove(marker, ec);
+    }
+    ec.clear();
+    if (std::filesystem::exists(marker, ec)) {
+        LOG_ERROR("[LOCAL_SESSION] the test character marker ", marker,
+                  " could not be renamed or removed; refusing to seed rather than seed on every boot");
+        localRealm_->stop();
+        localRealm_.reset();
+        refreshLocalCharacterList();
+        if (uiManager) uiManager->getCharacterScreen().reset();
+        setState(AppState::CHARACTER_SELECTION);
+        localRealmStatus("The test character marker could not be removed. Nothing was created.", true);
+        return;
+    }
+    std::vector<game::LocalTestCharacterSpec> specs;
+    specs.reserve(game::kLocalTestCharacterCount);
+    for (const auto& row : game::kLocalTestCharacters)
+        specs.push_back({row.slot, row.race, row.classId, 0, game::kLocalTestCharacterLevel, row.name});
+    // The realm this is called with already carries the content, the catalog,
+    // the faction templates and the imported spells; seedTestCharacters keeps
+    // all of it (retainConfiguration) while replacing the session state, which
+    // is exactly what startSinglePlayer does.
+    const size_t created = localRealm_->seedTestCharacters(saveDirectory, specs);
+    const auto failure = localRealm_->error();
+    localRealm_->stop();
+    localRealm_.reset();
+    refreshLocalCharacterList();
+    if (uiManager) uiManager->getCharacterScreen().reset();
+    setState(AppState::CHARACTER_SELECTION);
+    LOG_WARNING("[LOCAL_SESSION] seeded ", created, " test characters");
+    if (created) {
+        localRealmStatus("Seeded " + std::to_string(created) + " level-" +
+                         std::to_string(int(game::kLocalTestCharacterLevel)) + " test characters.", false);
+        return;
+    }
+    localRealmStatus(failure.empty() ? "No test characters were created; the ten slots are already in use."
+                                     : failure, true);
+}
+
 void Application::updateLocalRealm(float deltaTime) {
     if(logoutToLoginPending_)return;
     if (pendingLocalRealm_) {
@@ -425,13 +520,14 @@ void Application::updateLocalRealm(float deltaTime) {
         const auto durationDb=assetManager->loadDBC("SpellDuration.dbc");
         const auto iconDb=assetManager->loadDBC("SpellIcon.dbc");
         const auto runeCostDb=assetManager->loadDBC("SpellRuneCost.dbc");
+        const auto radiusDb=assetManager->loadDBC("SpellRadius.dbc");
         const auto abilities=assetManager->loadDBC("SkillLineAbility.dbc");
         const auto skills=assetManager->loadDBC("SkillLine.dbc");
         const auto talents=assetManager->loadDBC("Talent.dbc");
         const auto tabs=assetManager->loadDBC("TalentTab.dbc");
         auto importedSpells=game::importClientStarterSpells(spellDb.get(),rangeDb.get(),castDb.get(),durationDb.get(),iconDb.get(),
-            abilities.get(),skills.get(),talents.get(),runeCostDb.get());
-        game::detail::importClientTalents(importedSpells,talents.get(),tabs.get(),spellDb.get(),rangeDb.get(),castDb.get(),durationDb.get(),iconDb.get(),runeCostDb.get());
+            abilities.get(),skills.get(),talents.get(),runeCostDb.get(),radiusDb.get());
+        game::detail::importClientTalents(importedSpells,talents.get(),tabs.get(),spellDb.get(),rangeDb.get(),castDb.get(),durationDb.get(),iconDb.get(),runeCostDb.get(),radiusDb.get());
         for(const auto& row:importedSpells.audit)
             LOG_INFO("[CLASS_AUDIT] spell=",row.id," classMask=",row.classes," talent=",row.talent," result=",row.status);
         LOG_INFO("[CLASS_AUDIT] rows=",importedSpells.audit.size()," scope=starter/class-skill/talent ranks; decoder support is not full gameplay verification");
@@ -456,7 +552,7 @@ void Application::updateLocalRealm(float deltaTime) {
         for(const auto& spell:importedSpells.spells) {
             if(!spell.iconPath.empty())localRealmSpellIconPaths_[spell.iconId]=spell.iconPath;
             if(!spell.talentId)LOG_INFO("[LOCAL_SPELLS] id=",spell.id," classMask=",spell.allowableClasses," name=",spell.name,
-                " castMs=",spell.castTimeMs," gcdMs=",spell.globalCooldownMs," supported=",spell.unsupportedReason.empty(),
+                " castMs=",spell.castTimeMs," gcdMs=",spell.globalCooldownMs," internal=",spell.triggeredOnly," supported=",spell.unsupportedReason.empty(),
                 " reason=",spell.unsupportedReason);
         }
         std::array<uint32_t, 12> raceFactions{};
@@ -485,6 +581,12 @@ void Application::updateLocalRealm(float deltaTime) {
             return;
         }
         LOG_INFO("[LOCAL_WORLD] client faction templates=", factions.size());
+        const auto graveyards = game::buildPinnedLocalGraveyards();
+        if (!localRealm_->setGraveyards(graveyards)) {
+            localRealmStatus(localRealm_->error(), true);
+            return;
+        }
+        LOG_INFO("[LOCAL_GRAVEYARDS] source-linked zone/faction sites=", graveyards.size());
         std::vector<game::LocalAreaTriggerVolume> portalVolumes;
         if (const auto dbc = assetManager->loadDBC("AreaTrigger.dbc"); dbc && dbc->isLoaded() && dbc->getFieldCount() >= 10) {
             portalVolumes.reserve(dbc->getRecordCount());
@@ -529,6 +631,11 @@ void Application::updateLocalRealm(float deltaTime) {
         loadLocalTravelNetwork();
 
         const auto saveDir = localSaveDirectory();
+        // Content, catalog, faction templates and the imported starter spells
+        // are all installed by now, which is what a level-80 spellbook and a
+        // level-80 health/mana pool are derived from. Nothing below this point
+        // is needed to write a character.
+        if (request.seedTestCharacters) { seedLocalTestCharacters(saveDir); return; }
         if (!localRealm_->setRealmName(request.realmName)) {
             localRealmStatus("Realm name must be 1-48 letters, numbers, spaces, apostrophes, - or _.", true);
             return;
@@ -607,24 +714,16 @@ void Application::updateLocalRealm(float deltaTime) {
         return; // WorldLoader processes the queued entry between frames.
     }
     if (state != AppState::IN_GAME || !renderer || !gameHandler) return;
-    localRealm_->setWorldLoading(false);
-    const bool geometryLoaded = localRealmWmoOnly_
-        ? renderer->getWMORenderer() && renderer->getWMORenderer()->getInstanceCount() > 0
-        : renderer->getTerrainManager() && renderer->getTerrainManager()->getLoadedTileCount() > 0;
-    // An authored flyover can retire the previous camera tiles before the
-    // next shot arrives. Its own bounded wait/return logic owns that interval.
-    // The ordinary world-entry guard must not mistake it for a failed login.
-    if (!playerCharacterSpawned || (!geometryLoaded && !characterIntroOwnsView())) {
-        disconnectNotice_ = "Could not load the local world. Check character and terrain data and the log.";
-        LOG_ERROR("[LOCAL_REALM] World entry rejected: avatar=", playerCharacterSpawned,
-                  " terrain tiles=", renderer->getTerrainManager() ?
-                      renderer->getTerrainManager()->getLoadedTileCount() : 0);
-        logoutToLogin();
+    // WorldLoader owns queued map entry between frames. Do not repeatedly
+    // enqueue the same relocation or declare its not-yet-published scene bad.
+    if (worldLoader_ && (worldLoader_->hasPendingEntry() || worldLoader_->isLoadingWorld())) {
+        localRealm_->setWorldLoading(true);
         return;
     }
     // Authority relocations (respawn/recovery) must be applied before sending
     // another controller position, or a stale camera would overwrite them.
     if (player->positionRevision != localRealmPositionRevision_) {
+        localWorldEntryGate_.beginRelocation();
         const auto canonical = coords::serverToCanonical(glm::vec3(player->x, player->y, player->z));
         auto position = coords::canonicalToRender(canonical);
         bool acherusArrival=false;
@@ -648,6 +747,7 @@ void Application::updateLocalRealm(float deltaTime) {
             const auto c = localCharacter(*player, &localRealm_->content());
             localRealmRemoteGuids_.clear();
             localRealmNpcGuids_.clear();
+            localRealmPetGuids_.clear();
             localRealmTarget_ = 0;
             gameHandler->beginLocalExploration(c, player->orientation, player->transportEntry != 0);
             if(player->transportEntry) gameHandler->resumeLocalTransport(player->transportEntry,player->mapId,
@@ -670,22 +770,52 @@ void Application::updateLocalRealm(float deltaTime) {
         LOG_INFO("[LOCAL_GAMEPLAY] authoritative relocation revision=", localRealmPositionRevision_,
                  " map=", player->mapId, " position=", player->x, ",", player->y, ",", player->z);
     }
-    if (!player->dead) {
+    // Validate AFTER applying authority relocation: its camera determines
+    // which terrain must stream next. Old city tiles can all retire before
+    // the graveyard tile finishes uploading; tiles=0 alone is not a failure.
+    auto* terrain = renderer->getTerrainManager();
+    const auto entryPosition = renderer->getCharacterPosition();
+    const bool geometryLoaded = localRealmWmoOnly_
+        ? renderer->getWMORenderer() && renderer->getWMORenderer()->getInstanceCount() > 0
+        : terrain && terrain->isTileLoadedAt(entryPosition.x, entryPosition.y);
+    const bool streamPending = terrain && terrain->getPendingTileCount() > 0;
+    const bool wasWaiting = localWorldEntryGate_.waiting();
+    const auto entryGate = localWorldEntryGate_.update(playerCharacterSpawned,
+        geometryLoaded || characterIntroOwnsView(), streamPending);
+    if (entryGate != core::LocalWorldEntryGate::Result::Ready) {
+        localRealm_->setWorldLoading(true);
+        if (entryGate == core::LocalWorldEntryGate::Result::Waiting) {
+            if (!wasWaiting)
+                LOG_INFO("[LOCAL_WORLD_WAIT] destination scene pending map=", player->mapId,
+                    " revision=", player->positionRevision, " avatar=", playerCharacterSpawned,
+                    " pendingTiles=", terrain ? terrain->getPendingTileCount() : 0);
+            if (auto* camera = renderer->getCameraController()) camera->suspendGravityFor(1.f);
+            return; // Keep pumping WorldLoader/TerrainManager on subsequent frames.
+        }
+        disconnectNotice_ = "Could not load the destination world. Check game data and the log.";
+        LOG_ERROR("[LOCAL_REALM] World entry failed after bounded streaming wait: avatar=",
+            playerCharacterSpawned, " terrain tiles=", terrain ? terrain->getLoadedTileCount() : 0,
+            " pendingTiles=", terrain ? terrain->getPendingTileCount() : 0);
+        logoutToLogin();
+        return;
+    }
+    if (wasWaiting) LOG_INFO("[LOCAL_WORLD_WAIT] destination ready map=", player->mapId,
+                            " revision=", player->positionRevision);
+    localRealm_->setWorldLoading(false);
+    if (!player->dead || player->ghost) {
         const auto server = coords::canonicalToServer(coords::renderToCanonical(renderer->getCharacterPosition()));
-        // The two facts the authority cannot work out for itself. This client
-        // owns the collision and the water, so it is the only thing that knows
-        // whether the character is in the air or walking down a hill, and
-        // whether they landed in a lake or on stone. isFalling() is already
-        // "airborne and descending", which is exactly the apex-onwards rule the
-        // fall measurement needs - a jump on the spot then measures zero.
-        //
-        // The authority does the arithmetic and applies the damage; a guest
-        // contributes these two bits and nothing else, so a client cannot
-        // decide how far it fell.
+        // Collision, liquid and interior-group state come from the local
+        // geometry owner, alongside the existing position report. The realm
+        // applies fall damage and outdoor-only form rules. This retains the
+        // existing LAN movement trust model; it is not remote VMAP validation.
         const auto* fallCamera = renderer->getCameraController();
+        const auto renderPosition=renderer->getCharacterPosition();
+        const bool indoors=renderer->getWMORenderer() && renderer->getWMORenderer()->isInsideInteriorWMO(
+            renderPosition.x,renderPosition.y,renderPosition.z+1.f);
         const uint8_t movement = static_cast<uint8_t>(
             (fallCamera && fallCamera->isFalling() ? game::kLocalMovementFalling : 0u) |
-            (fallCamera && fallCamera->isSwimming() ? game::kLocalMovementInLiquid : 0u));
+            (fallCamera && fallCamera->isSwimming() ? game::kLocalMovementInLiquid : 0u) |
+            (indoors ? game::kLocalMovementIndoors : 0u));
         localRealm_->setLocalPosition(gameHandler->getCurrentMapId(), server.x, server.y, server.z,
             coords::canonicalToServerYaw(coords::characterYawDegToCanonical(renderer->getCharacterYaw())),
             movement);
@@ -725,13 +855,21 @@ void Application::updateLocalRealm(float deltaTime) {
     const uint64_t previousAttackTarget = gameHandler->previousLocalAttackTarget(self.guid);
     const auto oldSelf = gameHandler->getEntityManager().getEntity(self.guid);
     const bool tookDamage = oldSelf && std::static_pointer_cast<game::Unit>(oldSelf)->getHealth() > self.health;
+    const bool wasSelfGhost = gameHandler->isLocalGhostUnit(self.guid);
     if (gameHandler->syncLocalRealmPlayer(self, localRealm_->content())) {
         if (uiManager) uiManager->getGameScreen().refreshLocalEquipment(gameHandler->getInventory());
         if (appearanceComposer_) appearanceComposer_->loadEquippedWeapons();
         LOG_INFO("[LOCAL_GAMEPLAY] equipped visuals synchronized");
     }
+    // Reapply while ghost so a delayed avatar/equipment spawn receives the
+    // presentation even if the transition callback ran before its instance
+    // existed (or another callback consumer replaced it). Restore on reclaim
+    // only, leaving ordinary living stealth/fade opacity untouched.
+    if (self.ghost || wasSelfGhost)
+        if (auto* characters = renderer->getCharacterRenderer())
+            characters->setInstanceOpacity(renderer->getCharacterInstanceId(), self.ghost ? .5f : 1.f);
     if (auto* animation = renderer->getAnimationController()) {
-        animation->setDead(self.dead);
+        animation->setDead(self.dead && !self.ghost);
         animation->setInCombat(self.attackTarget != 0 && !self.dead);
         animation->setLowHealth(self.health > 0 && self.health * 4 < self.maxHealth);
     }
@@ -740,7 +878,12 @@ void Application::updateLocalRealm(float deltaTime) {
     for (const auto& peer : localRealm_->players()) {
         if (peer.guid == self.guid || peer.mapId != gameHandler->getCurrentMapId() || peer.instanceId != self.instanceId) continue;
         present.insert(peer.guid);
+        const bool wasPeerGhost = gameHandler->isLocalGhostUnit(peer.guid);
         gameHandler->syncLocalRealmPlayer(peer, localRealm_->content());
+        if (peer.ghost || wasPeerGhost)
+            if (auto* characters = renderer->getCharacterRenderer())
+                characters->setInstanceOpacity(gameHandler->resolveUnitRenderInstance(peer.guid),
+                                               peer.ghost ? .5f : 1.f);
     }
     for (auto guid : localRealmRemoteGuids_)
         if (!present.count(guid)) gameHandler->removeLocalExplorationPlayer(guid);
@@ -789,6 +932,90 @@ void Application::updateLocalRealm(float deltaTime) {
         if (localRealmTarget_ == guid) localRealmTarget_ = 0;
     }
     localRealmNpcGuids_.swap(present);
+    present.clear();
+    // Owned creatures walk the same gate and the same spawn retry as a spawn,
+    // but their own retained set: the sweep above would evict every one of them.
+    uint64_t controlledPet = 0;
+    uint32_t petEntry = 0, petSpell = 0;
+    uint8_t petLevel = 1;
+    bool petAutocast = false;
+    uint8_t petCommand = uint8_t(game::kLocalPetDefaultCommand);
+    uint8_t petReact = uint8_t(game::kLocalPetDefaultReact);
+    for (const auto& pet : localRealm_->pets()) {
+        if (pet.mapId != gameHandler->getCurrentMapId() || pet.instanceId != self.instanceId) continue;
+        const float dx = pet.x - self.x, dy = pet.y - self.y;
+        if (dx * dx + dy * dy > 350.0f * 350.0f) continue;
+        present.insert(pet.guid);
+        if (pet.ownerGuid == self.guid && pet.kind == game::LocalPetKind::Controlled) {
+            controlledPet = pet.guid;
+            petEntry = pet.entry;
+            petLevel = pet.level;
+            petSpell = game::localPetFireboltSpell(pet.entry, pet.level);
+            const auto* petSpellDefinition = localRealm_->content().spell(petSpell);
+            if (!petSpellDefinition || !petSpellDefinition->npcOnly ||
+                !petSpellDefinition->unsupportedReason.empty()) {
+                petSpell = 0;
+                petEntry = 0;
+            }
+            petAutocast = pet.fireboltAutocast;
+            petCommand = uint8_t(pet.command);
+            petReact = uint8_t(pet.react);
+        }
+        gameHandler->syncLocalRealmPet(pet);
+        if (pet.displayId && entitySpawner_ && entitySpawner_->canRetryCreature(pet.guid, pet.displayId)) {
+            const auto p = coords::serverToCanonical(glm::vec3(pet.x, pet.y, pet.z));
+            entitySpawner_->queueCreatureSpawn(pet.guid, pet.displayId, p.x, p.y, p.z,
+                coords::serverToCanonicalYaw(pet.orientation), 1.0f);
+        }
+    }
+    for (auto guid : localRealmPetGuids_) {
+        if (present.count(guid)) continue;
+        gameHandler->removeLocalRealmPet(guid);
+        if (localRealmTarget_ == guid) localRealmTarget_ = 0;
+    }
+    localRealmPetGuids_.swap(present);
+    // What the Lua token "pet" resolves to. The network path announces the same
+    // transition from SMSG_PET_SPELLS: UNIT_PET alone tells the frames the pet
+    // changed but not that their interface should be redrawn.
+    //
+    // P07 : the pet bar and its stance ring are the same ones the
+    // connected-server path draws out of SMSG_PET_SPELLS, and until now the
+    // local path left every one of their inputs at zero. The ten slots are
+    // CharmInfo::InitPetActionBar's own layout - three commands as
+    // COMMAND_ATTACK - i, four empty spell slots, three reactions the same way
+    // - and the command and react bytes are the two SMSG_PET_SPELLS sends
+    // after the duration (Player::PetSpellInitialize, Player.cpp:9760-9765).
+    // Reconcile rank and autocast even when the GUID stays the same: both a
+    // level-up and a host-approved toggle can change the existing pet's bar.
+    const bool changedPet = gameHandler->petGuidRef() != controlledPet;
+    bool changedPetBar = changedPet;
+    auto& slots = gameHandler->petActionSlotsRef();
+    for (unsigned slot = 0; slot < game::pet::kActionBarSlots; ++slot) {
+        const uint32_t desired = controlledPet
+            ? game::localPetActionBarSlot(slot, petEntry, petLevel, petAutocast) : 0u;
+        if (slots[slot] != desired) { slots[slot] = desired; changedPetBar = true; }
+    }
+    if (changedPetBar) {
+        gameHandler->petGuidRef() = controlledPet;
+        gameHandler->petSpellListRef().clear();
+        gameHandler->petAutocastSpellsRef().clear();
+        if (petSpell) {
+            gameHandler->petSpellListRef().push_back(petSpell);
+            if (petAutocast) gameHandler->petAutocastSpellsRef().insert(petSpell);
+        }
+        if (changedPet) gameHandler->fireAddonEvent("UNIT_PET", {"player"});
+        gameHandler->fireAddonEvent("PET_UI_UPDATE", {});
+        gameHandler->fireAddonEvent("PET_BAR_UPDATE", {});
+        gameHandler->fireAddonEvent("PET_BAR_UPDATE_USABLE", {});
+    }
+    if (gameHandler->petCommandRef() != petCommand || gameHandler->petReactRef() != petReact) {
+        gameHandler->petCommandRef() = petCommand;
+        gameHandler->petReactRef() = petReact;
+        // The same event pair SMSG_PET_MODE fires: the bar redraws the pressed
+        // command and the chosen stance from these two bytes and nothing else.
+        gameHandler->fireAddonEvent("PET_BAR_UPDATE", {});
+        gameHandler->fireAddonEvent("UNIT_PET", {"player"});
+    }
     gameHandler->setTargetGuidRaw(localRealmTarget_);
 
     syncLocalRealmTransports(self);
@@ -1038,17 +1265,7 @@ void Application::syncLocalRealmTransports(const game::LocalRealmPlayer& self) {
     auto& present = localRealmPresentScratch_;
     present.clear();
     if(!self.instanceId && assetManager){
-        static uint32_t mailboxDisplay=0;static bool attempted=false;
-        if(!attempted){
-            if(const auto db=assetManager->loadDBC("GameObjectDisplayInfo.dbc");db && db->isLoaded()){
-                attempted=true;
-                for(uint32_t row=0;row<db->getRecordCount();++row){auto path=db->getString(row,1);
-                    std::transform(path.begin(),path.end(),path.begin(),[](unsigned char c){return char(std::tolower(c));});
-                    if(path.find("postboxhuman")!=std::string::npos){mailboxDisplay=db->getUInt32(row,0);break;}
-                }
-                LOG_INFO("[LOCAL_MAILBOX] model display=",mailboxDisplay);
-            }
-        }
+        const uint32_t mailboxDisplay = entitySpawner_->localMailboxDisplayId();
         if(mailboxDisplay)for(const auto& m:game::localMailboxSites(localRealm_->content(),self)){
             if(m.mapId!=self.mapId || std::hypot(m.x-self.x,m.y-self.y)>120.f)continue;
             present.insert(m.guid);

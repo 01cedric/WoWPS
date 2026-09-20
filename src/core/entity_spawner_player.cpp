@@ -1,4 +1,5 @@
 #include "core/entity_spawner.hpp"
+#include "core/local_form_assets.hpp"
 #include "core/helm_visual.hpp"
 #include "core/geoset_rules.hpp"
 #include "core/character_paths.hpp"
@@ -99,8 +100,13 @@ void EntitySpawner::spawnOnlinePlayer(uint64_t guid,
     }
     auto* charRenderer = renderer_->getCharacterRenderer();
 
+    uint32_t formDisplay=0;
+    if(gameHandler_)if(auto* realm=gameHandler_->localServiceRealm())for(const auto& p:realm->players())if(p.guid==guid){formDisplay=game::localFormDisplay(p);break;}
+    const auto formAsset=localFormAsset(*assetManager_,formDisplay);
+    if(formDisplay&&formAsset.path.empty())return;
     // Base geometry model: cache by (race, gender)
     uint32_t cacheKey = (static_cast<uint32_t>(raceId) << 8) | static_cast<uint32_t>(genderId & 0xFF);
+    if(formDisplay)cacheKey=0x80000000u|formDisplay;
     uint32_t modelId = 0;
     auto itCache = playerModelCache_.find(cacheKey);
     if (itCache != playerModelCache_.end()) {
@@ -117,7 +123,7 @@ void EntitySpawner::spawnOnlinePlayer(uint64_t guid,
     if (modelId == 0) {
         game::Race race = static_cast<game::Race>(raceId);
         game::Gender gender = (genderId == 1) ? game::Gender::FEMALE : game::Gender::MALE;
-        std::string m2Path = game::getPlayerModelPath(race, gender);
+        std::string m2Path = formDisplay?formAsset.path:game::getPlayerModelPath(race, gender);
         if (m2Path.empty()) {
             LOG_WARNING("spawnOnlinePlayer: unknown race/gender for guid 0x", std::hex, guid, std::dec,
                         " race=", static_cast<int>(raceId), " gender=", static_cast<int>(genderId));
@@ -155,6 +161,7 @@ void EntitySpawner::spawnOnlinePlayer(uint64_t guid,
             *assetManager_, m2Path, m2Data, model,
             {rendering::anim::STAND, rendering::anim::WALK, rendering::anim::RUN});
 
+        if(formDisplay)applyLocalFormTextures(model,formAsset);
         modelId = nextPlayerModelId_++;
         if (!charRenderer->loadModel(model, modelId)) {
             LOG_WARNING("spawnOnlinePlayer: failed to load model to GPU: ", m2Path);
@@ -186,6 +193,7 @@ void EntitySpawner::spawnOnlinePlayer(uint64_t guid,
     float renderYaw = orientation + glm::radians(90.0f);
     uint32_t instanceId = charRenderer->createInstance(modelId, renderPos, glm::vec3(0.0f, 0.0f, renderYaw), 1.0f);
     if (instanceId == 0) return;
+    if(formDisplay){playerInstances_[guid]=instanceId;charRenderer->playAnimation(instanceId,rendering::anim::STAND,true);return;}
 
     // The character's textures, through the one reader in
     // pipeline/char_sections.hpp - the same scan the local player, the NPCs and
@@ -349,6 +357,8 @@ void EntitySpawner::setOnlinePlayerEquipment(uint64_t guid,
                                           const std::array<uint32_t, 19>& displayInfoIds,
                                           const std::array<uint8_t, 19>& inventoryTypes) {
     if (!renderer_ || !renderer_->getCharacterRenderer() || !assetManager_ || !assetManager_->isInitialized()) return;
+
+    if(gameHandler_)if(auto* realm=gameHandler_->localServiceRealm())for(const auto& p:realm->players())if(p.guid==guid&&game::localFormDisplay(p))return;
 
     // Skip local player - equipment handled by GameScreen::updateCharacterGeosets/Textures
     // via consumeOnlineEquipmentDirty(), which fires on the same server update.
@@ -1098,7 +1108,8 @@ void EntitySpawner::spawnOnlineGameObject(uint64_t guid, uint32_t entry, uint32_
         auto* wmoRenderer = renderer_->getWMORenderer();
         if (!wmoRenderer) return;
 
-        uint32_t modelId = 0;
+        
+    uint32_t modelId = 0;
         auto itCache = gameObjectDisplayIdWmoCache_.find(displayId);
         if (itCache != gameObjectDisplayIdWmoCache_.end()) {
             modelId = itCache->second;
@@ -1224,8 +1235,14 @@ void EntitySpawner::spawnOnlineGameObject(uint64_t guid, uint32_t entry, uint32_
         // Without this guard the same empty model is re-parsed every frame, causing
         // sustained log spam and wasted CPU.
         if (gameObjectDisplayIdFailedCache_.count(displayId)) return;
+        if (const auto retry = gameObjectUploadRetryAt_.find(displayId);
+            retry != gameObjectUploadRetryAt_.end()) {
+            if (std::chrono::steady_clock::now() < retry->second) return;
+            gameObjectUploadRetryAt_.erase(retry);
+        }
 
-        uint32_t modelId = 0;
+        
+    uint32_t modelId = 0;
         auto itCache = gameObjectDisplayIdModelCache_.find(displayId);
         if (itCache != gameObjectDisplayIdModelCache_.end()) {
             modelId = itCache->second;
@@ -1274,8 +1291,9 @@ void EntitySpawner::spawnOnlineGameObject(uint64_t guid, uint32_t entry, uint32_
                      " skin=", (skinData.empty() ? "MISSING" : "ok"));
 
             if (!m2Renderer->loadModel(model, modelId)) {
-                LOG_WARNING("Failed to load gameobject model: ", modelPath);
-                gameObjectDisplayIdFailedCache_.insert(displayId);
+                LOG_WARNING("Gameobject upload deferred for five seconds: ", modelPath);
+                // Allocation/upload failure is transient, unlike invalid asset data.
+                gameObjectUploadRetryAt_[displayId] = std::chrono::steady_clock::now() + std::chrono::seconds(5);
                 return;
             }
 
@@ -1290,7 +1308,9 @@ void EntitySpawner::spawnOnlineGameObject(uint64_t guid, uint32_t entry, uint32_
         uint32_t instanceId = m2Renderer->createInstance(modelId, renderPos,
             glm::vec3(0.0f, 0.0f, renderYawM2go), scale);
         if (instanceId == 0) {
-            LOG_WARNING("Failed to create gameobject instance for guid 0x", std::hex, guid, std::dec);
+            LOG_WARNING("Gameobject instance allocation deferred for five seconds: guid=0x",
+                        std::hex, guid, std::dec, " display=", displayId);
+            gameObjectUploadRetryAt_[displayId] = std::chrono::steady_clock::now() + std::chrono::seconds(5);
             return;
         }
 

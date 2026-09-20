@@ -53,6 +53,7 @@ namespace wowee::game {
     class LocalRealm;
     struct LocalRealmPlayer;
     struct LocalRealmNpc;
+    struct LocalRealmPet;
     struct LocalWorldContent;
 }
 
@@ -213,6 +214,11 @@ public:
     void syncLocalExplorationPlayer(const Character& character, float serverOrientation);
     bool syncLocalRealmPlayer(const LocalRealmPlayer& player, const LocalWorldContent& content);
     void syncLocalRealmNpc(const LocalRealmNpc& npc);
+    /// The owned-creature half of syncLocalRealmNpc. A summon is not a spawn:
+    /// it carries no transport, no auras, no threat and no loot, and it is the
+    /// only unit the local realm gives UNIT_FIELD_SUMMONEDBY, which is what
+    /// makes the Lua token "pet" resolve to it.
+    void syncLocalRealmPet(const LocalRealmPet& pet);
     void greetLocalRealmNpc(const LocalRealmNpc& npc);
     void presentLocalMeleeImpact(uint64_t attackerGuid, uint64_t victimGuid);
     uint64_t previousLocalAttackTarget(uint64_t guid) const {
@@ -221,8 +227,11 @@ public:
     }
     void resetLocalPresentation();
     void removeLocalRealmNpc(uint64_t guid);
+    void removeLocalRealmPet(uint64_t guid);
     void removeLocalExplorationPlayer(uint64_t guid);
     bool isLocalExploration() const { return localExploration_; }
+    bool isLocalGhostUnit(uint64_t guid) const { return localGhostUnits_.count(guid) != 0; }
+
 
     /**
      * Check if connected to world server
@@ -1322,9 +1331,13 @@ public:
         return empty;
     }
     const std::vector<AuraSlot>& getTargetAuras() const {
-        if (spellHandler_) return spellHandler_->getTargetAuras();
         static const std::vector<AuraSlot> empty;
-        return empty;
+        if(localExploration_&&spellHandler_) {
+            if(getTargetGuid()==playerGuid)return spellHandler_->getPlayerAuras();
+            const auto* auras=spellHandler_->getUnitAuras(getTargetGuid());
+            return auras?*auras:empty;
+        }
+        return spellHandler_?spellHandler_->getTargetAuras():empty;
     }
     // Per-unit aura cache (populated for party members and any unit we receive updates for)
     const std::vector<AuraSlot>* getUnitAuras(uint64_t guid) const {
@@ -4168,13 +4181,22 @@ private:
 
     // State
     WorldState state = WorldState::DISCONNECTED;
+    uint64_t localThreatTargetGuid_=0;
+    std::array<uint64_t,4> localThreatTargetSignature_{};
+    std::vector<uint32_t> localActionKnownSpells_;
+    bool localActionRanksInitialized_=false;
+    bool localCombatInitialized_=false,localCombatState_=false;
     bool localExploration_ = false;
     bool localAuctionRefreshing_ = false;
     std::unordered_map<uint64_t, std::array<uint32_t, kLocalEquipmentSlotCount>> localEquipmentVisuals_;
     std::unordered_map<uint64_t, LocalUnitPresentationState> localPresentationStates_;
+    std::unordered_set<uint64_t> localGhostUnits_;
+    uint64_t localCorpseVisualGuid_ = 0;
     LocalCastPresentationState localCastPresentation_;
     LocalProgressPresentationState localProgressPresentation_;
     uint32_t localCastCallbackSpellId_ = 0;
+    uint32_t localMeleePresentationSerial_ = 0;
+    std::array<float,2> localMeleePresentationSpeeds_{};
     bool localCastCommittedThisFrame_ = false;
     void presentLocalCast(const LocalRealmPlayer& snapshot, const LocalWorldContent& content);
 
@@ -4455,6 +4477,8 @@ private:
     MirrorTimer mirrorTimers_[3];
 
     // Shapeshift form (from UNIT_FIELD_BYTES_1 byte 3)
+    std::unordered_map<uint64_t,uint32_t> localFormVisuals_;
+    float localRealmRunMultiplier_=-1.f;
     uint8_t  shapeshiftFormId_ = 0;
     // Combo points (rogues/druids)
     uint8_t  comboPoints_ = 0;

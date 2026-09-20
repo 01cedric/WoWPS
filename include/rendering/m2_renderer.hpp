@@ -1,11 +1,14 @@
 #pragma once
+#include "rendering/shadow_receiver_hull.hpp"
+#include "rendering/triangle_cell_index.hpp"
 
 #include "rendering/collision_geometry.hpp"
 #include "rendering/spatial_grid.hpp"
 #include "rendering/shadow_params.hpp"
 #include "rendering/shadow_ranges.hpp"
 #include "rendering/shadow_instances.hpp"
-#include "rendering/shadow_texture_cache.hpp"
+#include "rendering/m2_shadow_snapshot.hpp"
+#include "rendering/m2_visibility_clusters.hpp"
 
 #include "pipeline/m2_loader.hpp"
 #include "pipeline/blp_loader.hpp"
@@ -64,6 +67,7 @@ struct M2ModelGPU {
         bool colorKeyBlack = false;
         glm::vec3 tint{1.0f};  ///< the batch's authored colour
         uint16_t textureAnimIndex = 0xFFFF; // 0xFFFF = no texture animation
+        bool hasNonIdentityTextureTransform = false; // proved once from all authored keys
         uint16_t blendMode = 0;   // 0=Opaque, 1=AlphaKey, 2=Alpha, 3=Add, etc.
         uint16_t materialFlags = 0; // M2 material flags (0x01=Unlit, 0x04=TwoSided, 0x10=NoDepthWrite)
         uint16_t submeshLevel = 0; // LOD level: 0=base, 1=LOD1, 2=LOD2, 3=LOD3
@@ -104,12 +108,17 @@ struct M2ModelGPU {
     uint32_t indexCount = 0;
     uint32_t vertexCount = 0;
     std::vector<BatchGPU> batches;
-    struct ShadowBatch { VkTexture* texture = nullptr; std::vector<ShadowRange> ranges; };
+    struct ShadowBatch {
+        uint32_t materialBatch = 0; // model-owned descriptor/UV animation source
+        uint32_t maskMode = 0;
+        std::vector<ShadowRange> ranges;
+    };
     std::vector<ShadowBatch> shadowBatches;
 
     glm::vec3 boundMin;
     glm::vec3 boundMax;
     float boundRadius = 0.0f;
+    float shadowVertexRadius = -1.0f; // all vertices, invalid means retain far caster
     bool collisionSteppedFountain = false;
     bool collisionSteppedLowPlatform = false;
     bool collisionPlanter = false;
@@ -133,23 +142,23 @@ struct M2ModelGPU {
 
     // Collision mesh with spatial grid (from M2 bounding geometry)
     struct CollisionMesh {
-        std::vector<glm::vec3> vertices;
-        std::vector<uint16_t> indices;
+        platform::CpuGeometryVector<glm::vec3> vertices;
+        platform::CpuGeometryVector<uint16_t> indices;
         uint32_t triCount = 0;
 
         struct TriBounds { float minZ, maxZ; };
-        std::vector<TriBounds> triBounds;
+        platform::CpuGeometryVector<TriBounds> triBounds;
 
         static constexpr float CELL_SIZE = 4.0f;
         glm::vec2 gridOrigin{0.0f};
         int gridCellsX = 0, gridCellsY = 0;
-        std::vector<std::vector<uint32_t>> cellFloorTris;
-        std::vector<std::vector<uint32_t>> cellWallTris;
+        TriangleCellIndex cellFloorTris;
+        TriangleCellIndex cellWallTris;
 
         void build();
         /// The triangles of one of the two cell arrays that a query box
         /// reaches. The two queries below differ only in which they pass.
-        void gatherTrisInRange(const std::vector<std::vector<uint32_t>>& cells,
+        void gatherTrisInRange(const TriangleCellIndex& cells,
                                float minX, float minY, float maxX, float maxY,
                                std::vector<uint32_t>& out) const;
 
@@ -277,6 +286,8 @@ struct M2Instance {
     bool skipWallCollision = false; // Keep authored floors, suppress only wall blocking
     float cachedBoundRadius = 0.0f;
     glm::vec3 cachedCullCenter{0.0f};              // transformed visual-bounds center
+    float cachedShadowNormSquared = 0.0f; // affine norm, updated with transform
+    float cachedShadowNorm = 0.0f;
     float cachedVisualRadius = 0.0f;               // transformed visual-bounds half diagonal
     // Pre-computed per-instance cull factors (depend only on static flags + scale +
     // bound radius), populated by recomputeCachedCullFactors(). The per-frame SSBO
@@ -437,8 +448,12 @@ public:
     /**
      * Render depth-only pass for shadow casting
      */
+    void beginShadowFrame();
+    void endShadowFrame() { shadowSnapshot_.active = false; }
     void renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMatrix, float globalTime = 0.0f,
-                      const glm::vec3& shadowCenter = glm::vec3(0), float shadowRadius = 1e9f);
+                      const glm::vec3& shadowCenter = glm::vec3(0), float shadowRadius = 1e9f,
+                      uint32_t shadowPassIndex = 0, float minCasterDiameter = 0.0f,
+                      const ShadowReceiverHull* receiverHull = nullptr);
 
     /**
      * Render M2 particle emitters (point sprites)
@@ -499,6 +514,7 @@ public:
 
     bool checkCollision(const glm::vec3& from, const glm::vec3& to,
                         glm::vec3& adjustedPos, float playerRadius = 0.5f, float playerHeight = 2.0f) const;
+    [[nodiscard]] bool hasPotentialGroundBelow(const glm::vec3& feet) const;
     std::optional<float> getFloorHeight(float glX, float glY, float glZ, float* outNormalZ = nullptr) const;
     [[nodiscard]] float raycastBoundingBoxes(const glm::vec3& origin, const glm::vec3& direction, float maxDistance) const;
     void setCollisionFocus(const glm::vec3& worldPos, float radius);
@@ -520,6 +536,8 @@ public:
     [[nodiscard]] uint32_t getInstanceCount() const { return static_cast<uint32_t>(instances.size()); }
     [[nodiscard]] uint32_t getTotalTriangleCount() const;
     [[nodiscard]] uint32_t getDrawCallCount() const { return lastDrawCallCount; }
+    [[nodiscard]] uint32_t getLastVisibilityTestCount() const { return lastVisibilityTestCount_; }
+    [[nodiscard]] uint32_t getLastClusterSkippedCount() const { return lastClusterSkippedCount_; }
 
     /**
      * Append the 2D footprints of placed props touching the given window,
@@ -634,9 +652,6 @@ private:
     /// built and torn down here and in three other renderers.
     ShadowParamsSet shadowParams_;
     ShadowParamsSet shadowFoliageParams_[2];
-    // Per-frame pools for foliage shadow texture descriptor sets (one per frame-in-flight)
-    static constexpr uint32_t kShadowTexPoolFrames = 2;
-    VkDescriptorPool shadowTexPool_[kShadowTexPoolFrames] = {};
 
     // Particle pipelines
     VkPipeline particlePipeline_ = VK_NULL_HANDLE;       // M2 emitter particles
@@ -795,6 +810,10 @@ private:
     void* glowVBMapped_ = nullptr;
 
     std::unordered_map<uint32_t, M2ModelGPU> models;
+    // Allocation-free owner if loading throws after recording GPU copies.
+    // Destinations stay alive until the interrupted batch fence completes.
+    std::optional<M2ModelGPU> failedUploadModel_;
+    void retireFailedUploadModel();
     // Grace period for model cleanup: track when a model first became instanceless.
     // Unreferenced models expire after 5 seconds on PS4, 60 on desktop.
     // The renderer polls using wall time on PS4; pinned models stay resident.
@@ -804,7 +823,7 @@ private:
     // cache "already uploaded" model IDs (e.g. TerrainManager) reconcile against
     // this so a reaped model is re-loaded instead of skipped as a stale hit.
     std::vector<uint32_t> reapedModelIds_;
-    std::vector<M2Instance> instances;
+    platform::CpuGeometryVector<M2Instance> instances;
 
     // O(1) dedup: key = (modelId, quantized x, quantized y, quantized z) → instanceId
     struct DedupKey {
@@ -885,6 +904,14 @@ private:
         float distSq;
         float effectiveMaxDistSq;
     };
+    struct PendingInstance {
+        uint32_t instanceIdx;
+        float fadeAlpha;
+        bool useBones;
+        uint16_t targetLOD;
+    };
+    std::vector<PendingInstance> pendingOpaque_;
+    std::vector<PendingInstance> pendingOpaqueScratch_;
     std::vector<VisibleEntry> sortedVisible_;  // Reused each frame
     std::vector<VisibleEntry> transparentVisible_; // Only models needing pass 2
     struct GlowSprite {
@@ -894,10 +921,12 @@ private:
     };
     std::vector<GlowSprite> glowSprites_;  // Reused each frame
 
-    // Shadow-pass texture descriptor cache (reused each frame, cleared via pool reset)
-    ShadowTextureCache shadowTextureCache_;
     uint32_t shadowPerfFrames_ = 0;
     ShadowInstanceOrder shadowInstanceOrder_;
+    M2ShadowSnapshot<M2Instance> shadowSnapshot_;
+    bool shadowSnapshotDirty_ = true;
+    M2VisibilityClusters visibilityClusters_;
+    uint32_t lastVisibilityTestCount_ = 0, lastClusterSkippedCount_ = 0;
     std::vector<const M2Instance*> shadowCasters_;
 
     // Ribbon draw-call list (reused each frame)
@@ -948,7 +977,12 @@ private:
     // Fast-path instance index lists (rebuilt in rebuildSpatialIndex / on create)
     std::vector<size_t> animatedInstanceIndices_;   // hasAnimation && !disableAnimation
     std::vector<size_t> particleOnlyInstanceIndices_; // !hasAnimation && hasParticleEmitters
+    // Model eligibility is immutable; positions, bones and flicker remain live.
+    mutable std::vector<size_t> localLightInstanceIndices_;
+    mutable bool localLightInstancesDirty_ = true;
     std::vector<size_t> particleInstanceIndices_;    // ALL instances with particle emitters
+    std::vector<size_t> ribbonInstanceIndices_;      // model has authored ribbons
+    std::vector<size_t> waterVegetationInstanceIndices_;
 
     // Smoke particle system
     std::vector<SmokeParticle> smokeParticles;

@@ -18,6 +18,9 @@
 #include "rendering/character_renderer.hpp"
 #include "rendering/simd_matrix.hpp"
 #include "rendering/character_material.hpp"
+#include "rendering/ordered_triangle_range.hpp"
+#include "rendering/shadow_receiver_hull.hpp"
+#include "rendering/character_emission.hpp"
 #include <cstddef>
 #include <cstdio>
 #include "rendering/pom_quality.hpp"
@@ -747,6 +750,7 @@ void CharacterRenderer::destroyModelGPU(M2ModelGPU& gpuModel, bool defer) {
 }
 
 void CharacterRenderer::destroyInstanceBones(CharacterInstance& inst, bool defer) {
+    inst.boneUploadState.invalidate();
     if (!vkCtx_) return;
     releaseInstanceBones(*vkCtx_, boneDescPool_, boneDescPoolGeneration_, inst, defer);
 }
@@ -2638,6 +2642,7 @@ void CharacterRenderer::calculateBoneMatrices(CharacterInstance& instance) {
 
     size_t numBones = model.bones.size();
     instance.boneMatrices.resize(numBones);
+    instance.boneUploadState.invalidate();
 
     const auto& gsd = model.globalSequenceDurations;
 
@@ -2762,6 +2767,7 @@ void CharacterRenderer::prepareRender(uint32_t frameIndex) {
                 continue;
             }
             instance.boneMapped[frameIndex] = allocInfo.pMappedData;
+            instance.boneUploadState.invalidateSlot(frameIndex);
 
             // Initialize all bone slots to identity so out-of-range indices
             // produce correct (neutral) transforms instead of GPU garbage
@@ -2815,6 +2821,7 @@ void CharacterRenderer::setDrawOverrides(DrawOverrides overrides) {
 void CharacterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const Camera& camera,
                                int drawFilter) {
     drawsCounted_ = 0;
+    submittedDraws_ = 0;
     if (drawFilter >= 0) lastDrawDescription_.clear();
     if (instances.empty() || !opaquePipeline_) {
         return;
@@ -2978,11 +2985,10 @@ void CharacterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
             // recording. Never allocate buffers/descriptors from the draw loop.
             if (!instance.boneBuffer[frameIndex] || !instance.boneSet[frameIndex]) continue;
 
-            // Upload bone matrices
-            if (numBones > 0 && instance.boneMapped[frameIndex]) {
-                memcpy(instance.boneMapped[frameIndex], instance.boneMatrices.data(),
-                       numBones * sizeof(glm::mat4));
-            }
+            // Shadow, reflection and color share this slot's pose. Copy only
+            // when animation changed it or this buffer was newly allocated.
+            instance.boneUploadState.upload(frameIndex, instance.boneMapped[frameIndex],
+                instance.boneMatrices.data(), numBones * sizeof(glm::mat4));
 
             // Bind bone descriptor set (set 2)
             if (instance.boneSet[frameIndex]) {
@@ -2997,6 +3003,29 @@ void CharacterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
         vkCmdBindIndexBuffer(cmd, gpuModel.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
 
         if (!gpuModel.data->batches.empty()) {
+            // Delay only command emission; material/visibility evaluation keeps
+            // its original order. Adjacent ranges with byte-identical resolved
+            // shader inputs share one draw and one dynamic material record.
+            struct PendingDraw {
+                VkPipeline pipeline = VK_NULL_HANDLE;
+                VkDescriptorSet material = VK_NULL_HANDLE;
+                CharMaterialUBO values{};
+                uint32_t offset = 0, first = 0, count = 0;
+                float bias = 0.0f;
+            } pendingDraw;
+            const auto flushDraw = [&] {
+                if (!pendingDraw.count) return;
+                if (pendingDraw.pipeline != currentPipeline) {
+                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pendingDraw.pipeline);
+                    currentPipeline = pendingDraw.pipeline;
+                }
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    pipelineLayout_, 1, 1, &pendingDraw.material, 1, &pendingDraw.offset);
+                vkCmdSetDepthBias(cmd, pendingDraw.bias, 0.0f, 0.0f);
+                vkCmdDrawIndexed(cmd, pendingDraw.count, 1, pendingDraw.first, 0, 0);
+                ++submittedDraws_;
+                pendingDraw.count = 0;
+            };
             bool applyGeosetFilter = !instance.activeGeosets.empty();
             if (applyGeosetFilter) {
                 bool hasRenderableGeoset = false;
@@ -3320,10 +3349,6 @@ void CharacterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
                     desiredPipeline == additivePipeline_ ? "additive" :
                     desiredPipeline == translucentPipeline_ ? "translucent" : "other";
                 if (drawOverrides_.forceOpaque) desiredPipeline = opaquePipeline_;
-                if (desiredPipeline != currentPipeline) {
-                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, desiredPipeline);
-                    currentPipeline = desiredPipeline;
-                }
 
                 float emissiveBoost = 1.0f;
                 glm::vec3 emissiveTint(1.0f, 1.0f, 1.0f);
@@ -3336,7 +3361,9 @@ void CharacterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
                     float flicker = 0.90f + 0.10f * f1 + 0.06f * f2 + 0.04f * f3;
                     flicker = std::clamp(flicker, 0.72f, 1.12f);
                     emissiveBoost = (blendMode >= 3) ? (2.4f * flicker) : (1.5f * flicker);
-                    emissiveTint = glm::vec3(1.28f, 1.04f, 0.82f);
+                    emissiveTint = preservedCandleEmissionTint(
+                        glm::vec3(1.28f, 1.04f, 0.82f), emissiveBoost);
+                    emissiveBoost = 1.0f; // Preserve this named candle's prior gain exactly.
                 }
 
                 // Resolve normal/height map for this texture
@@ -3457,12 +3484,6 @@ void CharacterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
                     matData.heightMapVariance = 0.0f;
                 }
 
-                // Sub-allocate material UBO from ring buffer
-                uint32_t matOffset = materialRingOffset_[frameSlot];
-                if (matOffset + uboStride > ringCapacityBytes) continue; // ring exhausted
-                memcpy(static_cast<char*>(materialRingMapped_[frameSlot]) + matOffset, &matData, sizeof(CharMaterialUBO));
-                materialRingOffset_[frameSlot] = matOffset + uboStride;
-
                 VkTexture* bindTex = (texPtr && texPtr->isValid()) ? texPtr : whiteTexture_.get();
                 if (drawOverrides_.whiteTexture) {
                     bindTex = whiteTexture_.get();
@@ -3471,14 +3492,22 @@ void CharacterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
                 VkDescriptorSet materialSet = getMaterialDescriptorSet(bindTex, normalMap);
                 if (!materialSet) continue;
 
-                // Bind material descriptor set (set 1)
-                const uint32_t dynamicOffset = matOffset;
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                        pipelineLayout_, 1, 1, &materialSet, 1, &dynamicOffset);
-
-                // Per-batch depth bias from materialLayer to separate coplanar
-                // armor pieces (chest/legs/gloves) that share identical depth.
-                vkCmdSetDepthBias(cmd, static_cast<float>(batch.materialLayer) * 0.5f, 0.0f, 0.0f);
+                const float depthBias = static_cast<float>(batch.materialLayer) * 0.5f;
+                if (drawFilter < 0 && drawOverrides_.skipDraws.empty() &&
+                    pendingDraw.pipeline == desiredPipeline && pendingDraw.material == materialSet &&
+                    pendingDraw.bias == depthBias &&
+                    std::memcmp(&pendingDraw.values, &matData, sizeof(matData)) == 0 &&
+                    appendOrderedTriangleRange(pendingDraw.first, pendingDraw.count,
+                                               batch.indexStart, batch.indexCount)) {
+                    // Keep diagnostic draw numbering tied to authored batches.
+                    takeDraw("batch", batch.indexCount, batch.indexStart);
+                    continue;
+                }
+                flushDraw();
+                uint32_t matOffset = materialRingOffset_[frameSlot];
+                if (matOffset + uboStride > ringCapacityBytes) continue;
+                memcpy(static_cast<char*>(materialRingMapped_[frameSlot]) + matOffset, &matData, sizeof(matData));
+                materialRingOffset_[frameSlot] = matOffset + uboStride;
 
                 std::string drawDetail;
                 if (drawFilter >= 0) {
@@ -3524,9 +3553,16 @@ void CharacterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
                     drawDetail = buf;
                 }
                 if (!takeDraw("batch", batch.indexCount, batch.indexStart, &drawDetail)) continue;
-                vkCmdDrawIndexed(cmd, batch.indexCount, 1, batch.indexStart, 0, 0);
+                pendingDraw.pipeline = desiredPipeline;
+                pendingDraw.material = materialSet;
+                pendingDraw.values = matData;
+                pendingDraw.offset = matOffset;
+                pendingDraw.first = batch.indexStart;
+                pendingDraw.count = batch.indexCount;
+                pendingDraw.bias = depthBias;
             }
             } // end pass loop
+            flushDraw();
         } else {
             // Draw entire model with first texture
             VkTexture* texPtr = !gpuModel.textureIds.empty() ? gpuModel.textureIds[0] : whiteTexture_.get();
@@ -3585,6 +3621,7 @@ void CharacterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
 
             if (!takeDraw("whole-model", gpuModel.indexCount, 0)) continue;
             vkCmdDrawIndexed(cmd, gpuModel.indexCount, 1, 0, 0, 0);
+            ++submittedDraws_;
         }
     }
 }
@@ -3720,7 +3757,8 @@ bool CharacterRenderer::initializeShadow(VkRenderPass shadowRenderPass) {
 }
 
 void CharacterRenderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMatrix,
-                                     const glm::vec3& shadowCenter, float shadowRadius) {
+                                     const glm::vec3& shadowCenter, float shadowRadius, uint32_t shadowPassIndex,
+                                     const ShadowReceiverHull* receiverHull) {
     if (!shadowPipeline_ || !shadowParams_.set) return;
     if (instances.empty() || models.empty()) return;
     if (boneDescPool_ == VK_NULL_HANDLE || boneSetLayout_ == VK_NULL_HANDLE) return;
@@ -3732,21 +3770,27 @@ void CharacterRenderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& light
     // This frame slot's fence was waited on in beginFrame, so last time's sets
     // are finished with and the pool can be handed back whole.
     if (frameIndex >= kShadowTexPoolFrames) return;
-    shadowTextureCache_.beginFrameSlot(frameIndex);
+    // Both atlas regions share immutable descriptors within this submission.
+    // Rewinding for the second region would update sets already used by the first.
+    if (shadowPassIndex == 0) shadowTextureCache_.beginFrameSlot(frameIndex);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline_);
 
-    const float shadowRadiusSq = shadowRadius * shadowRadius;
+    // The receiver sphere is not the light's caster volume: a low sun can
+    // project an upstream NPC/attachment into the map from outside that sphere.
+    // Reuse the scene's animation-padding policy with rendered-vertex bounds,
+    // testing the finite light frustum rather than the camera frustum.
+    (void)shadowCenter;
+    (void)shadowRadius;
+    Frustum shadowFrustum;
+    shadowFrustum.extractFromMatrix(lightSpaceMatrix);
+    uint32_t lightCulled = 0, receiverCulled = 0, missingBones = 0, submittedInstances = 0, submittedBatches = 0;
     // Which set is bound at 0 right now, so a run of opaque batches does not
     // rebind the same fallback for each one.
     VkDescriptorSet currentTexSet = VK_NULL_HANDLE;
     for (auto& pair : instances) {
         auto& inst = pair.second;
         if (!inst.visible) continue;
-
-        // Distance cull against shadow frustum
-        glm::vec3 diff = inst.position - shadowCenter;
-        if (glm::dot(diff, diff) > shadowRadiusSq) continue;
 
         if (!inst.cachedModel) continue;
         const M2ModelGPU& gpuModel = *inst.cachedModel;
@@ -3755,6 +3799,16 @@ void CharacterRenderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& light
         glm::mat4 modelMat = inst.hasOverrideModelMatrix
             ? inst.overrideModelMatrix
             : getModelMatrix(inst);
+        if (!modelBoundsInFrustum(shadowFrustum, modelMat,
+                                  gpuModel.visualBoundMin, gpuModel.visualBoundMax,
+                                  gpuModel.visualBoundRadius)) { ++lightCulled; continue; }
+        if (receiverHull) {
+            glm::vec3 center;
+            float radius;
+            if (modelBoundsSphere(modelMat, gpuModel.visualBoundMin, gpuModel.visualBoundMax,
+                                  gpuModel.visualBoundRadius, center, radius) &&
+                !receiverHull->intersects(center, radius)) { ++receiverCulled; continue; }
+        }
 
         // Ensure bone SSBO is allocated and upload bone matrices
         int numBones = std::min(static_cast<int>(inst.boneMatrices.size()), MAX_BONES);
@@ -3775,6 +3829,7 @@ void CharacterRenderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& light
                     continue;
                 }
                 inst.boneMapped[frameIndex] = ai.pMappedData;
+                inst.boneUploadState.invalidateSlot(frameIndex);
 
                 // Initialize all bone slots to identity so out-of-range indices
                 // produce correct (neutral) transforms instead of GPU garbage
@@ -3814,13 +3869,11 @@ void CharacterRenderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& light
                     vkUpdateDescriptorSets(device, 1, &w, 0, nullptr);
                 }
             }
-            if (inst.boneMapped[frameIndex]) {
-                memcpy(inst.boneMapped[frameIndex], inst.boneMatrices.data(),
-                       numBones * sizeof(glm::mat4));
-            }
+            inst.boneUploadState.upload(frameIndex, inst.boneMapped[frameIndex],
+                inst.boneMatrices.data(), numBones * sizeof(glm::mat4));
         }
 
-        if (!inst.boneSet[frameIndex]) continue;
+        if (!inst.boneSet[frameIndex]) { ++missingBones; continue; }
 
         // Params at set 1 and bones at set 2, together, per instance.
         //
@@ -3845,6 +3898,21 @@ void CharacterRenderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& light
         vkCmdBindIndexBuffer(cmd, gpuModel.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
 
         bool applyGeosetFilter = !inst.activeGeosets.empty();
+        bool submitted = false;
+        uint32_t pendingFirst = 0, pendingCount = 0;
+        VkDescriptorSet pendingTexture = VK_NULL_HANDLE;
+        const auto flushShadow = [&] {
+            if (!pendingCount) return;
+            if (pendingTexture != currentTexSet) {
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout_,
+                                        0, 1, &pendingTexture, 0, nullptr);
+                currentTexSet = pendingTexture;
+            }
+            vkCmdDrawIndexed(cmd, pendingCount, 1, pendingFirst, 0, 0);
+            ++submittedBatches;
+            submitted = true;
+            pendingCount = 0;
+        };
         for (const auto& batch : gpuModel.data->batches) {
             uint16_t blendMode = 0;
             if (batch.materialIndex < gpuModel.data->materials.size()) {
@@ -3868,15 +3936,23 @@ void CharacterRenderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& light
                     texSet = shadowTexDescSet(tex, frameIndex);
                 }
             }
-            if (texSet != currentTexSet) {
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout_,
-                                        0, 1, &texSet, 0, nullptr);
-                currentTexSet = texSet;
-            }
-
-            vkCmdDrawIndexed(cmd, batch.indexCount, 1, batch.indexStart, 0, 0);
+            if (texSet == pendingTexture &&
+                appendOrderedTriangleRange(pendingFirst, pendingCount, batch.indexStart, batch.indexCount))
+                continue;
+            flushShadow();
+            pendingFirst = batch.indexStart;
+            pendingCount = batch.indexCount;
+            pendingTexture = texSet;
         }
+        flushShadow();
+        if (submitted) ++submittedInstances;
     }
+    static uint32_t shadowFrames[2] = {};
+    const uint32_t diagnosticPass = std::min(shadowPassIndex, 1u);
+    if (++shadowFrames[diagnosticPass] % 300u == 1u)
+        LOG_INFO("[CHARACTER_SHADOW] pass=", shadowPassIndex, " loaded=", instances.size(), " lightCulled=", lightCulled,
+                 " receiverCulled=", receiverCulled, " missingBoneSets=", missingBones, " submittedInstances=", submittedInstances,
+                 " submittedBatches=", submittedBatches, "; CPU submissions, not GPU coverage");
 }
 
 VkDescriptorSet CharacterRenderer::shadowTexDescSet(VkTexture* tex, uint32_t frameIndex) {
@@ -3954,20 +4030,7 @@ VkTexture* CharacterRenderer::resolveBatchTexture(const CharacterInstance& inst,
 }
 
 glm::mat4 CharacterRenderer::getModelMatrix(const CharacterInstance& instance) const {
-    glm::mat4 model = glm::mat4(1.0f);
-
-    // Apply transformations: T * R * S
-    model = glm::translate(model, instance.position);
-
-    // Apply rotation (euler angles, Z-up)
-    // Convention: yaw around Z, pitch around X, roll around Y.
-    model = glm::rotate(model, instance.rotation.z, glm::vec3(0.0f, 0.0f, 1.0f));  // Yaw
-    model = glm::rotate(model, instance.rotation.x, glm::vec3(1.0f, 0.0f, 0.0f));  // Pitch
-    model = glm::rotate(model, instance.rotation.y, glm::vec3(0.0f, 1.0f, 0.0f));  // Roll
-
-    model = glm::scale(model, glm::vec3(instance.scale));
-
-    return model;
+    return instance.placementCache.get(instance.position, instance.rotation, instance.scale);
 }
 
 void CharacterRenderer::setInstancePosition(uint32_t instanceId, const glm::vec3& position) {

@@ -1,5 +1,6 @@
 #pragma once
 #include "game/local_gameplay.hpp"
+#include "game/local_cooldowns.hpp"
 #include <algorithm>
 #include <cstdio>
 
@@ -9,6 +10,10 @@ inline uint32_t localActionCooldownMs(const game::LocalRealmPlayer& player, uint
     for (const auto& cooldown : player.cooldowns)
         if (cooldown.spellId == spellId) remaining = std::max(remaining, cooldown.remainingMs);
     return remaining;
+}
+inline uint32_t localActionCooldownMs(const game::LocalRealmPlayer& player,const game::LocalWorldContent& content,uint32_t spellId) {
+    const auto* d=content.spell(spellId);
+    return d?std::max(player.globalCooldownMs,game::localSpellCooldownRemaining(player,content,*d)):localActionCooldownMs(player,spellId);
 }
 inline void localActionCooldownText(uint32_t milliseconds, char (&text)[16]) {
     // Round upward so a spell still cooling down never displays zero.

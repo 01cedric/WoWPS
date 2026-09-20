@@ -1,0 +1,516 @@
+{
+  "schemaVersion": 1,
+  "baseline": "the implementation",
+  "scope": "WotLK 3.3.5a standalone/LAN and separately verified connected client",
+  "commonAcceptance": [
+    "Track implementation status separately from verification status.",
+    "Finish the scoped rules, data connections, persistence, host authority and player-facing UI in the implementation phase.",
+    "Keep unsupported or unassessed content explicit until its implementation is completed.",
+    "Run build and package integrity checks for installable intermediate releases.",
+    "Defer comprehensive gameplay, class interactions, LAN, connected-server and PS4 acceptance to phase 2.",
+    "Retain prior test results as evidence without claiming they establish later complete-game correctness.",
+    "Public source preserves licenses and required build inputs and excludes private work logs."
+  ],
+  "packages": [
+    {
+      "id": "P01",
+      "title": "Inventory and acceptance criteria",
+      "dependsOn": [],
+      "status": "completed_for_provided_snapshot",
+      "baseline": "Complete ID inventory for the provided source snapshot. Unknown/unsupported implementation states remain explicit.",
+      "acceptance": "Every source quest, installed class spell and talent rank has a traceable status; unknown and unselected rows stay explicit.",
+      "implementationStatus": "complete_for_provided_snapshot",
+      "verificationStatus": "source_inventory_verified"
+    },
+    {
+      "id": "P02",
+      "title": "Reported console defects",
+      "dependsOn": [],
+      "status": "existing_fixes_await_final_console_acceptance",
+      "baseline": "Action cursor, combat focus, mailbox visibility and Blood Elf intro have code changes but lack current console confirmation.",
+      "acceptance": "Reproduce each report on the current build and confirm the full interaction or intro on console.",
+      "implementationStatus": "partial",
+      "verificationStatus": "full_acceptance_deferred"
+    },
+    {
+      "id": "P03",
+      "title": "Combat events and procs",
+      "dependsOn": [
+        "P01"
+      ],
+      "status": "in_progress",
+      "baseline": "Reviewed Lightning Shield, Water Shield and friendly Thorns profiles, charges/internal cooldowns, rank replacement, original-caster amount snapshots and selected shield/threat talents are implemented. Other trigger families, event kinds, critical filters and controlled proc chains remain incomplete.",
+      "acceptance": "Event source/recipient, trigger filters, chance, charges, internal cooldown and recursion rules pass positive and negative cases.",
+      "implementationStatus": "partial",
+      "verificationStatus": "build_and_package_checks_only; gameplay_acceptance_deferred_to_P35"
+    },
+    {
+      "id": "P04",
+      "title": "Aura interactions",
+      "dependsOn": [
+        "P03"
+      ],
+      "status": "in_progress",
+      "baseline": "Ordinary and mana absorption, strongest-only Frostbolt/Frost Shock NPC snares, periodic per-caster amount snapshots and target damage-aura views are implemented. Encounter epochs prevent stale periodic effects from reaching a reset/respawned NPC. Dispels, resistance, immunity, other controls and diminishing returns remain incomplete.",
+      "acceptance": "Dispel, resistance, immunity, control effects, diminishing returns and competing auras match the chosen 3.3.5a reference.",
+      "implementationStatus": "partial",
+      "verificationStatus": "build_and_package_checks_only; gameplay_acceptance_deferred_to_P35"
+    },
+    {
+      "id": "P05",
+      "title": "Shared combat rules",
+      "dependsOn": [
+        "P03",
+        "P04"
+      ],
+      "status": "in_progress",
+      "baseline": "Source weapon ranges/delays, primary item attributes, class/race attack power, combat-rating conversion, independent main/off-hand swings, dual-wield penalties and local melee miss/dodge/parry/block/critical/glancing/crushing are implemented. Owner LAN combat outcomes and paperdoll values share these calculations. Weapon proficiency progression, conditional modifiers, active-ability blocking, spell/PvP rules, conditional resource modifiers and acceptance remain incomplete. Source class/level health and mana pools, Stamina/Intellect conversion, direct equipped pool bonuses, base-mana percentage costs and bounded non-refilling recalculation are implemented. Druid caster capacity is reconstructed on load and sent privately to the owner. Conditional form/attribute modifiers, conditional regeneration, full classes and gameplay acceptance remain incomplete. Base Spirit health regeneration and Spirit/Intellect mana regeneration now use 800 compiled class-level coefficient rows. Valid worn primary and direct regen stats (505 source items), actual-mana-use delay, two-second health/rage/runic cadence, hidden Druid mana and timed MP5 stacks are implemented. Original local UI uses the same source calculations. Conditional regeneration passives, food/drink, item spells/sets/scaling and gameplay acceptance remain open.",
+      "acceptance": "Cast interruption/pushback, including absorb and repeat/reconnect cases; hit, critical, avoidance, mitigation, threat, line of sight, range and target rules for each supported attack type.",
+      "implementationStatus": "partial",
+      "verificationStatus": "build_and_package_checks_only; gameplay_acceptance_deferred_to_P35"
+    },
+    {
+      "id": "P06",
+      "title": "Stances and forms",
+      "dependsOn": [
+        "P04",
+        "P05"
+      ],
+      "status": "in_progress",
+      "baseline": "Eight ground-form/stance transitions, source masks, separate druid mana, resource recovery, saved form state, LAN views, original bars and local/remote model paths are implemented. Exact form-specific stamina, attack power, critical/armor penetration, immunity/tracking, entry-resource talents, further forms and console acceptance remain open.",
+      "acceptance": "Transitions apply and remove modifiers, enforce resources and update action bars without retaining old-form effects.",
+      "implementationStatus": "partial",
+      "verificationStatus": "build_and_package_checks_only; gameplay_acceptance_deferred_to_P35"
+    },
+    {
+      "id": "P07",
+      "title": "Pets and stables",
+      "dependsOn": [
+        "P05"
+      ],
+      "status": "planned",
+      "baseline": "No complete local acquisition, progression or stable service.",
+      "acceptance": "Acquire, command, level, save, stable, summon, kill and revive pets with authoritative ownership and movement.",
+      "implementationStatus": "pending",
+      "verificationStatus": "full_acceptance_deferred"
+    },
+    {
+      "id": "P08",
+      "title": "Channels, areas and totems",
+      "dependsOn": [
+        "P04",
+        "P05"
+      ],
+      "status": "in_progress",
+      "baseline": "Reviewed Chain Lightning and Chain Heal select up to three targets; Arcane Explosion uses the source radius and bounded multi-target damage. Other area profiles, ground targets, channels, totems, summons, reagents and their lifecycle remain incomplete.",
+      "acceptance": "Target selection, placement, periodic execution, interruption, despawn and resource consumption work through the real cast path.",
+      "implementationStatus": "partial",
+      "verificationStatus": "build_and_package_checks_only; gameplay_acceptance_deferred_to_P35"
+    },
+    {
+      "id": "P09",
+      "title": "Warrior and Rogue",
+      "dependsOn": [
+        "P03",
+        "P04",
+        "P05",
+        "P06"
+      ],
+      "status": "in_progress",
+      "baseline": "Sinister Strike, Backstab and Eviscerate now use derived class/item AP, normalized weapon contributions and special melee hit/critical/avoidance. Avoidance retains combo points, reduces energy spending and applies no subsequent effects. Remaining warrior attacks, stealth/poisons, finishers, conditional talents and full class rules remain incomplete.",
+      "acceptance": "Every class spell/rank and talent effect is assessed, with combo points, finishers, stealth, poison and warrior attack rules covered.",
+      "implementationStatus": "partial",
+      "verificationStatus": "build_and_package_checks_only; gameplay_acceptance_deferred_to_P35"
+    },
+    {
+      "id": "P10",
+      "title": "Druid",
+      "dependsOn": [
+        "P06",
+        "P07",
+        "P08"
+      ],
+      "status": "in_progress",
+      "baseline": "Claw, Shred, Rake, Rip and Ferocious Bite now use derived feral AP, Cat swing speed, weapon AP contribution and special melee outcomes. Avoided attacks add no points/bleeds and consume no extra Bite energy. Full feral passives, conditional resource modifiers, other specializations and form interactions remain incomplete. Source class/level health and mana pools, Stamina/Intellect conversion, direct equipped pool bonuses, base-mana percentage costs and bounded non-refilling recalculation are implemented. Druid caster capacity is reconstructed on load and sent privately to the owner. Conditional form/attribute modifiers, conditional regeneration, full classes and gameplay acceptance remain incomplete. Base Spirit health regeneration and Spirit/Intellect mana regeneration now use 800 compiled class-level coefficient rows. Valid worn primary and direct regen stats (505 source items), actual-mana-use delay, two-second health/rage/runic cadence, hidden Druid mana and timed MP5 stacks are implemented. Original local UI uses the same source calculations. Conditional regeneration passives, food/drink, item spells/sets/scaling and gameplay acceptance remain open.",
+      "acceptance": "Every specialization works through form changes, resources, healing, damage and talent respec transitions.",
+      "implementationStatus": "partial",
+      "verificationStatus": "build_and_package_checks_only; gameplay_acceptance_deferred_to_P35"
+    },
+    {
+      "id": "P11",
+      "title": "Paladin and Shaman",
+      "dependsOn": [
+        "P03",
+        "P04",
+        "P08"
+      ],
+      "status": "planned",
+      "baseline": "Seal, judgement, weapon and totem interactions remain incomplete.",
+      "acceptance": "All class ranks and talents apply the intended effect and remove obsolete modifiers on expiry or respec.",
+      "implementationStatus": "pending",
+      "verificationStatus": "full_acceptance_deferred"
+    },
+    {
+      "id": "P12",
+      "title": "Death Knight",
+      "dependsOn": [
+        "P03",
+        "P04",
+        "P07"
+      ],
+      "status": "planned",
+      "baseline": "Base rune costs exist; diseases, death runes, presences and full talents remain incomplete.",
+      "acceptance": "Rune conversion, disease interactions, weapon effects, presences and companion abilities survive relevant save/LAN transitions.",
+      "implementationStatus": "pending",
+      "verificationStatus": "full_acceptance_deferred"
+    },
+    {
+      "id": "P13",
+      "title": "Mage and Priest",
+      "dependsOn": [
+        "P03",
+        "P04",
+        "P08"
+      ],
+      "status": "planned",
+      "baseline": "Many control, protection and talent effects are absent.",
+      "acceptance": "Every class spell/rank and talent effect has implementation evidence and relevant cast, control and protection cases.",
+      "implementationStatus": "pending",
+      "verificationStatus": "full_acceptance_deferred"
+    },
+    {
+      "id": "P14",
+      "title": "Warlock and Hunter",
+      "dependsOn": [
+        "P03",
+        "P04",
+        "P07",
+        "P08"
+      ],
+      "status": "planned",
+      "baseline": "Full pet-dependent class behavior remains incomplete.",
+      "acceptance": "Class and companion abilities, control and resource interactions work with pet loss, replacement and respec.",
+      "implementationStatus": "pending",
+      "verificationStatus": "full_acceptance_deferred"
+    },
+    {
+      "id": "P15",
+      "title": "Cross-class coverage, glyphs and dual specialization",
+      "dependsOn": [
+        "P09",
+        "P10",
+        "P11",
+        "P12",
+        "P13",
+        "P14"
+      ],
+      "status": "planned",
+      "baseline": "Full talent trees, glyphs and dual specialization remain incomplete.",
+      "acceptance": "No unexplained class/talent omissions remain; changing specialization cannot retain effects or spend points incorrectly.",
+      "implementationStatus": "pending",
+      "verificationStatus": "full_acceptance_deferred"
+    },
+    {
+      "id": "P16",
+      "title": "Item instances and durability",
+      "dependsOn": [],
+      "status": "planned",
+      "baseline": "Bindings, enchantments, sockets, random properties, bags and durability are incomplete.",
+      "acceptance": "Instance properties persist through equip, split, trade, mail, auction, bank, repair and restart without duplication or loss.",
+      "implementationStatus": "pending",
+      "verificationStatus": "full_acceptance_deferred"
+    },
+    {
+      "id": "P17",
+      "title": "Reputation and proficiencies",
+      "dependsOn": [
+        "P16"
+      ],
+      "status": "planned",
+      "baseline": "Reputation progression and reputation-gated services are absent.",
+      "acceptance": "Progress, rank thresholds, discounts and service/equipment prerequisites are authoritative and saved.",
+      "implementationStatus": "pending",
+      "verificationStatus": "full_acceptance_deferred",
+      "additionalScope": "Audit and complete achievements, titles, character flags and other original progression systems as part of coverage; do not infer absence from an unassessed client path."
+    },
+    {
+      "id": "P18",
+      "title": "Professions",
+      "dependsOn": [
+        "P16",
+        "P17"
+      ],
+      "status": "planned",
+      "baseline": "Supported crafting is bounded; gathering, specialization and non-item effects are incomplete.",
+      "acceptance": "Recipe and skill requirements, gathering, profession-specific effects and progression are checked per source recipe.",
+      "implementationStatus": "pending",
+      "verificationStatus": "full_acceptance_deferred"
+    },
+    {
+      "id": "P19",
+      "title": "Mounts and travel",
+      "dependsOn": [
+        "P06",
+        "P17"
+      ],
+      "status": "planned",
+      "baseline": "Ground ranks and direct taxi routes exist; flying, map UI and connecting routes are incomplete.",
+      "acceptance": "Taxi connections, riding ranks, flying restrictions and repeated transport seams work without stale coordinates or lost saves.",
+      "implementationStatus": "pending",
+      "verificationStatus": "full_acceptance_deferred"
+    },
+    {
+      "id": "P20",
+      "title": "Vehicles",
+      "dependsOn": [
+        "P05",
+        "P19"
+      ],
+      "status": "planned",
+      "baseline": "No complete local vehicle gameplay.",
+      "acceptance": "Seats, boarding, possession, vehicle actions, exit, death and quest interactions preserve owner/passenger state.",
+      "implementationStatus": "pending",
+      "verificationStatus": "full_acceptance_deferred"
+    },
+    {
+      "id": "P21",
+      "title": "General script runtime and phasing",
+      "dependsOn": [
+        "P03",
+        "P05",
+        "P16"
+      ],
+      "status": "planned",
+      "baseline": "Original server script libraries are not executed by the local catalog.",
+      "acceptance": "Define and implement event scheduling, world state, conditions, movement, phasing and persistence needed by source scripts.",
+      "implementationStatus": "pending",
+      "verificationStatus": "full_acceptance_deferred",
+      "additionalScope": "Audit gameobject/world placements, scripted spawns, paths, conditions, schedules, phasing and daily/weekly world state."
+    },
+    {
+      "id": "P22",
+      "title": "Quest chains and world events",
+      "dependsOn": [
+        "P17",
+        "P18",
+        "P20",
+        "P21"
+      ],
+      "status": "planned",
+      "baseline": "919 adapted quests are not complete original quest coverage.",
+      "acceptance": "Every quest in the agreed source snapshot has requirements, objectives, rewards and scripts assessed; exclusions are resolved per content group.",
+      "implementationStatus": "pending",
+      "verificationStatus": "full_acceptance_deferred"
+    },
+    {
+      "id": "P23",
+      "title": "Instance lifecycle",
+      "dependsOn": [
+        "P21"
+      ],
+      "status": "planned",
+      "baseline": "Bindings exist; difficulty, resets, lockouts and encounter progress are incomplete.",
+      "acceptance": "Entry, completion, wipe, reset, reconnect and party changes preserve the correct instance and encounter state.",
+      "implementationStatus": "pending",
+      "verificationStatus": "full_acceptance_deferred"
+    },
+    {
+      "id": "P24",
+      "title": "Dungeon encounters",
+      "dependsOn": [
+        "P15",
+        "P21",
+        "P23"
+      ],
+      "status": "planned",
+      "baseline": "NPC/model data does not execute original encounters.",
+      "acceptance": "Each dungeon encounter has phases, mechanics, doors, rewards and repeatable wipe/reset/completion checks.",
+      "implementationStatus": "pending",
+      "verificationStatus": "full_acceptance_deferred"
+    },
+    {
+      "id": "P25",
+      "title": "Raid encounters",
+      "dependsOn": [
+        "P24",
+        "P27"
+      ],
+      "status": "planned",
+      "baseline": "Full raid scripts are absent.",
+      "acceptance": "Each raid and difficulty has encounter checks, saved progression and multiplayer completion/wipe behavior.",
+      "implementationStatus": "pending",
+      "verificationStatus": "full_acceptance_deferred"
+    },
+    {
+      "id": "P26",
+      "title": "Economy completion",
+      "dependsOn": [
+        "P16",
+        "P17"
+      ],
+      "status": "planned",
+      "baseline": "Retail bank, mail, auction and conditional vendor rules remain incomplete.",
+      "acceptance": "Item properties, fees, delivery rules, ownership and rollback are checked across simultaneous and repeated transactions.",
+      "implementationStatus": "pending",
+      "verificationStatus": "full_acceptance_deferred"
+    },
+    {
+      "id": "P27",
+      "title": "Raid groups, guilds and social systems",
+      "dependsOn": [
+        "P16",
+        "P23"
+      ],
+      "status": "planned",
+      "baseline": "Five-player parties exist; raids, loot rolls, guilds and guild bank remain incomplete.",
+      "acceptance": "Roster limits, permissions, loot rules, guild state and bank transactions work across disconnects and restart.",
+      "implementationStatus": "pending",
+      "verificationStatus": "full_acceptance_deferred",
+      "additionalScope": "Audit and complete friends/ignore/chat/emotes, guild ranks, guild bank and calendar-related interfaces where in target scope."
+    },
+    {
+      "id": "P28",
+      "title": "PvP, battlegrounds and arenas",
+      "dependsOn": [
+        "P15",
+        "P17",
+        "P21",
+        "P27"
+      ],
+      "status": "planned",
+      "baseline": "No working standalone original PvP, battleground or arena system.",
+      "acceptance": "Player combat, faction rules, match lifecycle, objectives, rewards and ratings are checked separately for each mode.",
+      "implementationStatus": "pending",
+      "verificationStatus": "full_acceptance_deferred"
+    },
+    {
+      "id": "P29",
+      "title": "Playerbot completion",
+      "dependsOn": [
+        "P15",
+        "P21",
+        "P24",
+        "P27"
+      ],
+      "status": "planned",
+      "baseline": "Optional actors are not player-equivalent bots.",
+      "acceptance": "Navigation, rotations, roles and encounter reactions use the same authoritative gameplay constraints as human characters.",
+      "implementationStatus": "pending",
+      "verificationStatus": "full_acceptance_deferred"
+    },
+    {
+      "id": "P30",
+      "title": "Original interface and controller",
+      "dependsOn": [
+        "P02"
+      ],
+      "status": "planned",
+      "baseline": "Original FrameXML loads; panel, layout and controller coverage remains incomplete.",
+      "acceptance": "Every in-scope panel has keyboard/modal/controller checks at 720p and 1080p with no hidden or unreachable required action.",
+      "implementationStatus": "pending",
+      "verificationStatus": "full_acceptance_deferred"
+    },
+    {
+      "id": "P31",
+      "title": "Rendering and audio",
+      "dependsOn": [
+        "P02"
+      ],
+      "status": "planned",
+      "baseline": "Race intros, portraits and effect parity remain incomplete or unconfirmed.",
+      "acceptance": "Race/location/effect matrix confirms animation, presentation, sound and recovery from missing/failed assets on console.",
+      "implementationStatus": "pending",
+      "verificationStatus": "full_acceptance_deferred"
+    },
+    {
+      "id": "P32",
+      "title": "Streaming, memory and performance",
+      "dependsOn": [
+        "P02"
+      ],
+      "status": "planned",
+      "baseline": "Travel, character changes and shutdown require long-run console checks.",
+      "acceptance": "Representative routes meet agreed frame-time/memory budgets; repeated loading and shutdown show no unbounded growth or reproducible crashes.",
+      "implementationStatus": "pending",
+      "verificationStatus": "full_acceptance_deferred"
+    },
+    {
+      "id": "P33",
+      "title": "LAN completion",
+      "dependsOn": [
+        "P15",
+        "P23",
+        "P26",
+        "P27",
+        "P28"
+      ],
+      "status": "planned",
+      "baseline": "Host-authoritative messages exist; full multi-console behavior remains unverified.",
+      "acceptance": "Loss, duplication, reordering, reconnect, capacity and simultaneous actions preserve state at the agreed player limit.",
+      "implementationStatus": "pending",
+      "verificationStatus": "full_acceptance_deferred"
+    },
+    {
+      "id": "P34",
+      "title": "Connected-server compatibility",
+      "dependsOn": [
+        "P30",
+        "P31",
+        "P32"
+      ],
+      "status": "planned",
+      "baseline": "Client paths exist; local tests do not verify compatible external servers.",
+      "acceptance": "Separate pinned AzerothCore, TrinityCore and MaNGOS runs cover login, character, travel, combat, items, social and match workflows.",
+      "implementationStatus": "pending",
+      "verificationStatus": "full_acceptance_deferred"
+    },
+    {
+      "id": "P35",
+      "title": "Whole-project acceptance",
+      "dependsOn": [
+        "P01",
+        "P02",
+        "P03",
+        "P04",
+        "P05",
+        "P06",
+        "P07",
+        "P08",
+        "P09",
+        "P10",
+        "P11",
+        "P12",
+        "P13",
+        "P14",
+        "P15",
+        "P16",
+        "P17",
+        "P18",
+        "P19",
+        "P20",
+        "P21",
+        "P22",
+        "P23",
+        "P24",
+        "P25",
+        "P26",
+        "P27",
+        "P28",
+        "P29",
+        "P30",
+        "P31",
+        "P32",
+        "P33",
+        "P34"
+      ],
+      "status": "planned",
+      "baseline": "Cannot be claimed from compilation or component tests.",
+      "acceptance": "All scoped requirements have evidence; save migration, extended console sessions and regression checks pass; remaining known issues are explicitly dispositioned.",
+      "implementationStatus": "final_acceptance_phase",
+      "verificationStatus": "full_acceptance_deferred"
+    }
+  ],
+  "workflow": "implementation_first_then_full_acceptance",
+  "phase1": "Implement all scoped systems; build and package installable checkpoints. Missing console acceptance does not block unrelated implementation.",
+  "phase2": "After implementation coverage is complete, run full gameplay, LAN, connected-server, performance and PS4 acceptance; fix defects and repeat affected acceptance."
+}

@@ -1,114 +1,118 @@
 #include "rendering/lighting_manager.hpp"
-
+#include "rendering/zone_ambience.hpp"
+#include "rendering/sun_direction.hpp"
+#include "rendering/celestial_lighting.hpp"
 #include <algorithm>
+#include <cmath>
 
 namespace wowee::rendering {
-
 namespace {
-
-/// A zone that is darker than the light tables alone would make it.
-///
-/// The day and night cycle follows the server's clock everywhere, and these
-/// zones are no exception: visiting Tirisfal during the day gives you daytime.
-/// What sets them apart is that the sky is overcast through all of it, so the
-/// light stays muted, foggy and deeply shadowed next to somewhere like Elwynn.
-///
-/// Duskwood was the only zone handled here, written as a pair of
-/// `if (zone == 10)` branches, so adding a second meant copying both.
-///
-/// `visualTimeHours` is the hour the light bands are sampled at, or negative
-/// to follow the world clock. Pinning the hour and darkening the sky are two
-/// different things: Duskwood is canonically stuck at night, while Tirisfal
-/// and Silverpine run a normal day and are overcast through all of it. Only
-/// Duskwood pins its hour.
-///
-/// The ceilings are applied after the normal DBC and weather blend, so a clear
-/// noon cannot wash the zone out, and a value the client already supplies that
-/// is darker than the ceiling is kept.
-struct DarkZone {
-    uint32_t zoneId;
-    float visualTimeHours;
-
-    glm::vec3 ambientCeiling;
-    glm::vec3 diffuseCeiling;
-
-    glm::vec3 fogColor;
-    float fogStartMax;
-    float fogEndMax;
-    float fogDensityMin;
-
-    glm::vec3 skyTop;
-    glm::vec3 skyMiddle;
-    glm::vec3 skyBand1;
-    glm::vec3 skyBand2;
-    float cloudDensityMin;
-    float horizonGlowMax;
-};
-
-constexpr DarkZone kDarkZones[] = {
-    // Duskwood: trapped beneath a dark, fog-heavy sky. Blue-black, and the
-    // fog is close enough to hide the far side of the road.
-    {.zoneId = 10, .visualTimeHours = 22.0f,
-     .ambientCeiling = {0.20f, 0.22f, 0.26f}, .diffuseCeiling = {0.26f, 0.28f, 0.32f},
-     .fogColor = {0.075f, 0.095f, 0.11f}, .fogStartMax = 35.0f, .fogEndMax = 525.0f, .fogDensityMin = 0.006f,
-     .skyTop = {0.025f, 0.035f, 0.055f}, .skyMiddle = {0.055f, 0.070f, 0.085f},
-     .skyBand1 = {0.075f, 0.090f, 0.105f}, .skyBand2 = {0.095f, 0.105f, 0.115f},
-     .cloudDensityMin = 0.88f, .horizonGlowMax = 0.08f},
-
-    // Tirisfal Glades: the day runs, and the sky is overcast through all of
-    // it. Dark and shadowy rather than dark as night, with the sickly green
-    // cast of the plague in the haze. The hour is not pinned.
-    {.zoneId = 85, .visualTimeHours = -1.0f,
-     .ambientCeiling = {0.26f, 0.30f, 0.25f}, .diffuseCeiling = {0.34f, 0.38f, 0.31f},
-     .fogColor = {0.13f, 0.17f, 0.13f}, .fogStartMax = 60.0f, .fogEndMax = 460.0f, .fogDensityMin = 0.005f,
-     .skyTop = {0.16f, 0.20f, 0.17f}, .skyMiddle = {0.20f, 0.24f, 0.20f},
-     .skyBand1 = {0.23f, 0.27f, 0.23f}, .skyBand2 = {0.26f, 0.29f, 0.25f},
-     .cloudDensityMin = 0.80f, .horizonGlowMax = 0.10f},
-
-    // Silverpine Forest: the same overcast, greyer and a little less green
-    // the further south it runs.
-    {.zoneId = 130, .visualTimeHours = -1.0f,
-     .ambientCeiling = {0.25f, 0.28f, 0.26f}, .diffuseCeiling = {0.32f, 0.35f, 0.33f},
-     .fogColor = {0.13f, 0.15f, 0.14f}, .fogStartMax = 60.0f, .fogEndMax = 480.0f, .fogDensityMin = 0.005f,
-     .skyTop = {0.17f, 0.19f, 0.19f}, .skyMiddle = {0.21f, 0.23f, 0.22f},
-     .skyBand1 = {0.24f, 0.26f, 0.25f}, .skyBand2 = {0.27f, 0.28f, 0.28f},
-     .cloudDensityMin = 0.80f, .horizonGlowMax = 0.10f},
-};
-
-const DarkZone* findDarkZone(uint32_t zoneId) {
-    for (const DarkZone& zone : kDarkZones) {
-        if (zone.zoneId == zoneId) return &zone;
-    }
-    return nullptr;
+float smooth(float low, float high, float x) {
+    const float t = std::clamp((x-low)/(high-low), 0.f, 1.f);
+    return t*t*(3.f-2.f*t);
+}
+float hourOfDay(float hours) {
+    if (!std::isfinite(hours)) return 12.f;
+    return hours - std::floor(hours / 24.f) * 24.f;
+}
+float luma(const glm::vec3& c) { return glm::dot(c, glm::vec3(.2126f,.7152f,.0722f)); }
+// A scalar ceiling retains the authored color ratios; per-channel clipping
+// would replace, for example, a violet zone with the same blue everywhere.
+glm::vec3 capped(glm::vec3 color, float ceiling) {
+    return color * std::min(1.f, ceiling / std::max(.00001f, luma(color)));
+}
+void darkenSky(LightingParams& p, float top, float horizon, glm::vec3 tint) {
+    p.skyTopColor = capped(p.skyTopColor*tint,top);
+    p.skyMiddleColor = capped(p.skyMiddleColor*tint,horizon);
+    p.skyBand1Color = capped(p.skyBand1Color*tint,horizon*1.1f);
+    p.skyBand2Color = capped(p.skyBand2Color*tint,horizon*1.2f);
+    p.fogColor = capped(p.fogColor*tint,horizon);
+    p.cloudColor = capped(p.cloudColor*tint,horizon*1.2f);
+}
 }
 
-}  // namespace
+float outdoorNightWeight(float worldHours) {
+    return smooth(-.16f,.16f,sunTravelDirection(hourOfDay(worldHours)/24.f).z);
+}
 
-float resolveZoneVisualTimeHours(uint32_t zoneId, bool isIndoors, float worldTimeHours) {
-    if (isIndoors) return worldTimeHours;
-    const DarkZone* zone = findDarkZone(zoneId);
-    if (!zone || zone->visualTimeHours < 0.0f) return worldTimeHours;
-    return zone->visualTimeHours;
+float resolveZoneVisualTimeHours(uint32_t, bool, float worldTimeHours) {
+    // Atmosphere never changes the clock, even in permanently gloomy zones.
+    return worldTimeHours;
+}
+
+void applyOutdoorLightingPolicy(uint32_t zoneId, float worldHours, bool indoors,
+                                bool underwater, bool raining, bool authoredVolumes,
+                                LightingParams& p) {
+    const bool coolKey = zoneId == 85 || zoneId == 130 || zoneId == 10;
+    const glm::vec3 solarRay = sunTravelDirection(hourOfDay(worldHours)/24.f);
+    if (indoors || underwater) {
+        p.diffuseColor = celestialKeyColor(p.diffuseColor,solarRay,coolKey);
+        p.sunColor = celestialKeyColor(p.sunColor,solarRay,coolKey);
+        return;
+    }
+    const float hour = hourOfDay(worldHours);
+    const float night = outdoorNightWeight(hour);
+    const bool gloomy = zoneId == 85 || zoneId == 130 || zoneId == 10;
+    if (gloomy) {
+        const bool tirisfal = zoneId == 85;
+        const bool duskwood = zoneId == 10;
+        // Art direction, not physical moon illuminance. Keep original green /
+        // violet fog and time-band variations while making the key cool and
+        // muted. No ambient floor: authored black stays black.
+        const glm::vec3 tint = tirisfal ? glm::vec3(.72f,.93f,1.f)
+                                      : glm::vec3(.80f,.93f,1.f);
+        p.ambientColor = capped(p.ambientColor*tint,duskwood?.19f:.25f);
+        p.diffuseColor = capped(p.diffuseColor*tint,duskwood?.22f:.29f);
+        p.sunColor = capped(p.sunColor*tint,.34f);
+        darkenSky(p,duskwood?.055f:.16f,duskwood?.10f:.22f,tint);
+        p.horizonGlow = std::min(p.horizonGlow,.08f);
+        p.cloudDensity = std::max(p.cloudDensity,.80f);
+        // Only the no-data fallback supplies distances. Authored local fog
+        // volumes, including subzones, must retain their spatial variation.
+        if (!authoredVolumes) {
+            p.fogStart = std::min(p.fogStart,duskwood?35.f:60.f);
+            p.fogEnd = std::min(p.fogEnd,duskwood?525.f:460.f);
+            p.fogDensity = 1.f/std::max(1.f,p.fogEnd);
+        }
+    }
+    if (night > 0.f) {
+        const glm::vec3 tint(.80f,.92f,1.f);
+        p.ambientColor = glm::mix(p.ambientColor,capped(p.ambientColor*tint,.22f),night);
+        p.diffuseColor = glm::mix(p.diffuseColor,capped(p.diffuseColor*tint,.25f),night);
+        p.sunColor = glm::mix(p.sunColor,capped(p.sunColor*tint,.32f),night);
+        LightingParams moon = p;
+        darkenSky(moon,.13f,.20f,tint);
+        p.skyTopColor = glm::mix(p.skyTopColor,moon.skyTopColor,night);
+        p.skyMiddleColor = glm::mix(p.skyMiddleColor,moon.skyMiddleColor,night);
+        p.skyBand1Color = glm::mix(p.skyBand1Color,moon.skyBand1Color,night);
+        p.skyBand2Color = glm::mix(p.skyBand2Color,moon.skyBand2Color,night);
+        p.fogColor = glm::mix(p.fogColor,moon.fogColor,night);
+        p.cloudColor = glm::mix(p.cloudColor,moon.cloudColor,night);
+        p.horizonGlow *= 1.f-.85f*night;
+    }
+    // Warm low-angle evening light belongs to the dry red zones, not every
+    // biome. Exact daylight/noon and night retain their own palette.
+    if (zoneId == 14 || zoneId == 1637) {
+        const float dusk = smooth(15.5f,17.25f,hour) * (1.f-smooth(18.f,19.5f,hour)) * (1.f-night);
+        const float clear = 1.f-.65f*std::clamp(p.cloudDensity,0.f,1.f);
+        const float warmth = dusk*clear;
+        p.diffuseColor *= glm::mix(glm::vec3(1.f),glm::vec3(1.06f,.84f,.65f),warmth);
+        p.sunColor *= glm::mix(glm::vec3(1.f),glm::vec3(1.f,.78f,.55f),warmth);
+        p.ambientColor *= glm::mix(glm::vec3(1.f),glm::vec3(.85f,.92f,1.f),warmth);
+    }
+    // Original profiles already encode overcast illumination. Only the
+    // missing-data fallback supplies a modest direct-light attenuation here.
+    if (raining && !authoredVolumes) {
+        p.diffuseColor *= .75f;
+        p.sunColor *= .75f;
+        p.cloudDensity = std::max(p.cloudDensity,.8f);
+    }
+    p.diffuseColor = celestialKeyColor(p.diffuseColor,solarRay,coolKey);
+    p.sunColor = celestialKeyColor(p.sunColor,solarRay,coolKey);
 }
 
 void applyZoneAmbienceOverride(uint32_t zoneId, LightingParams& params) {
-    const DarkZone* zone = findDarkZone(zoneId);
-    if (!zone) return;
-
-    params.ambientColor = glm::min(params.ambientColor, zone->ambientCeiling);
-    params.diffuseColor = glm::min(params.diffuseColor, zone->diffuseCeiling);
-
-    params.fogColor = zone->fogColor;
-    params.fogStart = std::min(params.fogStart, zone->fogStartMax);
-    params.fogEnd = std::min(params.fogEnd, zone->fogEndMax);
-    params.fogDensity = std::max(params.fogDensity, zone->fogDensityMin);
-
-    params.skyTopColor = zone->skyTop;
-    params.skyMiddleColor = zone->skyMiddle;
-    params.skyBand1Color = zone->skyBand1;
-    params.skyBand2Color = zone->skyBand2;
-    params.cloudDensity = std::max(params.cloudDensity, zone->cloudDensityMin);
-    params.horizonGlow = std::min(params.horizonGlow, zone->horizonGlowMax);
+    // Kept for callers of the old fallback API; manager uses the full policy.
+    applyOutdoorLightingPolicy(zoneId,12.f,false,false,false,false,params);
 }
-
 } // namespace wowee::rendering

@@ -1,8 +1,10 @@
 #pragma once
+#include "rendering/shadow_receiver_hull.hpp"
 
 #include <cmath>
 
 #include "rendering/vk_shader.hpp"
+#include "rendering/terrain_alpha_cache.hpp"
 #include "rendering/shadow_params.hpp"
 
 #include "pipeline/terrain_mesh.hpp"
@@ -106,6 +108,8 @@ public:
                                 int& chunkIndex, int maxChunksPerCall = 16);
 
     void removeTile(int tileX, int tileY);
+    // Nonblocking orphan-mask reclamation; retries while uploads are pending.
+    void cleanupUnusedAlphaTextures();
 
     void uploadPreloadedTextures(const std::unordered_map<std::string, pipeline::BLPImage>& textures);
 
@@ -127,11 +131,12 @@ public:
      * Render terrain into the shadow depth map.
      * @param cmd               Command buffer (inside shadow render pass).
      * @param lightSpaceMatrix  Orthographic light-space transform.
-     * @param shadowCenter      World-space centre of shadow coverage.
-     * @param shadowRadius      Cull radius around shadowCenter.
+     * @param shadowCenter      Legacy interface argument; volume comes from lightSpaceMatrix.
+     * @param shadowRadius      Legacy interface argument; not a caster culling radius.
      */
     void renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMatrix,
-                      const glm::vec3& shadowCenter, float shadowRadius);
+                      const glm::vec3& shadowCenter, float shadowRadius,
+                      const ShadowReceiverHull* receiverHull = nullptr);
 
     [[nodiscard]] bool hasShadowPipeline() const { return shadowPipeline_ != VK_NULL_HANDLE; }
 
@@ -226,6 +231,8 @@ private:
         uint64_t lastUse = 0;
     };
     std::unordered_map<std::string, TextureCacheEntry> textureCache;
+    TerrainAlphaCache<VkTexture> alphaReuseCache_;
+    uint64_t alphaLookupCount_ = 0, alphaOpaqueHits_ = 0;
     size_t textureCacheBytes_ = 0;
     uint64_t textureCacheCounter_ = 0;
     size_t textureCacheBudgetBytes_ = 4096ull * 1024 * 1024;

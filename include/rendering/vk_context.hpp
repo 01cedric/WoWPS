@@ -148,6 +148,9 @@ public:
     void freeRawStaging();
     void deferStagingCleanup(AllocatedBuffer staging);
     void pollUploadBatches();    // Check completed async uploads, free staging buffers
+    // Main-thread-only observation. Poll first; an empty list proves every
+    // submitted upload completed, and no open batch still references images.
+    [[nodiscard]] bool uploadsIdle() const { return !inUploadBatch_ && inFlightBatches_.empty(); }
     bool waitAllUploads();       // False: retain resources; completion unproven
 
     // Defer resource destruction until it is safe with multiple frames in flight.
@@ -176,11 +179,9 @@ public:
 
     // ---- GPU timing ------------------------------------------------------
     //
-    // The CPU stage timings say where the *frame* goes and cannot see where the
-    // GPU does. A profile showing beginFrame and endFrame taking 45% of a
-    // 25ms frame is the CPU blocking on the GPU, and says nothing at all about
-    // which pass the GPU spent it in - which is the number that matters once
-    // the client is GPU bound, as it measurably is.
+    // CPU submission and waits do not measure GPU pass duration. Timings here
+    // require a calibrated driver clock and explicit query availability.
+    // PS4 remains uncalibrated and never produces milliseconds.
     //
     // Markers rather than nested zones: the passes run one after another, so
     // the cost of each is the gap between its mark and the next. Names are
@@ -190,8 +191,10 @@ public:
     /// cannot timestamp, which is checked once at device selection.
     void gpuMark(VkCommandBuffer cmd, const char* label);
     [[nodiscard]] bool gpuTimingSupported() const { return gpuTimingSupported_; }
-    /// The last completed frame's marks, as (label, milliseconds since the
-    /// previous mark). Empty until a frame has come round and been read back.
+    [[nodiscard]] const char* getGpuTimingStatus() const { return gpuTimingStatus_; }
+    [[nodiscard]] bool hasValidGpuTimings() const { return gpuTimingSampleValid_; }
+    /// The latest completed slot's validated marks, as (label, milliseconds
+    /// since the previous mark). Empty when that sample is unavailable/invalid.
     [[nodiscard]] const std::vector<std::pair<const char*, double>>&
         gpuTimings() const { return gpuTimings_; }
     [[nodiscard]] bool hasDedicatedTransferQueue() const { return hasDedicatedTransfer_; }
@@ -373,7 +376,10 @@ private:
     bool gpuMarksPending_[MAX_FRAMES_IN_FLIGHT]{};
     std::vector<std::pair<const char*, double>> gpuTimings_;
     float timestampPeriodNs_ = 0.0f;
+    uint32_t timestampValidBits_ = 0;
     bool gpuTimingSupported_ = false;
+    bool gpuTimingSampleValid_ = false;
+    const char* gpuTimingStatus_ = "unsupported";
     void createGpuQueryPools();
     void readGpuTimings(uint32_t slot);
     uint32_t presentQueueFamily = 0;

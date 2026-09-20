@@ -6,6 +6,7 @@
 #include "rendering/light_headroom.hpp"
 #include "rendering/light_volume_order.hpp"
 #include "rendering/sun_direction.hpp"
+#include "rendering/zone_ambience.hpp"
 #include <glm/gtc/constants.hpp>
 #include "pipeline/asset_manager.hpp"
 #include "pipeline/dbc_loader.hpp"
@@ -305,10 +306,11 @@ void LightingManager::update(const glm::vec3& playerPos, uint32_t mapId, uint32_
             timeOfDay_ = secondsSinceMidnight / 86400.0f;  // 0.0-1.0
         }
     }
-    // else: manualTime_ is set, use timeOfDay_ as-is
+    // Normalize manual/debug values as well as the server clock before the
+    // half-minute conversion (negative/NaN casts are not a valid time band).
+    timeOfDay_ = std::isfinite(timeOfDay_) ? timeOfDay_ - std::floor(timeOfDay_) : .5f;
 
-    // Duskwood's visible sky is permanently late-night even while the global
-    // world clock continues normally for gameplay and every other zone.
+    // All zones retain the world clock. Persistent gloom is a color policy.
     visualTimeOfDayHours_ = timeOfDay_ * 24.0f; // original curves already encode zone ambience
 
     // Convert visual time to half-minutes (WoW DBC format: 0-2879).
@@ -362,6 +364,7 @@ void LightingManager::update(const glm::vec3& playerPos, uint32_t mapId, uint32_
 
     // Sample and blend lighting
     LightingParams newParams;
+    bool hasAuthoredSample = false;
 
     if (isIndoors_) {
         // Indoor lighting: static ambient-heavy
@@ -380,6 +383,8 @@ void LightingManager::update(const glm::vec3& playerPos, uint32_t mapId, uint32_
                 blend.add(sampleLightParams(&it->second,timeHalfMinutes),wv.weight);
         }
         newParams = blend.result(fallbackParams_);
+        hasAuthoredSample = blend.weight > 0.f;
+        if (!hasAuthoredSample) newParams.directionalDir = sunTravelDirection(timeOfDay_);
     } else {
         // No light volume, use fallback with time-based animation
         newParams = fallbackParams_;
@@ -388,20 +393,12 @@ void LightingManager::update(const glm::vec3& playerPos, uint32_t mapId, uint32_
         // so stepping out of the last volume's range cannot move the sun.
         newParams.directionalDir = sunTravelDirection(timeOfDay_);
 
-        // Time-of-day color adjustments
-        if (timeOfDay_ < 0.25f || timeOfDay_ > 0.75f) {
-            // Night: darker, bluer
-            float nightness = (timeOfDay_ < 0.25f) ? (0.25f - timeOfDay_) * 4.0f
-                                                    : (timeOfDay_ - 0.75f) * 4.0f;
-            newParams.ambientColor *= (0.3f + 0.7f * (1.0f - nightness));
-            newParams.diffuseColor *= (0.2f + 0.8f * (1.0f - nightness));
-            newParams.ambientColor.b += nightness * 0.1f;
-        }
     }
 
-    if (!isIndoors_ && activeVolumes_.empty()) {
-        applyZoneAmbienceOverride(zoneId, newParams);
-    }
+    // The same policy handles authored DBC volumes and missing-data fallback.
+    // Apply before temporal blending so zone/time changes remain continuous.
+    applyOutdoorLightingPolicy(zoneId, visualTimeOfDayHours_, isIndoors_,
+                               isUnderwater, isRaining, hasAuthoredSample, newParams);
 
     // Fog toward the colour of the sky it is seen against.
     //

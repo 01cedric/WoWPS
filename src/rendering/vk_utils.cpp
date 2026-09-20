@@ -1,4 +1,8 @@
 #include "rendering/vk_utils.hpp"
+#ifdef WOWEE_PS4
+#include "rendering/ps4_attachment_memory.hpp"
+#include <atomic>
+#endif
 
 #include <cstdio>
 #include "rendering/vk_context.hpp"
@@ -64,9 +68,41 @@ AllocatedImage createImage(VkDevice device, VmaAllocator allocator,
     VmaAllocationCreateInfo allocInfo{};
     allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
 
-    if (vmaCreateImage(allocator, &imgInfo, &allocInfo,
-            &result.image, &result.allocation, nullptr) != VK_SUCCESS) {
-        LOG_ERROR("Failed to create VMA image (", width, "x", height, ")");
+    VkResult imageResult;
+#ifdef WOWEE_PS4
+    const bool gpuAttachment = (usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)) != 0;
+    if (gpuAttachment) {
+        const VkPhysicalDeviceMemoryProperties* properties = nullptr;
+        vmaGetMemoryProperties(allocator, &properties);
+        const uint32_t preferred = properties ? ps4AttachmentMemoryTypeBits(usage, *properties) : 0;
+        VmaAllocationInfo actual{};
+        const auto allocated = allocatePs4Attachment(preferred, [&](uint32_t bits) {
+            allocInfo.memoryTypeBits = bits;
+            return vmaCreateImage(allocator, &imgInfo, &allocInfo,
+                &result.image, &result.allocation, &actual);
+        });
+        imageResult = allocated.result;
+        if (allocated.fallback) {
+            LOG_WARNING("[PS4_ATTACHMENT_MEMORY] Garlic unavailable; original policy fallback",
+                " preferredMask=", preferred, " preferredResult=", static_cast<int>(allocated.preferredResult),
+                " result=", static_cast<int>(imageResult), " extent=", width, "x", height);
+        }
+        static std::atomic_uint allocationReports{0};
+        if (imageResult == VK_SUCCESS && allocationReports.fetch_add(1, std::memory_order_relaxed) < 64u) {
+            LOG_INFO("[PS4_ATTACHMENT_MEMORY] extent=", width, "x", height,
+                " usage=", usage, " actualType=", actual.memoryType,
+                " bytes=", actual.size, " preferredMask=", preferred,
+                " fallback=", allocated.fallback, " source=", where.file_name(), ":", where.line());
+        }
+    } else
+#endif
+    {
+        imageResult = vmaCreateImage(allocator, &imgInfo, &allocInfo,
+            &result.image, &result.allocation, nullptr);
+    }
+    if (imageResult != VK_SUCCESS) {
+        LOG_ERROR("Failed to create VMA image (", width, "x", height, ") result=", static_cast<int>(imageResult));
         return result;
     }
 
@@ -279,7 +315,11 @@ void transitionImageLayout(VkCommandBuffer cmd, VkImage image,
             barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
             break;
         case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+        case VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL:
             barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            break;
+        case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
+            barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
             break;
         default:
             barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
@@ -291,13 +331,15 @@ void transitionImageLayout(VkCommandBuffer cmd, VkImage image,
             barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
             break;
         case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+        case VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL:
             barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
             break;
         case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
             barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
             break;
         case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
-            barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                    VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
             break;
         case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
             barrier.dstAccessMask = 0;

@@ -20,6 +20,7 @@
 
 #include "ui/texture_content_bounds.hpp"
 #include <cstdint>
+#include <cmath>
 #include <deque>
 #include <map>
 #include <string>
@@ -945,6 +946,10 @@ public:
     /// hit testing and drawing stay in step.
     [[nodiscard]] float uiScale() const { return uiScale_; }
 
+    // Consume after layout, before delivering FrameXML display events.
+    // Bit 1: pixel extent changed; bit 2: scale or safe-area geometry changed.
+    unsigned consumeDisplayChanges();
+
     /// The player's UI Scale, as WoW's video options mean it.
     ///
     /// One is the size the screen's height alone would give. Below one the
@@ -964,6 +969,7 @@ public:
     /// chosen to feel safe. kCVarRanges gives the slider the same value, and
     /// the confirmation dialog is the second line of defence.
     void setUserScale(float scale) {
+        if (!std::isfinite(scale)) return;
         const float clamped = scale < 0.64f ? 0.64f
                             : (scale > kMaxUserScale ? kMaxUserScale : scale);
         if (clamped == userScale_) return;
@@ -984,6 +990,7 @@ public:
     /// follows it without knowing about it, and hit testing reads the same
     /// rects - a button stays clickable where it is drawn.
     void setSafeAreaInset(float fraction) {
+        if (!std::isfinite(fraction)) return;
         const float clamped = fraction < 0.0f ? 0.0f : (fraction > 0.1f ? 0.1f : fraction);
         if (clamped == safeAreaInset_) return;
         safeAreaInset_ = clamped;
@@ -1179,6 +1186,8 @@ private:
     /// The size the last full pass ran at, so an on-demand one can match it.
     float lastPixelW_ = 0.0f;
     float lastPixelH_ = 0.0f;
+    float publishedPixelW_ = 0.0f, publishedPixelH_ = 0.0f;
+    float publishedUiScale_ = 0.0f, publishedSafeArea_ = -1.0f;
     /// layout() moves widgets, and moving a widget raises the flag. Without
     /// this an on-demand pass would leave the tree dirty and every rect read
     /// after it would run another one.

@@ -52,7 +52,7 @@ public:
      * @param timeOfDay   Time of day in hours (0-24)
      * @param sunDir      Optional sun direction from lighting system (normalized)
      * @param sunColor    Optional sun colour from lighting system
-     * @param gameTime    Optional server game time in seconds (deterministic moon phases)
+     * @param gameTime    Optional server hour; retained for caller compatibility (no lunar date)
      */
     void render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
                 float timeOfDay,
@@ -109,13 +109,10 @@ private:
                    float timeOfDay,
                    const glm::vec3* sunDir, const glm::vec3* sunColor);
     void renderMoon(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, float timeOfDay,
-                    float nightFactor);
+                    float nightFactor, const glm::vec3* sunDir, const glm::vec3* sunColor);
     void renderBlueChild(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, float timeOfDay,
-                         float nightFactor);
+                         float nightFactor, const glm::vec3* sunDir, const glm::vec3* sunColor);
 
-    [[nodiscard]] float calculateCelestialAngle(float timeOfDay, float riseTime, float setTime) const;
-    [[nodiscard]] float computePhaseFromGameTime(float gameTime, float cycleDays) const;
-    void  updatePhasesFromGameTime(float gameTime);
 
     // Vulkan objects
     VkContext*        vkCtx_          = nullptr;
@@ -136,9 +133,7 @@ private:
     float sunHazeTimer_     = 0.0f; // Always-running haze animation timer
     bool  dualMoonMode_     = true;
 
-    // WoW lunar cycle constants (game days; 1 game day = 24 real minutes)
-    static constexpr float WHITE_LADY_CYCLE_DAYS = 30.0f;
-    static constexpr float BLUE_CHILD_CYCLE_DAYS = 27.0f;
+    // Optional decorative animation; no server calendar is available here.
     static constexpr float MOON_CYCLE_DURATION   = 240.0f; // Fallback: 4 minutes
 };
 

@@ -71,7 +71,7 @@ std::string readString(const std::vector<uint8_t>& data, uint32_t offset) {
 } // anonymous namespace
 
 WMOModel WMOLoader::load(const std::vector<uint8_t>& wmoData) {
-    WMOModel model;
+    WMOModel model{};
 
     if (wmoData.size() < 8) {
         core::Logger::getInstance().error("WMO data too small");
@@ -428,6 +428,8 @@ bool WMOLoader::loadGroup(const std::vector<uint8_t>& groupData,
 
     auto& group = model.groups[groupIndex];
     group.groupId = groupIndex;
+    group.hasVertexColors = false;
+    bool firstMocvSeen = false;
 
     uint32_t offset = 0;
 
@@ -513,6 +515,7 @@ bool WMOLoader::loadGroup(const std::vector<uint8_t>& groupData,
 
                 if (subChunkId == 0x4D4F5654) { // MOVT - Vertices
                     uint32_t vertexCount = subChunkSize / 12; // 3 floats per vertex
+                    group.vertices.reserve(group.vertices.size() + vertexCount);
                     for (uint32_t i = 0; i < vertexCount; i++) {
                         WMOVertex vertex;
                         // Keep vertices in WoW model-local coords - coordinate swap done in model matrix
@@ -527,6 +530,7 @@ bool WMOLoader::loadGroup(const std::vector<uint8_t>& groupData,
                 }
                 else if (subChunkId == MOVI) { // Indices
                     uint32_t indexCount = subChunkSize / 2; // uint16_t per index
+                    group.indices.reserve(group.indices.size() + indexCount);
                     for (uint32_t i = 0; i < indexCount; i++) {
                         group.indices.push_back(read<uint16_t>(groupData, mogpOffset));
                     }
@@ -569,6 +573,13 @@ bool WMOLoader::loadGroup(const std::vector<uint8_t>& groupData,
                 else if (subChunkId == MOCV) { // Vertex colors
                     // Update vertex colors
                     uint32_t colorCount = subChunkSize / 4;
+                    // A second MOCV stores texture-blend alpha, not replacement
+                    // baked RGB. This renderer uses the first lighting channel.
+                    if (firstMocvSeen) { mogpOffset = subChunkEnd; continue; }
+                    firstMocvSeen = true;
+                    group.hasVertexColors = !group.vertices.empty() && subChunkSize % 4 == 0 &&
+                                            colorCount == group.vertices.size();
+                    if (!group.hasVertexColors) { mogpOffset = subChunkEnd; continue; }
                     core::Logger::getInstance().debug("  MOCV: ", colorCount, " vertex colors for ", group.vertices.size(), " vertices");
                     for (uint32_t i = 0; i < colorCount && i < group.vertices.size(); i++) {
                         uint8_t b = read<uint8_t>(groupData, mogpOffset);

@@ -1,7 +1,18 @@
+#ifdef WOWEE_PS4
+#include "platform/ps4/ps4_platform.hpp"
+#include "platform/ps4/heap_growth.hpp"
+#include "platform/ps4/cpu_memory.hpp"
+#include <cstdio>
+#include <vk_ps4.h>
+#include "rendering/ps4_shadow_memory.hpp"
+#endif
 #include "rendering/sun_direction.hpp"
+#include "rendering/celestial_lighting.hpp"
+#include "rendering/environment_weather.hpp"
 #include "core/future_wait_guard.hpp"
 #include "rendering/renderer.hpp"
 #include "rendering/local_light_budget.hpp"
+#include "rendering/volumetric_eligibility.hpp"
 
 #include <fstream>
 #include <iterator>
@@ -80,6 +91,7 @@
 #include "rendering/vk_shader.hpp"
 #include "rendering/vk_pipeline.hpp"
 #include "rendering/vk_utils.hpp"
+#include "rendering/shadow_atlas.hpp"
 #include "rendering/amd_fsr3_runtime.hpp"
 #include "rendering/spell_visual_system.hpp"
 #include "rendering/post_process_pipeline.hpp"
@@ -121,6 +133,11 @@ Renderer::Renderer() = default;
 Renderer::~Renderer() = default;
 
 bool Renderer::createPerFrameResources() {
+#ifdef WOWEE_PS4
+    shadowDepthRecorded_ = false;
+    shadowDepthReceiptFrames_ = 0;
+    for (uint32_t i = 0; i < MAX_FRAMES; ++i) shadowDepthReceiptReady_[i] = false;
+#endif
     VkDevice device = vkCtx->getDevice();
 
     // --- Create per-frame shadow depth images (one per in-flight frame) ---
@@ -130,7 +147,7 @@ bool Renderer::createPerFrameResources() {
     imgCI.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imgCI.imageType = VK_IMAGE_TYPE_2D;
     imgCI.format = VK_FORMAT_D32_SFLOAT;
-    imgCI.extent = {.width = SHADOW_MAP_SIZE, .height = SHADOW_MAP_SIZE, .depth = 1};
+    imgCI.extent = {.width = SHADOW_MAP_SIZE * 2, .height = SHADOW_MAP_SIZE, .depth = 1};
     imgCI.mipLevels = 1;
     imgCI.arrayLayers = 1;
     imgCI.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -138,13 +155,35 @@ bool Renderer::createPerFrameResources() {
     imgCI.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     VmaAllocationCreateInfo imgAllocCI{};
     imgAllocCI.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+#ifdef WOWEE_PS4
+    VkPhysicalDeviceMemoryProperties shadowMemoryProperties{};
+    vkGetPhysicalDeviceMemoryProperties(vkCtx->getPhysicalDevice(), &shadowMemoryProperties);
+    imgAllocCI.memoryTypeBits = ps4ShadowMemoryTypeBits(shadowMemoryProperties);
+    if (!imgAllocCI.memoryTypeBits) {
+        LOG_ERROR("Shadow atlas: no uncached GPU-local memory type available");
+        return false; // VMA interprets a zero mask as unrestricted, so fail closed.
+    }
+#endif
     for (uint32_t i = 0; i < MAX_FRAMES; i++) {
         if (vmaCreateImage(vkCtx->getAllocator(), &imgCI, &imgAllocCI,
                 &shadowDepthImage[i], &shadowDepthAlloc[i], nullptr) != VK_SUCCESS) {
             LOG_ERROR("Failed to create shadow depth image [", i, "]");
             return false;
         }
+#ifdef WOWEE_PS4
+        VmaAllocationInfo shadowAllocationInfo{};
+        vmaGetAllocationInfo(vkCtx->getAllocator(), shadowDepthAlloc[i], &shadowAllocationInfo);
+        LOG_INFO("[SHADOW_MEMORY] slot=", i,
+                 " type=", shadowAllocationInfo.memoryType,
+                 " flags=", shadowMemoryProperties.memoryTypes[shadowAllocationInfo.memoryType].propertyFlags,
+                 " allowedTypes=", imgAllocCI.memoryTypeBits,
+                 " bytes=", shadowAllocationInfo.size,
+                 "; uncached GPU-local atlas; retired depth inspection supported");
+#endif
         shadowDepthLayout_[i] = VK_IMAGE_LAYOUT_UNDEFINED;
+#ifdef WOWEE_PS4
+        shadowDepthReceiptReady_[i] = false;
+#endif
     }
 
     // --- Create per-frame shadow depth image views ---
@@ -224,7 +263,7 @@ bool Renderer::createPerFrameResources() {
     fbCI.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     fbCI.renderPass = shadowRenderPass;
     fbCI.attachmentCount = 1;
-    fbCI.width = SHADOW_MAP_SIZE;
+    fbCI.width = SHADOW_MAP_SIZE * 2;
     fbCI.height = SHADOW_MAP_SIZE;
     fbCI.layers = 1;
     for (uint32_t i = 0; i < MAX_FRAMES; i++) {
@@ -421,11 +460,17 @@ bool Renderer::createPerFrameResources() {
         }
     }
 
-    LOG_INFO("Per-frame Vulkan resources created (shadow map ", SHADOW_MAP_SIZE, "x", SHADOW_MAP_SIZE, ")");
+    LOG_INFO("Per-frame Vulkan resources created (shadow atlas ", SHADOW_MAP_SIZE * 2,
+             "x", SHADOW_MAP_SIZE, "; near=", SHADOW_MAP_SIZE, " far=", SHADOW_MAP_SIZE / 2, ")");
     return true;
 }
 
 void Renderer::destroyPerFrameResources() {
+#ifdef WOWEE_PS4
+    shadowDepthRecorded_ = false;
+    shadowDepthReceiptFrames_ = 0;
+    for (uint32_t i = 0; i < MAX_FRAMES; ++i) shadowDepthReceiptReady_[i] = false;
+#endif
     if (!vkCtx) return;
     vkDeviceWaitIdle(vkCtx->getDevice());
     VkDevice device = vkCtx->getDevice();
@@ -447,6 +492,9 @@ void Renderer::destroyPerFrameResources() {
         if (shadowDepthView[i]) { vkDestroyImageView(device, shadowDepthView[i], nullptr); shadowDepthView[i] = VK_NULL_HANDLE; }
         if (shadowDepthImage[i]) { vmaDestroyImage(vkCtx->getAllocator(), shadowDepthImage[i], shadowDepthAlloc[i]); shadowDepthImage[i] = VK_NULL_HANDLE; shadowDepthAlloc[i] = VK_NULL_HANDLE; }
         shadowDepthLayout_[i] = VK_IMAGE_LAYOUT_UNDEFINED;
+#ifdef WOWEE_PS4
+        shadowDepthReceiptReady_[i] = false;
+#endif
     }
     if (shadowRenderPass) { vkDestroyRenderPass(device, shadowRenderPass, nullptr); shadowRenderPass = VK_NULL_HANDLE; }
     shadowSampler = VK_NULL_HANDLE; // Owned by VkContext sampler cache
@@ -464,7 +512,7 @@ void Renderer::updatePerFrameUBO() {
     if (lightingManager) {
         const auto& lp = lightingManager->getLightingParams();
         currentFrameData.lightDir = glm::vec4(outdoorKeyLightTravelDirection(lp.directionalDir), 0.0f);
-        currentFrameData.lightColor = glm::vec4(lp.diffuseColor, 1.0f);
+        currentFrameData.lightColor = glm::vec4(lp.diffuseColor * celestialKeyStrength(lp.directionalDir), 1.0f);
         currentFrameData.ambientColor = glm::vec4(lp.ambientColor, 1.0f);
         currentFrameData.fogColor = glm::vec4(lp.fogColor, 1.0f);
         currentFrameData.fogParams.x = lp.fogStart;
@@ -497,8 +545,13 @@ void Renderer::updatePerFrameUBO() {
         std::min(currentFrameData.fogParams.x, currentFrameData.fogParams.y * 0.7f));
 #endif
     currentFrameData.lightSpaceMatrix = lightSpaceMatrix;
-    // Scale shadow bias proportionally to ortho extent to avoid acne at close range / gaps at far range
-    float shadowBias = glm::clamp(0.8f * (shadowDistance_ / 300.0f), 0.0f, 1.0f);
+    currentFrameData.nearLightSpaceMatrix = nearLightSpaceMatrix_;
+    currentFrameData.shadowAtlasParams = glm::vec4(
+        2.0f * nearShadowHalfExtent_ / SHADOW_MAP_SIZE,
+        4.0f * shadowHalfExtent_ / SHADOW_MAP_SIZE, kNearShadowDistance, 1.0f);
+    // This channel is occlusion strength, not depth bias. Map extent must not
+    // make a blocker translucent; ambient light remains unshadowed in shaders.
+    constexpr float shadowStrength = 1.0f;
     // z is the world the four receiving shaders do their PCF in: one over the
     // shadow map's side, so a tap offset of one texel is one texel.
     //
@@ -512,8 +565,11 @@ void Renderer::updatePerFrameUBO() {
     // itself, so it was a quarter of what it should be there too, which is the
     // other half of the same report: stair-stepped edges and acne together.
     const float shadowTexel = 1.0f / static_cast<float>(std::max(1u, SHADOW_MAP_SIZE));
+    const bool inspectSurfaceShadow = postProcessPipeline_ &&
+        postProcessPipeline_->getVolumetricDebug() == 4;
     currentFrameData.shadowParams =
-        glm::vec4(shadowsEnabled ? 1.0f : 0.0f, shadowBias, shadowTexel, 0.0f);
+        glm::vec4(shadowsEnabled ? 1.0f : 0.0f, shadowStrength, shadowTexel,
+            inspectSurfaceShadow ? 1.0f : 0.0f);
 
     for (uint32_t i = 0; i < MAX_LOCAL_LIGHTS; ++i) {
         currentFrameData.localLightPosRadius[i] = glm::vec4(0.0f);
@@ -603,6 +659,23 @@ void Renderer::updatePerFrameUBO() {
 }
 
 bool Renderer::initialize(core::Window* win) {
+    // Fixed stack buffer + the boot writer keep the last attempted subsystem
+    // visible even if the normal C++ logger cannot allocate during bad_alloc.
+    const auto checkpoint = [](const char* stage) {
+#ifdef WOWEE_PS4
+        const auto heap = platform::ps4::heapGrowthStats();
+        const auto memory = platform::ps4::queryAvailableCpuMemory();
+        char text[320];
+        std::snprintf(text, sizeof(text),
+            "renderer init: %s; flexibleBytes=%zu measured=%d arenaMappedCumulative=%zu extensions=%zu mappingFailures=%zu",
+            stage, memory.bytes, int(memory.measured), heap.mappedBytes,
+            heap.extensions, heap.mappingFailures);
+        platform::ps4::reportBootStage(text);
+#else
+        (void)stage;
+#endif
+    };
+    checkpoint("camera/settings");
     window = win;
     vkCtx = win->getVkContext();
     deferredWorldInitEnabled_ = core::envFlagEnabled("WOWEE_DEFER_WORLD_SYSTEMS", true);
@@ -688,17 +761,37 @@ bool Renderer::initialize(core::Window* win) {
     // The map's own resolution genuinely does need one, which is why only the
     // scope is routed here.
     //
-    // There was a second CVar beside it, extGodrays, for a screen-space
-    // scattering pass. The sun in this client is the one the original draws:
-    // Light.dbc's volumes pick a LightParams row, its bands give the sun and
-    // ambient colour for the hour, and where a zone names a LightSkybox the
-    // model's own celestial layer is what is overhead. That client has no
-    // light shafts anywhere in it, so a pass that adds them is not the
-    // original sun rendered better, it is a different sun - and it is gone,
-    // with its switch. See renderSkySystem for what draws the sun now.
+    // Volumetric sunlight reuses the world's depth and shadow map. It is an
+    // optional enhancement with its own bounded quality setting, independent
+    // of the original Light.dbc sky and ordinary surface lighting.
     renderSettingSinks().setShadowQuality = [this](int level) { setShadowQuality(level); };
+    renderSettingSinks().setVolumetricQuality = [this](int level) {
+        if (postProcessPipeline_) postProcessPipeline_->setVolumetricQuality(level);
+    };
+    renderSettingSinks().setVolumetricFogIntensity = [this](float intensity) {
+        if (postProcessPipeline_) postProcessPipeline_->setVolumetricFogIntensity(intensity);
+    };
+    renderSettingSinks().setVolumetricRaysEnabled = [this](bool value) {
+        if (postProcessPipeline_) postProcessPipeline_->setVolumetricRaysEnabled(value);
+    };
+    renderSettingSinks().setVolumetricFogEnabled = [this](bool value) {
+        if (postProcessPipeline_) postProcessPipeline_->setVolumetricFogEnabled(value);
+    };
+    renderSettingSinks().setBloomEnabled = [this](bool value) {
+        if (postProcessPipeline_) postProcessPipeline_->setBloomEnabled(value);
+    };
+    renderSettingSinks().setBloomIntensity = [this](float value) {
+        if (postProcessPipeline_) postProcessPipeline_->setBloomIntensity(value);
+    };
+    renderSettingSinks().setVolumetricIntensity = [this](float intensity) {
+        if (postProcessPipeline_) postProcessPipeline_->setVolumetricIntensity(intensity);
+    };
+    renderSettingSinks().setVolumetricDebug = [this](int mode) {
+        if (postProcessPipeline_) postProcessPipeline_->setVolumetricDebug(mode);
+    };
 
     // Create per-frame UBO and descriptor sets
+    checkpoint("per-frame resources");
     if (!createPerFrameResources()) {
         LOG_ERROR("Failed to create per-frame Vulkan resources");
         return false;
@@ -707,6 +800,7 @@ bool Renderer::initialize(core::Window* win) {
     // Initialize Vulkan sub-renderers (Phase 3)
 
     // Sky system (owns skybox, starfield, celestial, clouds, lens flare)
+    checkpoint("sky");
     skySystem = std::make_unique<SkySystem>();
     if (!skySystem->initialize(vkCtx, perFrameSetLayout)) {
         LOG_ERROR("Failed to initialize sky system");
@@ -719,47 +813,58 @@ bool Renderer::initialize(core::Window* win) {
     clouds = nullptr;
     lensFlare = nullptr;
 
+    checkpoint("weather");
     weather = std::make_unique<Weather>();
     if (!weather->initialize(vkCtx, perFrameSetLayout))
         LOG_WARNING("Weather effect initialization failed (non-fatal)");
 
+    checkpoint("lightning");
     lightning = std::make_unique<Lightning>();
     if (!lightning->initialize(vkCtx, perFrameSetLayout))
         LOG_WARNING("Lightning effect initialization failed (non-fatal)");
 
+    checkpoint("swim");
     swimEffects = std::make_unique<SwimEffects>();
     syncSwimEffectsTargetPass();
     if (!swimEffects->initialize(vkCtx, perFrameSetLayout))
         LOG_WARNING("Swim effect initialization failed (non-fatal)");
 
+    checkpoint("mount dust");
     mountDust = std::make_unique<MountDust>();
     if (!mountDust->initialize(vkCtx, perFrameSetLayout))
         LOG_WARNING("Mount dust effect initialization failed (non-fatal)");
 
+    checkpoint("charge");
     chargeEffect = std::make_unique<ChargeEffect>();
     if (!chargeEffect->initialize(vkCtx, perFrameSetLayout))
         LOG_WARNING("Charge effect initialization failed (non-fatal)");
 
+    checkpoint("level up");
     levelUpEffect = std::make_unique<LevelUpEffect>();
 
     // Non-fatal like the effects above: a device that cannot build the compute
     // pipeline still gets everything else, and isReady() gates both call sites.
+    checkpoint("grass");
     grassRenderer_ = std::make_unique<GrassRenderer>();
     if (!grassRenderer_->initialize(vkCtx, perFrameSetLayout))
         LOG_WARNING("Grass renderer initialization failed (non-fatal)");
     // The distance setting may have been applied before this existed.
     grassRenderer_->setCullDistance(grassDistance_);
 
+    checkpoint("quest markers");
     questMarkerRenderer = std::make_unique<QuestMarkerRenderer>();
+    checkpoint("footprints");
     footprintRenderer = std::make_unique<FootprintRenderer>();
 
     LOG_INFO("Vulkan sub-renderers initialized (Phase 3)");
 
     // LightingManager doesn't use GL - initialize for data-only use
+    checkpoint("lighting");
     lightingManager = std::make_unique<LightingManager>();
     auto* assetManager = core::Application::getInstance().getAssetManager();
 
     // Create zone manager; enrich music paths from DBC if available
+    checkpoint("zone database");
     zoneManager = std::make_unique<game::ZoneManager>();
     zoneManager->initialize();
     if (assetManager) {
@@ -792,14 +897,29 @@ bool Renderer::initialize(core::Window* win) {
 #endif
 
     // Create PostProcessPipeline (§4.3 - owns FSR/FXAA/FSR2/FSR3/brightness)
+    checkpoint("post process");
     postProcessPipeline_ = std::make_unique<PostProcessPipeline>();
     postProcessPipeline_->initialize(vkCtx);
+    postProcessPipeline_->setVolumetricQuality(std::atoi(
+        addons::storedCVarValue("extVolumetricQuality", rendering::kVolumetricQualityDefaultCVar).c_str()));
+    postProcessPipeline_->setVolumetricFogIntensity(std::atof(
+        addons::storedCVarValue("extVolumetricFogIntensity", "0.35").c_str()));
+    postProcessPipeline_->setVolumetricRaysEnabled(std::atoi(addons::storedCVarValue("extVolumetricRaysEnabled", "1").c_str()) != 0);
+    postProcessPipeline_->setVolumetricFogEnabled(std::atoi(addons::storedCVarValue("extVolumetricFogEnabled", "1").c_str()) != 0);
+    postProcessPipeline_->setBloomEnabled(std::atoi(addons::storedCVarValue("extBloomEnabled", "1").c_str()) != 0);
+    postProcessPipeline_->setBloomIntensity(std::atof(addons::storedCVarValue("extBloomIntensity", "0.25").c_str()));
+    postProcessPipeline_->setVolumetricIntensity(std::atof(
+        addons::storedCVarValue("extVolumetricIntensity", "1.35").c_str()));
+    postProcessPipeline_->setVolumetricDebug(std::atoi(
+        addons::storedCVarValue("extVolumetricDebug", "0").c_str()));
 
 
     // Create render graph and register virtual resources
+    checkpoint("render graph");
     renderGraph_ = std::make_unique<RenderGraph>();
 
     // Create overlay system (selection circle + fullscreen overlay)
+    checkpoint("overlay");
     overlaySystem_ = std::make_unique<OverlaySystem>(vkCtx);
     renderGraph_->registerResource("shadow_depth");
     renderGraph_->registerResource("reflection_texture");
@@ -807,6 +927,7 @@ bool Renderer::initialize(core::Window* win) {
     renderGraph_->registerResource("scene_depth");
     renderGraph_->registerResource("final_image");
 
+    checkpoint("complete");
     LOG_INFO("Renderer initialized");
     return true;
 }
@@ -1115,8 +1236,26 @@ void Renderer::applyMsaaChange() {
 }
 
 void Renderer::beginFrame() {
+#ifdef WOWEE_PS4
+    // CPU wall-time stages, deliberately not labelled as GPU timings. Only
+    // completed beginFrame calls join a window; skipped acquisitions do not.
+    using BeginClock = std::chrono::steady_clock;
+    const auto beginTimingStart = BeginClock::now();
+    auto beginTimingMark = beginTimingStart;
+    double beginStages[9]{};
+    auto markBeginStage = [&](unsigned stage) {
+        const auto now = BeginClock::now();
+        beginStages[stage] = std::chrono::duration<double, std::milli>(now - beginTimingMark).count();
+        beginTimingMark = now;
+    };
+#endif
+    minimapOverlayPending_ = false;
+    minimapOverlayGameHandler_ = nullptr;
     ZoneScopedN("Renderer::beginFrame");
     currentCmd = VK_NULL_HANDLE;
+#ifdef WOWEE_PS4
+    shadowDepthRecorded_ = false;
+#endif
     if (!vkCtx) return;
     if (vkCtx->isDeviceLost()) return;
 
@@ -1180,6 +1319,9 @@ void Renderer::beginFrame() {
     if (vkCtx->isDeviceLost()) return;
 #endif
 
+#ifdef WOWEE_PS4
+    markBeginStage(0); // resource retirement/recreation and scene history
+#endif
     // Acquire swapchain image and begin command buffer
     currentCmd = vkCtx->beginFrame(currentImageIndex);
     if (currentCmd == VK_NULL_HANDLE) {
@@ -1187,6 +1329,45 @@ void Renderer::beginFrame() {
         return;
     }
 
+#ifdef WOWEE_PS4
+    markBeginStage(1); // image acquire, slot fence, command reset
+    // beginFrame has retired this slot's fence. Inspect its previous shadow
+    // writes now, before any new pass can write the image. Never wait here.
+    const uint32_t receiptFrame = vkCtx->getCurrentFrame();
+    if (shadowDepthReceiptReady_[receiptFrame]) {
+        shadowDepthReceiptReady_[receiptFrame] = false;
+        const uint32_t receiptNumber = ++shadowDepthReceiptFrames_;
+        if (receiptNumber <= 4u || receiptNumber % 300u == 0u) {
+            for (uint32_t cascade = 0; cascade < 2; ++cascade) {
+                const auto region = shadowAtlasRegion(SHADOW_MAP_SIZE, cascade);
+                const VkRect2D rect{{static_cast<int32_t>(region.x), 0},
+                                    {region.side, region.side}};
+                VkPs4DepthInspection receipt{};
+                const auto receiptStart = std::chrono::steady_clock::now();
+                const VkResult inspected = vk_ps4_InspectRetiredDepthImage(
+                    vkCtx->getDevice(), shadowDepthImage[receiptFrame], &rect, &receipt);
+                const auto receiptUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - receiptStart).count();
+                LOG_INFO("[SHADOW_DEPTH_RECEIPT] sequence=", receiptNumber,
+                         " slot=", receiptFrame, " sampleUs=", receiptUs,
+                         " cascade=", cascade, " result=", static_cast<int>(inspected),
+                         " rejectReason=", receipt.rejectionReason,
+                         " memoryType=", receipt.memoryTypeIndex,
+                         " samples=", receipt.sampleCount, " finite=", receipt.finiteCount,
+                         " nonClear=", receipt.nonClearCount, " invalid=", receipt.invalidCount,
+                         " min=", receipt.minDepth, " max=", receipt.maxDepth,
+                         " expectedPlayerDepth=", shadowDepthExpectedPlayer_[receiptFrame][cascade],
+                         " quality=", shadowDepthReceiptQuality_[receiptFrame],
+                         " castersEnabled=", shadowDepthReceiptCasters_[receiptFrame],
+                         "; retired GPU image sample grid, not full coverage");
+            }
+        }
+    }
+#endif
+
+#ifdef WOWEE_PS4
+    markBeginStage(2); // periodic retired depth receipt
+#endif
     // FSR2 jitter pattern (§4.3 - delegates to PostProcessPipeline)
     if (postProcessPipeline_ && camera) postProcessPipeline_->applyJitter(camera.get());
 
@@ -1196,6 +1377,9 @@ void Renderer::beginFrame() {
     // Update per-frame UBO with current camera/lighting state
     updatePerFrameUBO();
 
+#ifdef WOWEE_PS4
+    markBeginStage(3); // jitter, light matrix and per-frame uniforms
+#endif
     // ── Early compute: M2 frustum culling ──
     // beginFrame() has already waited for this frame slot's previous fence, so
     // its mapped visibility output is complete and safe for the CPU to reuse.
@@ -1203,11 +1387,19 @@ void Renderer::beginFrame() {
     // directly into the normal frame command buffer. The old path submitted a
     // separate command buffer and synchronously waited on a fence every frame,
     // serializing CPU and GPU work solely to obtain same-frame cull results.
+#ifndef WOWEE_PS4
     if (m2Renderer && camera && vkCtx) {
         uint32_t frame = vkCtx->getCurrentFrame();
         m2Renderer->invalidateCullOutput(frame);
         m2Renderer->dispatchCullCompute(currentCmd, frame, *camera);
     }
+#else
+    // PS4 render() deliberately ignores delayed GPU visibility and computes
+    // current-camera visibility plus stable distance on the CPU. Its former
+    // dispatch uploaded every instance and ran a compute job with no consumer.
+    // Keep desktop GPU culling and PS4 visible geometry unchanged.
+    markBeginStage(4);
+#endif
 
     // Grass culls here too, for the same reason: a dispatch has to be recorded
     // outside a render pass. Unlike the M2 path nothing reads the result back -
@@ -1219,14 +1411,23 @@ void Renderer::beginFrame() {
                                      characterPosition);
     }
 
+#ifdef WOWEE_PS4
+    markBeginStage(5); // grass population and cull recording
+#endif
     // --- Off-screen pre-passes ---
     // Build frame graph: registers pre-passes as graph nodes with dependencies.
     // compile() topologically sorts; execute() runs them with auto barriers.
     buildFrameGraph(nullptr);
+#ifdef WOWEE_PS4
+    markBeginStage(6); // graph construction only
+#endif
     if (renderGraph_) {
         renderGraph_->execute(currentCmd);
     }
 
+#ifdef WOWEE_PS4
+    markBeginStage(7); // minimap, previews, shadows and reflection recording
+#endif
     // --- Begin render pass ---
     // Select framebuffer: PP off-screen target or swapchain (§4.3 - PostProcessPipeline)
     VkRenderPassBeginInfo rpInfo{};
@@ -1294,6 +1495,35 @@ void Renderer::beginFrame() {
         scissor.extent = renderExtent;
         vkCmdSetScissor(currentCmd, 0, 1, &scissor);
     }
+#ifdef WOWEE_PS4
+    markBeginStage(8); // scene render-pass setup/recording
+    struct BeginWindow {
+        double sums[9]{};
+        double total = 0.0;
+        uint32_t frames = 0;
+        BeginClock::time_point start = BeginClock::now();
+    };
+    static BeginWindow beginWindow;
+    for (unsigned i = 0; i < 9; ++i) beginWindow.sums[i] += beginStages[i];
+    beginWindow.total += std::chrono::duration<double, std::milli>(BeginClock::now() - beginTimingStart).count();
+    ++beginWindow.frames;
+    if (BeginClock::now() - beginWindow.start >= std::chrono::seconds(5)) {
+        const double n = static_cast<double>(beginWindow.frames);
+        LOG_INFO("[BEGIN_FRAME_CPU] frames=", beginWindow.frames,
+                 " totalMeanMs=", beginWindow.total / n,
+                 " resourcesMeanMs=", beginWindow.sums[0] / n,
+                 " acquireMeanMs=", beginWindow.sums[1] / n,
+                 " depthReceiptMeanMs=", beginWindow.sums[2] / n,
+                 " uniformsMeanMs=", beginWindow.sums[3] / n,
+                 " m2CullMeanMs=", beginWindow.sums[4] / n,
+                 " grassMeanMs=", beginWindow.sums[5] / n,
+                 " graphBuildMeanMs=", beginWindow.sums[6] / n,
+                 " prepassesMeanMs=", beginWindow.sums[7] / n,
+                 " sceneBeginMeanMs=", beginWindow.sums[8] / n,
+                 " m2CullPolicy=current-camera-cpu gpuCullDispatch=0 gpuTimingValid=0");
+        beginWindow = BeginWindow{};
+    }
+#endif
 }
 
 void Renderer::endFrame() {
@@ -1307,6 +1537,33 @@ void Renderer::endFrame() {
     // caller: the UI is drawn in the overlay pass, which this function opens
     // itself once whichever pass is current has been closed.
     if (postProcessPipeline_) {
+        const uint32_t frame = vkCtx->getCurrentFrame();
+        bool cameraSubmerged = false;
+        if (waterRenderer && camera) {
+            const glm::vec3 eye = camera->getPosition();
+            const auto surface = waterRenderer->getNearestWaterHeightAt(eye.x, eye.y, eye.z);
+            cameraSubmerged = surface && eye.z < *surface - 0.1f;
+        }
+        const bool inspectSurfaceShadow = postProcessPipeline_->getVolumetricDebug() == 4;
+        const auto volumeEligibility = volumetricEligibility(cameraSubmerged,
+            shadowsEnabled, shadowQuality_, shadowDepthView[frame] != VK_NULL_HANDLE &&
+                shadowDepthLayout_[frame] == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        const float fogGround = terrainManager ? terrainManager->getHeightAt(characterPosition.x, characterPosition.y).value_or(characterPosition.z) : characterPosition.z;
+        postProcessPipeline_->setVolumetricFogEnvironment(glm::vec3(currentFrameData.fogColor),
+            fogGround, lastDeltaTime_);
+        // Floating structures (including Acherus) sit far above the ADT
+        // ground. Reduce only the added shafts there, not authored surface
+        // light or the globally halved sun/moon exposure. A missing terrain
+        // height resolves to player height above, so streaming cannot darken
+        // the image merely because a tile is unavailable.
+        const float elevation = characterPosition.z - fogGround;
+        const float elevatedBlend = glm::smoothstep(20.0f, 50.0f, elevation);
+        const float sourceAbove = glm::smoothstep(-0.05f, 0.0f, -currentFrameData.lightDir.z);
+        const float localShaftScale = 1.0f - 0.30f * elevatedBlend * sourceAbove;
+        postProcessPipeline_->setVolumetricLighting(lightSpaceMatrix, nearLightSpaceMatrix_,
+            glm::vec3(currentFrameData.lightDir), glm::vec3(currentFrameData.lightColor) * localShaftScale,
+            shadowDepthView[frame], volumeEligibility.allowed && !inspectSurfaceShadow,
+            inspectSurfaceShadow ? "surface-shadow-inspection" : volumeEligibility.reason);
         postProcessPipeline_->executePostProcessing(
             currentCmd, currentImageIndex, camera.get(), lastDeltaTime_);
     }
@@ -1317,6 +1574,7 @@ void Renderer::endFrame() {
     // the water. The overlay pass is single-sampled and colour-only, which is
     // also why the UI costs the same here whatever MSAA the scene uses.
     vkCmdEndRenderPass(currentCmd);
+    if (postProcessPipeline_) postProcessPipeline_->finishVolumetricFrame(currentCmd);
 
     // Only when water could not be moved out of the scene pass (MSAA). Otherwise
     // renderWorld already took the copy at the one point in the frame where the
@@ -1379,6 +1637,13 @@ void Renderer::endFrame() {
             }
         }
 #endif
+        // Native map pixels are HUD too: submit after world lighting/bloom,
+        // before FrameXML/ImGui draws the border, markers and overlapping panels.
+        if (minimapOverlayPending_) {
+            renderMinimapOverlay(currentCmd, minimapOverlayGameHandler_);
+            minimapOverlayPending_ = false;
+            minimapOverlayGameHandler_ = nullptr;
+        }
         ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), currentCmd);
         vkCmdEndRenderPass(currentCmd);
     } else {
@@ -1399,7 +1664,16 @@ void Renderer::endFrame() {
 #endif
 
     // Submit and present
+#ifdef WOWEE_PS4
+    const uint32_t submittedShadowSlot = vkCtx->getCurrentFrame();
+    const uint64_t discardedBefore = vkCtx->getDiscardedFrameCount();
+#endif
     vkCtx->endFrame(currentCmd, currentImageIndex);
+#ifdef WOWEE_PS4
+    shadowDepthReceiptReady_[submittedShadowSlot] = shadowDepthRecorded_ &&
+        !vkCtx->isDeviceLost() && vkCtx->getDiscardedFrameCount() == discardedBefore;
+    shadowDepthRecorded_ = false;
+#endif
     currentCmd = VK_NULL_HANDLE;
 }
 
@@ -1685,6 +1959,7 @@ uint32_t Renderer::getCurrentZoneId() const {
 
 void Renderer::update(float deltaTime) {
     ZoneScopedN("Renderer::update");
+    lastUpdateStage_ = "deferred world setup";
     globalTime += deltaTime;
     runDeferredWorldInitStep(deltaTime);
 
@@ -1696,6 +1971,7 @@ void Renderer::update(float deltaTime) {
 
     if (cameraController) {
         auto cameraStart = std::chrono::steady_clock::now();
+        lastUpdateStage_ = "camera / collision";
         cameraController->update(deltaTime);
         auto cameraEnd = std::chrono::steady_clock::now();
         lastCameraUpdateMs = std::chrono::duration<double, std::milli>(cameraEnd - cameraStart).count();
@@ -1731,6 +2007,7 @@ void Renderer::update(float deltaTime) {
         }
     }
 
+    lastUpdateStage_ = "WMO containment";
     // Resolve WMO containment before weather and ambience consume it. Server
     // weather remains authoritative outdoors, but particles must not follow the
     // camera through a roof into Ironforge or other enclosed WMOs.
@@ -1739,61 +2016,60 @@ void Renderer::update(float deltaTime) {
     uint32_t insideWmoId = 0;
     const bool insideWmo = canQueryWmo &&
         wmoRenderer->isInsideWMO(camPos.x, camPos.y, camPos.z, &insideWmoId);
+    // Player gameplay/macros use the character's interior group, not the
+    // camera's weather containment or outdoor WMO archways.
+    const bool playerInsideInterior=wmoRenderer && wmoRenderer->isInsideInteriorWMO(
+        characterPosition.x,characterPosition.y,characterPosition.z+1.f);
     // Announce the crossing. zonetext.lua and worldstateframe.lua both listen
     // for ZONE_CHANGED_INDOORS, and WoW answers the way back out with a plain
     // ZONE_CHANGED - there is no outdoors counterpart. Nothing fired either,
     // so the state was known here and never left this file.
-    if (insideWmo != playerIndoors_) {
+    if (playerInsideInterior != playerIndoors_) {
         if (auto* gh = core::Application::getInstance().getGameHandler()) {
-            gh->fireAddonEvent(insideWmo ? "ZONE_CHANGED_INDOORS" : "ZONE_CHANGED", {});
+            gh->fireAddonEvent(playerInsideInterior ? "ZONE_CHANGED_INDOORS" : "ZONE_CHANGED", {});
         }
     }
-    playerIndoors_ = insideWmo;
+    playerIndoors_ = playerInsideInterior;
 
-    // Update lighting system
-    if (lightingManager) {
-        const auto* gh = core::Application::getInstance().getGameHandler();
-        uint32_t mapId    = gh ? gh->getCurrentMapId() : 0;
-        float gameTime    = gh ? gh->getGameTime() : -1.0f;
-        bool isRaining    = gh ? gh->isRaining() : false;
-        bool isUnderwater = cameraController ? cameraController->isSwimming() : false;
-        const uint32_t resolvedZoneId = getCurrentZoneId();
-
-        lightingManager->update(characterPosition, mapId, resolvedZoneId,
-                                gameTime, isRaining, isUnderwater, deltaTime);
-
-        // Sync weather visual renderer with game state
-        if (weather && gh) {
-            uint32_t wType = gh->getWeatherType();
-            float wInt = gh->getWeatherIntensity();
-            if (resolvedZoneId == 10) {
-                // Duskwood's defining effect is persistent ground fog. Some
-                // realms continuously report rain here; suppress those streak
-                // particles so they cannot replace the authored fog ambience.
-                weather->setWeatherType(Weather::Type::NONE);
-                weather->setIntensity(0.0f);
-            } else if (wType != 0) {
-                // Server-driven weather (SMSG_WEATHER) - authoritative
-                if (wType == 1)      weather->setWeatherType(Weather::Type::RAIN);
-                else if (wType == 2) weather->setWeatherType(Weather::Type::SNOW);
-                else if (wType == 3) weather->setWeatherType(Weather::Type::STORM);
-                else                 weather->setWeatherType(Weather::Type::NONE);
-                weather->setIntensity(wInt);
-            } else {
-                // No server weather - use zone-based weather configuration
-                weather->updateZoneWeather(getCurrentZoneId(), deltaTime);
-            }
-            weather->setEnabled(!insideWmo);
-
-            // Lightning flash disabled
-            if (lightning) {
-                lightning->setEnabled(false);
-            }
-        } else if (weather) {
-            // No game handler (single-player without network) - zone weather only
-            weather->updateZoneWeather(getCurrentZoneId(), deltaTime);
-            weather->setEnabled(!insideWmo);
+    lastUpdateStage_ = "lighting / zone";
+    const auto* environmentHandler = core::Application::getInstance().getGameHandler();
+    const uint32_t resolvedZoneId = getCurrentZoneId();
+    const bool serverWeather = environmentHandler && environmentHandler->isConnected() &&
+                               !environmentHandler->isLocalExploration();
+    // Select the forecast before any lighting consumer reads it. A clear
+    // server forecast is authoritative too; local weather is only a fallback.
+    if (weather && !serverWeather) {
+        weather->updateZoneWeather(resolvedZoneId, deltaTime);
+        if (resolvedZoneId == 10) {
+            weather->setWeatherType(Weather::Type::NONE);
+            weather->setIntensity(0.0f);
         }
+    }
+    const auto forecast = resolveEnvironmentWeather(serverWeather,
+        environmentHandler ? environmentHandler->getWeatherType() : 0,
+        environmentHandler ? environmentHandler->getWeatherIntensity() : 0.0f,
+        weather ? static_cast<uint32_t>(weather->getWeatherType()) : 0,
+        weather ? weather->getIntensity() : 0.0f);
+    resolvedWeatherType_ = forecast.type;
+    resolvedWeatherIntensity_ = forecast.intensity;
+    cameraIndoors_ = canQueryWmo && wmoRenderer->isInsideInteriorWMO(camPos.x, camPos.y, camPos.z);
+    if (weather) {
+        weather->setWeatherType(static_cast<Weather::Type>(forecast.type));
+        weather->setIntensity(forecast.intensity);
+        weather->setEnabled(!insideWmo);
+    }
+    if (lightning) lightning->setEnabled(false);
+
+    if (lightingManager) {
+        const uint32_t mapId = environmentHandler ? environmentHandler->getCurrentMapId() : 0;
+        const float gameTime = environmentHandler ? environmentHandler->getGameTime() : -1.0f;
+        bool isUnderwater = false;
+        if (waterRenderer && camera) {
+            const auto surface = waterRenderer->getNearestWaterHeightAt(camPos.x, camPos.y, camPos.z);
+            isUnderwater = surface && camPos.z < *surface - 0.1f;
+        }
+        lightingManager->update(characterPosition, mapId, resolvedZoneId,
+                                gameTime, forecast.usesOvercastLighting(), isUnderwater, deltaTime);
     }
 
     // Sync character model position/rotation and animation with follow target
@@ -1853,6 +2129,7 @@ void Renderer::update(float deltaTime) {
         }
     }
 
+    lastUpdateStage_ = "terrain streaming / finalization";
     // Update terrain streaming
     if (terrainManager && camera) {
         auto terrStart = std::chrono::steady_clock::now();
@@ -1864,6 +2141,7 @@ void Renderer::update(float deltaTime) {
         }
     }
 
+    lastUpdateStage_ = "sky / weather";
     // Update sky system (skybox time, star twinkle, clouds, celestial moon phases)
     if (skySystem) {
         skySystem->update(deltaTime);
@@ -1884,6 +2162,7 @@ void Renderer::update(float deltaTime) {
         lightning->update(deltaTime, *camera);
     }
 
+    lastUpdateStage_ = "water / effect particles";
     // Update swim effects
     if (swimEffects && camera && cameraController && waterRenderer) {
         swimEffects->update(*camera, *cameraController, *waterRenderer, deltaTime);
@@ -1963,6 +2242,7 @@ void Renderer::update(float deltaTime) {
     if (spellVisualSystem_) spellVisualSystem_->update(deltaTime);
 
 
+    lastUpdateStage_ = "M2 animation submission";
     // Launch M2 doodad animation on background thread (overlaps with character animation + audio)
     std::future<void> m2AnimFuture;
     // Character/audio update can throw before get(); the pool future itself
@@ -1980,12 +2260,14 @@ void Renderer::update(float deltaTime) {
         m2AnimLaunched = true;
     }
 
+    lastUpdateStage_ = "character animation";
     // Update character animations (runs in parallel with M2 animation above)
     if (characterRenderer && camera) {
         const auto viewProjection = camera->getViewProjectionMatrix();
         characterRenderer->update(deltaTime, camera->getPosition(), &viewProjection);
     }
 
+    lastUpdateStage_ = "audio voice cleanup";
     // Update AudioEngine (cleanup finished sounds, etc.)
     audio::AudioEngine::instance().update(deltaTime);
 
@@ -1997,11 +2279,14 @@ void Renderer::update(float deltaTime) {
     // the useful overlap with character animation and audio above, but finish
     // structural M2 work before any main-thread collision query.
     if (m2AnimLaunched) {
+        lastUpdateStage_ = "M2 animation completion";
         try { m2AnimFuture.get(); }
+        catch (const std::bad_alloc&) { throw; }
         catch (const std::exception& e) { LOG_ERROR("M2 animation worker: ", e.what()); }
         m2AnimLaunched = false;
     }
 
+    lastUpdateStage_ = "footsteps / activity sound";
     // Footsteps: age visual prints, then let authored footfall events add new ones.
     if (footprintRenderer) footprintRenderer->update(deltaTime);
     if (animationController_) animationController_->updateFootsteps(deltaTime);
@@ -2009,6 +2294,7 @@ void Renderer::update(float deltaTime) {
     // Activity SFX + mount ambient sounds: delegated to AnimationController (§4.2)
     if (animationController_) animationController_->updateSfxState(deltaTime);
 
+    lastUpdateStage_ = "zone audio";
     // Ambient environmental sounds + zone/music transitions (delegated to AudioCoordinator)
     if (audioCoordinator_) {
         audio::ZoneAudioContext zctx;
@@ -2040,11 +2326,13 @@ void Renderer::update(float deltaTime) {
         audioCoordinator_->updateZoneAudio(zctx);
     }
 
+    lastUpdateStage_ = "performance HUD";
     // Update performance HUD
     if (performanceHUD) {
         performanceHUD->update(deltaTime);
     }
 
+    lastUpdateStage_ = "unused model cleanup";
     // Periodic cache hygiene: drop model GPU data no longer referenced by active instances.
 #ifdef WOWEE_PS4
     // Simulation time is capped at 0.1s per frame. At 2 FPS the old timer
@@ -2057,6 +2345,7 @@ void Renderer::update(float deltaTime) {
     modelCleanupTimer += deltaTime;
     if (modelCleanupTimer >= 5.0f) {
 #endif
+        if (terrainRenderer) terrainRenderer->cleanupUnusedAlphaTextures();
         if (wmoRenderer) {
             std::unordered_set<uint32_t> preparing;
             if (terrainManager) terrainManager->collectPendingWmoModels(preparing);
@@ -2074,6 +2363,7 @@ void Renderer::update(float deltaTime) {
 #endif
     }
 
+    lastUpdateStage_ = "complete";
     auto updateEnd = std::chrono::steady_clock::now();
     lastUpdateMs = std::chrono::duration<double, std::milli>(updateEnd - updateStart).count();
 }
@@ -2639,6 +2929,9 @@ void Renderer::renderWorld(game::World* world, game::GameHandler* gameHandler) {
     static const bool skipAll = (std::getenv("WOWEE_SKIP_ALL_RENDER") != nullptr);
     if (skipAll) return;
 
+    minimapOverlayPending_ = true;
+    minimapOverlayGameHandler_ = gameHandler;
+
     auto renderStart = std::chrono::steady_clock::now();
     lastTerrainRenderMs = 0.0;
     lastWMORenderMs = 0.0;
@@ -2748,13 +3041,15 @@ void Renderer::renderWorld(game::World* world, game::GameHandler* gameHandler) {
                 const rendering::SkyParams skyParams = rendering::skyParamsFromLighting(
                     timeOfDay,
                     gameHandler ? gameHandler->getGameTime() : -1.0f,
-                    gameHandler ? gameHandler->getWeatherIntensity() : 0.0f,
+                    resolvedWeatherIntensity_,
                     lightingManager ? &lightingManager->getLightingParams() : nullptr,
-                    useOriginalSkybox, lightingManager ? lightingManager->getActiveSkyboxFlags() : 0);
+                    useOriginalSkybox, lightingManager ? lightingManager->getActiveSkyboxFlags() : 0,
+                    gameHandler ? gameHandler->getCurrentMapId() : 0xffffffffu);
                 skySystem->render(cmd, perFrameSet, *camera, skyParams);
                 if (useOriginalSkybox) {
                     skyboxModelRenderer_->render(cmd, perFrameSet, *camera);
                 }
+                skySystem->renderAtmosphere(cmd, perFrameSet, *camera, skyParams);
             }
             vkEndCommandBuffer(cmd);
         }
@@ -2841,6 +3136,29 @@ void Renderer::renderWorld(game::World* world, game::GameHandler* gameHandler) {
         const double worstWorkerMs = std::max({lastTerrainRenderMs, lastWMORenderMs,
                                                lastM2RenderMs, lastCharacterRenderMs,
                                                lastPostRenderMs});
+        // Periodic means expose steady-state preparation costs even when no
+        // individual stage crosses the slow-frame warning threshold. Worker
+        // durations overlap: these are CPU wall scopes, never additive GPU time.
+        static uint32_t cpuWindowFrames = 0;
+        static double cpuWindowMs[8] = {};
+        const double cpuScopes[8] = {prepWmoMs, prepM2Ms, prepCharMs,
+            lastTerrainRenderMs, lastWMORenderMs, lastM2RenderMs,
+            lastCharacterRenderMs, lastPostRenderMs};
+        for (unsigned i = 0; i < 8; ++i) cpuWindowMs[i] += cpuScopes[i];
+        if (++cpuWindowFrames == 300) {
+            LOG_INFO("[WORLD_CPU] frames=", cpuWindowFrames,
+                     " prepWmoMs=", cpuWindowMs[0] / cpuWindowFrames,
+                     " prepM2Ms=", cpuWindowMs[1] / cpuWindowFrames,
+                     " prepCharMs=", cpuWindowMs[2] / cpuWindowFrames,
+                     " terrainWorkerMs=", cpuWindowMs[3] / cpuWindowFrames,
+                     " wmoWorkerMs=", cpuWindowMs[4] / cpuWindowFrames,
+                     " m2WorkerMs=", cpuWindowMs[5] / cpuWindowFrames,
+                     " charWorkerMs=", cpuWindowMs[6] / cpuWindowFrames,
+                     " postWorkerMs=", cpuWindowMs[7] / cpuWindowFrames,
+                     "; overlapping CPU wall scopes, not GPU timings");
+            for (double& value : cpuWindowMs) value = 0.0;
+            cpuWindowFrames = 0;
+        }
         if (prepTotalMs + worstWorkerMs > 40.0) {
             LOG_WARNING("SLOW renderWorld breakdown: prepare=", prepTotalMs,
                         "ms (wmo=", prepWmoMs, " m2=", prepM2Ms, " char=", prepCharMs,
@@ -2860,7 +3178,7 @@ void Renderer::renderWorld(game::World* world, game::GameHandler* gameHandler) {
         }
 
         // --- Execute all secondary buffers in correct draw order ---
-        VkCommandBuffer validCmds[6];
+        VkCommandBuffer validCmds[NUM_SECONDARIES];
         uint32_t numCmds = 0;
         validCmds[numCmds++] = secondaryCmds_[SEC_SKY][frameIdx];
         if (terrainRenderer && camera && terrainEnabled && !skipTerrain)
@@ -2882,14 +3200,16 @@ void Renderer::renderWorld(game::World* world, game::GameHandler* gameHandler) {
             const rendering::SkyParams skyParams = rendering::skyParamsFromLighting(
                 timeOfDay,
                 gameHandler ? gameHandler->getGameTime() : -1.0f,
-                gameHandler ? gameHandler->getWeatherIntensity() : 0.0f,
+                resolvedWeatherIntensity_,
                 lightingManager ? &lightingManager->getLightingParams() : nullptr,
-                useOriginalSkybox, lightingManager ? lightingManager->getActiveSkyboxFlags() : 0);
+                useOriginalSkybox, lightingManager ? lightingManager->getActiveSkyboxFlags() : 0,
+                    gameHandler ? gameHandler->getCurrentMapId() : 0xffffffffu);
             skySystem->render(currentCmd, perFrameSet, *camera, skyParams);
             if (useOriginalSkybox) {
                 skyboxModelRenderer_->prepareRender(frameIdx, *camera);
                 skyboxModelRenderer_->render(currentCmd, perFrameSet, *camera);
             }
+            skySystem->renderAtmosphere(currentCmd, perFrameSet, *camera, skyParams);
         }
 
         if (terrainRenderer && camera && terrainEnabled && !skipTerrain) {
@@ -2961,7 +3281,7 @@ void Renderer::renderWorld(game::World* world, game::GameHandler* gameHandler) {
         if (questMarkerRenderer && camera) questMarkerRenderer->render(currentCmd, perFrameSet, *camera);
     }
 
-    // Underwater overlay and minimap - in the fallback path these run inline;
+    // World overlays - in the fallback path these run inline;
     // in the parallel path they were already recorded into SEC_POST above.
     if (!parallelRecordingEnabled_) {
         renderUnderwaterOverlay(currentCmd);
@@ -3034,9 +3354,7 @@ void Renderer::renderWorld(game::World* world, game::GameHandler* gameHandler) {
             swimEffects->render(currentCmd, perFrameSet);
         }
 
-        // And the minimap, last of all: it is the interface rather than the
-        // world, and nothing in the world belongs over it.
-        if (minimapDrawsWithWater_) renderMinimapOverlay(currentCmd, gameHandler);
+        // The minimap is deferred until the final HUD pass in endFrame().
     }
 
     auto renderEnd = std::chrono::steady_clock::now();
@@ -3052,7 +3370,6 @@ void Renderer::syncSwimEffectsTargetPass() {
     VkRenderPass pass = vkCtx->getImGuiRenderPass();
     VkSampleCountFlagBits samples = vkCtx->getMsaaSamples();
     swimEffectsDrawWithWater_ = false;
-    minimapDrawsWithWater_ = false;
 
     if (waterDrawsInContinuePass()) {
         // Both continuation passes are single-sampled: with MSAA the water draws
@@ -3065,25 +3382,13 @@ void Renderer::syncSwimEffectsTargetPass() {
         if (pass != VK_NULL_HANDLE) {
             samples = VK_SAMPLE_COUNT_1_BIT;
             swimEffectsDrawWithWater_ = true;
-            minimapDrawsWithWater_ = true;
         } else {
             pass = vkCtx->getImGuiRenderPass();
         }
     }
 
     if (swimEffects) swimEffects->setTargetPass(pass, samples);
-    // The minimap for the same reason as the spray, and it is the more visible
-    // of the two: it is a fixed disc in the corner of the screen, so any water
-    // on screen behind it painted straight over the terrain it draws. The
-    // spray at least only lost against water it was thrown off.
-    //
-    // Only when water has actually left the scene pass. Where it has not - MSAA
-    // onto an off-screen scene, or no continuation pass at all - water is drawn
-    // before this and the minimap is already on top of it.
-    if (minimap) {
-        minimap->setTargetPass(minimapDrawsWithWater_ ? pass : VK_NULL_HANDLE,
-                               samples);
-    }
+
 }
 
 void Renderer::renderUnderwaterOverlay(VkCommandBuffer cmd) {
@@ -3193,7 +3498,7 @@ if (overlaySystem_ && waterRenderer && camera) {
 }
 
 void Renderer::renderPostSceneOverlays(VkCommandBuffer cmd,
-                                       game::GameHandler* gameHandler) {
+                                       game::GameHandler* /*gameHandler*/) {
     // Ghost mode desaturation: cold blue-grey overlay when dead/ghost
     if (ghostMode_ && overlaySystem_) {
         overlaySystem_->renderOverlay(glm::vec4(0.30f, 0.35f, 0.42f, 0.45f), cmd);
@@ -3213,9 +3518,7 @@ void Renderer::renderPostSceneOverlays(VkCommandBuffer cmd,
         }
     }
 
-    // Unless it is following water into the pass after this one, where it is
-    // drawn instead - see renderMinimapOverlay's caller below the water.
-    if (!minimapDrawsWithWater_) renderMinimapOverlay(cmd, gameHandler);
+    // HUD map drawing is deferred until after post-processing in endFrame().
 }
 
 /// The minimap disc, over whatever has been drawn so far.
@@ -3243,9 +3546,7 @@ void Renderer::renderMinimapOverlay(VkCommandBuffer cmd,
             minimapPlayerOrientation = glm::pi<float>() - gameHandler->getMovementInfo().orientation;
             hasMinimapPlayerOrientation = true;
         }
-        const VkExtent2D minimapExtent = minimapDrawsWithWater_ &&
-            vkCtx->getMsaaSamples() > VK_SAMPLE_COUNT_1_BIT
-            ? vkCtx->getSwapchainExtent() : activeRenderExtent_;
+        const VkExtent2D minimapExtent = vkCtx->getSwapchainExtent();
         minimap->render(cmd, *camera, minimapCenter,
                         window->getWidth(), window->getHeight(),
                         minimapExtent,
@@ -3453,6 +3754,10 @@ bool Renderer::initializeRenderers(pipeline::AssetManager* assetManager, const s
         // Wire asset manager to minimap for tile texture loading
         if (minimap) {
             minimap->setAssetManager(assetManager);
+            // Parse the archive lookup during world initialization, before an
+            // intro frame first composites the minimap. Console logs measured
+            // this lazy parse at roughly 0.4–0.5 seconds inside beginFrame.
+            minimap->ensureTRSParsed();
         }
         // Wire terrain manager, WMO renderer, and water renderer to camera controller
         if (cameraController) {
@@ -3759,7 +4064,7 @@ glm::mat4 Renderer::computeLightSpaceMatrix() {
     // moving. The light's right/up axes are constant per frame regardless of
     // where the centre is, so they can be built first and the centre snapped
     // along them before the view matrix exists.
-    float texelWorld = (2.0f * halfExtent) / static_cast<float>(SHADOW_MAP_SIZE);
+    float texelWorld = (4.0f * halfExtent) / static_cast<float>(SHADOW_MAP_SIZE);
 
     // Stable light-space axes (independent of center position)
     glm::vec3 up(0.0f, 0.0f, 1.0f);
@@ -3776,6 +4081,22 @@ glm::mat4 Renderer::computeLightSpaceMatrix() {
     center = snapShadowCenter(center, lightRight, lightUp, sunDir, texelWorld);
     shadowCenter = center;
     shadowHalfExtent_ = halfExtent;
+
+    // Keep the far footprint for terrain occlusion and shafts. A separate
+    // focused region spends the same quality-level resolution on nearby feet,
+    // foliage and building edges instead of spreading it over hundreds of yards.
+    const ShadowFrustumFit nearFit = fitShadowFrustum(
+        camPos, camFwd, fovY, aspect, camNear, std::min(kNearShadowDistance, shadowDistance_));
+    nearShadowHalfExtent_ = nearFit.radius;
+    nearShadowCenter_ = snapShadowCenter(nearFit.center, lightRight, lightUp, sunDir,
+        2.0f * nearFit.radius / static_cast<float>(SHADOW_MAP_SIZE));
+    // Preserve upstream occluders: near receiver footprint, full far light depth.
+    glm::mat4 nearView = glm::lookAt(nearShadowCenter_ - sunDir * kShadowLightDistance,
+                                    nearShadowCenter_, up);
+    glm::mat4 nearProj = glm::ortho(-nearFit.radius, nearFit.radius, -nearFit.radius,
+                                   nearFit.radius, kShadowNearPlane, kShadowFarPlane);
+    nearProj[1][1] *= -1.0f;
+    nearLightSpaceMatrix_ = nearProj * nearView;
 
     glm::mat4 lightView = glm::lookAt(center - sunDir * kShadowLightDistance, center, up);
     glm::mat4 lightProj = glm::ortho(-halfExtent, halfExtent, -halfExtent, halfExtent,
@@ -4015,6 +4336,7 @@ void Renderer::renderReflectionPass() {
         // Render scene into reflection texture (sky + terrain + WMO only for perf)
         if (skySystem) {
             auto* reflSkybox = skySystem->getSkybox();
+            const auto* reflectionGameHandler = core::Application::getInstance().getGameHandler();
             // The same builder the two scene paths use, rather than a third
             // hand-written copy of it - which is what sky_params_from_lighting.hpp
             // was written to stop, and this was the copy it missed.
@@ -4028,19 +4350,19 @@ void Renderer::renderReflectionPass() {
             // sunset had white clouds over an orange sky. Water reflected a sun
             // and a sky that the sky above it was not drawing.
             //
-            // weatherIntensity and the server's hour stay at their "not known
-            // here" values: no game handler is in scope in this pass, which is
-            // the one thing it genuinely cannot supply. Both are what the
-            // hand-written copy passed too, so nothing regresses.
+            // Reflections share the frame's resolved forecast with the main sky.
+            // The visual hour already comes from the lighting manager.
             const rendering::SkyParams skyParams = rendering::skyParamsFromLighting(
                 lightingManager ? lightingManager->getVisualTimeOfDayHours()
                                 : (reflSkybox ? reflSkybox->getTimeOfDay() : 12.0f),
                 -1.0f,
-                0.0f,
+                resolvedWeatherIntensity_,
                 lightingManager ? &lightingManager->getLightingParams() : nullptr,
                 skyboxMatchesLighting_ && skyboxModelRenderer_ && skyboxModelInstanceId_ != 0,
-                lightingManager ? lightingManager->getActiveSkyboxFlags() : 0);
+                lightingManager ? lightingManager->getActiveSkyboxFlags() : 0,
+                reflectionGameHandler ? reflectionGameHandler->getCurrentMapId() : 0xffffffffu);
             skySystem->render(currentCmd, reflDescSet, *camera, skyParams);
+            skySystem->renderAtmosphere(currentCmd, reflDescSet, *camera, skyParams);
         }
         if (terrainRenderer && terrainEnabled) {
             terrainRenderer->render(currentCmd, reflDescSet, *camera);
@@ -4070,6 +4392,13 @@ void Renderer::renderShadowPass() {
     // the image in the layout its readers expect.
     const bool drawCasters = shadowsEnabled && shadowLevelDrawsCasters(shadowQuality_);
     const bool drawObjectCasters = drawCasters && shadowLevelDrawsObjects(shadowQuality_);
+    static int reportedShadowQuality = -1;
+    if (reportedShadowQuality != shadowQuality_) {
+        reportedShadowQuality = shadowQuality_;
+        LOG_INFO("[SHADOW_SCOPE] quality=", shadowQuality_, " mapSide=", SHADOW_MAP_SIZE,
+                 " terrain=", drawCasters, " objects=", drawObjectCasters,
+                 "; quality 0 clears only, 1 terrain only, 2+ includes NPCs/trees/buildings; saved setting preserved");
+    }
 
     // Shadows render every frame - throttling causes visible flicker on player/NPCs
 
@@ -4081,7 +4410,7 @@ void Renderer::renderShadowPass() {
     // Barrier 1: transition this frame's shadow map into writable depth layout.
     VkImageMemoryBarrier2 b1{};
     b1.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    b1.dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    b1.dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
     b1.oldLayout = shadowDepthLayout_[frame];
     b1.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     b1.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -4108,26 +4437,16 @@ void Renderer::renderShadowPass() {
     rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     rpInfo.renderPass = shadowRenderPass;
     rpInfo.framebuffer = shadowFramebuffer[frame];
-    rpInfo.renderArea = {.offset = {.x = 0, .y = 0}, .extent = {.width = SHADOW_MAP_SIZE, .height = SHADOW_MAP_SIZE}};
+    rpInfo.renderArea = {.offset = {.x = 0, .y = 0}, .extent = {.width = SHADOW_MAP_SIZE * 2, .height = SHADOW_MAP_SIZE}};
     VkClearValue clear{};
     clear.depthStencil = {.depth = 1.0f, .stencil = 0};
     rpInfo.clearValueCount = 1;
     rpInfo.pClearValues = &clear;
     vkCmdBeginRenderPass(currentCmd, &rpInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-    VkViewport vp{.x = 0, .y = 0, .width = static_cast<float>(SHADOW_MAP_SIZE), .height = static_cast<float>(SHADOW_MAP_SIZE), .minDepth = 0.0f, .maxDepth = 1.0f};
-    vkCmdSetViewport(currentCmd, 0, 1, &vp);
-    VkRect2D sc{.offset = {.x = 0, .y = 0}, .extent = {.width = SHADOW_MAP_SIZE, .height = SHADOW_MAP_SIZE}};
-    vkCmdSetScissor(currentCmd, 0, 1, &sc);
-
-    // Phase 7/8: render shadow casters.
-    //
-    // Measured against the box that was actually fitted rather than against
-    // the shadow distance. The fit is well inside that distance, so the old
-    // radius gathered casters whose shadow could not reach the map however
-    // tall they were - work submitted, transformed and rasterised into
-    // nothing. The 1.35 margin is kept: a caster just outside the box still
-    // casts into it when the sun is low.
+    // Casters use the finite light-space volume, including upstream geometry
+    // that can shadow this receiver footprint. Keep the legacy radius argument
+    // for the renderer interfaces; it is not a caster visibility bound.
     const float shadowCullRadius =
         (shadowHalfExtent_ > 1.0f ? shadowHalfExtent_ : shadowDistance_) * 1.35f;
     // With shadows off the pass still begins and ends, so the map is cleared
@@ -4135,43 +4454,110 @@ void Renderer::renderShadowPass() {
     const auto castersStart = std::chrono::steady_clock::now();
     double terrainShadowMs=0, wmoShadowMs=0, m2ShadowMs=0, characterShadowMs=0;
     auto stamp=castersStart;
+    if (drawCasters && drawObjectCasters && m2Renderer) {
+        m2Renderer->beginShadowFrame();
+        const auto now = std::chrono::steady_clock::now();
+        m2ShadowMs += std::chrono::duration<double,std::milli>(now-stamp).count();
+        stamp = now;
+    }
+    // Both actual camera clip volumes can sample the atlas. The reflected
+    // oblique projection must be included even when no reflected surface
+    // lies in the main camera's receiver hull.
+    const bool haveReceiverHull = camera && camera->getFarPlane() > camera->getNearPlane();
+    glm::mat4 reflectionClip(1.0f);
+    bool haveReflectionReceivers = false;
+#ifdef WOWEE_PS4
+    constexpr const char* shadowReflectionDefault = "0";
+#else
+    constexpr const char* shadowReflectionDefault = "1";
+#endif
+    if (haveReceiverHull && waterRenderer && waterRenderer->hasReflectionPass() &&
+        waterRenderer->hasSurfaces() && reflPerFrameUBOMapped &&
+        vkCtx->getMsaaSamples() == VK_SAMPLE_COUNT_1_BIT &&
+        addons::storedCVarValue("extWaterReflections", shadowReflectionDefault) != "0") {
+        const auto waterHeight = waterRenderer->getDominantWaterHeight(camera->getPosition());
+        if (waterHeight && camera->getPosition().z >= *waterHeight + 0.5f) {
+            const auto reflectionView = WaterRenderer::computeReflectedView(*camera,*waterHeight);
+            reflectionClip = WaterRenderer::computeObliqueProjection(
+                camera->getProjectionMatrix(),reflectionView,*waterHeight) * reflectionView;
+            haveReflectionReceivers = true;
+        }
+    }
+    for (uint32_t cascade = 0; cascade < 2; ++cascade) {
+    const auto region = shadowAtlasRegion(SHADOW_MAP_SIZE, cascade);
+    const uint32_t side = region.side;
+    const int32_t origin = static_cast<int32_t>(region.x);
+    VkViewport vp{.x = static_cast<float>(origin), .y = 0,
+        .width = static_cast<float>(side), .height = static_cast<float>(side),
+        .minDepth = 0.0f, .maxDepth = 1.0f};
+    vkCmdSetViewport(currentCmd, 0, 1, &vp);
+    VkRect2D sc{.offset = {.x = origin, .y = 0}, .extent = {.width = side, .height = side}};
+    vkCmdSetScissor(currentCmd, 0, 1, &sc);
+    const glm::mat4& cascadeMatrix = cascade == 0 ? nearLightSpaceMatrix_ : lightSpaceMatrix;
+    const glm::vec3& cascadeCenter = cascade == 0 ? nearShadowCenter_ : shadowCenter;
+    const float cascadeRadius = cascade == 0 ? nearShadowHalfExtent_ * 1.35f : shadowCullRadius;
+    ShadowReceiverHull receiverHull, reflectionReceiverHull;
+    // Clip receiver volumes to the cascade before extruding along the light.
+    // Upstream/offscreen blockers remain eligible; shadow range is unchanged.
+    const float cascadeExtent = cascade == 0 ? nearShadowHalfExtent_ : shadowHalfExtent_;
+    const float receiverSupport = 4.0f * cascadeExtent / static_cast<float>(side);
+    if (haveReceiverHull) {
+        receiverHull.buildClipped(camera->getProjectionMatrix() * camera->getViewMatrix(),
+                                  cascadeMatrix,receiverSupport);
+        if (haveReflectionReceivers) {
+            reflectionReceiverHull.buildClipped(reflectionClip,cascadeMatrix,receiverSupport);
+            receiverHull.includeAdditional(&reflectionReceiverHull);
+        }
+    }
+    const auto* receiver = haveReceiverHull ? &receiverHull : nullptr;
     if (drawCasters) {
     if (terrainRenderer) {
-        terrainRenderer->renderShadow(currentCmd, lightSpaceMatrix, shadowCenter, shadowCullRadius);
-            { const auto now=std::chrono::steady_clock::now(); terrainShadowMs=std::chrono::duration<double,std::milli>(now-stamp).count();stamp=now; }
+        terrainRenderer->renderShadow(currentCmd, cascadeMatrix, cascadeCenter, cascadeRadius, receiver);
+            { const auto now=std::chrono::steady_clock::now(); terrainShadowMs+=std::chrono::duration<double,std::milli>(now-stamp).count();stamp=now; }
     }
-    // Buildings, doodads, creatures, NPCs and every player character. Each of
-    // these walks the draw list its own renderer already culled for the main
-    // pass and re-tests it against the light's own radius - no second cull of
-    // the world, which is what makes the difference between levels 1 and 2 a
-    // matter of draw calls rather than of CPU.
+    // Buildings, doodads, creatures, NPCs and every player character use the
+    // light's own volume, so off-camera occluders remain eligible as well.
     if (drawObjectCasters) {
         if (wmoRenderer) {
-            wmoRenderer->renderShadow(currentCmd, lightSpaceMatrix, shadowCenter, shadowCullRadius);
-            { const auto now=std::chrono::steady_clock::now(); wmoShadowMs=std::chrono::duration<double,std::milli>(now-stamp).count();stamp=now; }
+            wmoRenderer->renderShadow(currentCmd, cascadeMatrix, cascadeCenter, cascadeRadius, cascade, receiver);
+            { const auto now=std::chrono::steady_clock::now(); wmoShadowMs+=std::chrono::duration<double,std::milli>(now-stamp).count();stamp=now; }
         }
         if (m2Renderer) {
-            m2Renderer->renderShadow(currentCmd, lightSpaceMatrix, globalTime, shadowCenter, shadowCullRadius);
-            { const auto now=std::chrono::steady_clock::now(); m2ShadowMs=std::chrono::duration<double,std::milli>(now-stamp).count();stamp=now; }
+            // Omit only far doodads smaller than half a far shadow texel;
+            // the focused map retains every intersecting nearby caster.
+            const float minCasterDiameter = cascade == 0 ? 0.0f
+                : 2.0f * shadowHalfExtent_ / static_cast<float>(SHADOW_MAP_SIZE);
+            m2Renderer->renderShadow(currentCmd, cascadeMatrix, globalTime,
+                cascadeCenter, cascadeRadius, cascade, minCasterDiameter,
+                receiver);
+            { const auto now=std::chrono::steady_clock::now(); m2ShadowMs+=std::chrono::duration<double,std::milli>(now-stamp).count();stamp=now; }
         }
         if (characterRenderer) {
-            characterRenderer->renderShadow(currentCmd, lightSpaceMatrix, shadowCenter, shadowCullRadius);
-            { const auto now=std::chrono::steady_clock::now(); characterShadowMs=std::chrono::duration<double,std::milli>(now-stamp).count();stamp=now; }
+            characterRenderer->renderShadow(currentCmd, cascadeMatrix, cascadeCenter, cascadeRadius, cascade, receiver);
+            { const auto now=std::chrono::steady_clock::now(); characterShadowMs+=std::chrono::duration<double,std::milli>(now-stamp).count();stamp=now; }
         }
     }
     }  // drawCasters
+    }  // atlas regions; disjoint viewport/scissor, one clear and transition
+    if (drawCasters && drawObjectCasters && m2Renderer) m2Renderer->endShadowFrame();
 
     static uint32_t shadowTimingFrames=0;
     if (++shadowTimingFrames % 300u == 1u)
         LOG_INFO("[SHADOW_PERF] terrainMs=",terrainShadowMs," wmoMs=",wmoShadowMs,
-                 " m2Ms=",m2ShadowMs," charactersMs=",characterShadowMs);
+                 " m2Ms=",m2ShadowMs," charactersMs=",characterShadowMs,
+                 " quality=",shadowQuality_," objectCasters=",drawObjectCasters,
+                 " mapSide=",SHADOW_MAP_SIZE," receiverRadius=",shadowHalfExtent_,
+                 " nearRadius=",nearShadowHalfExtent_, " atlasWidth=",SHADOW_MAP_SIZE*2,
+                 " receiverClip=",haveReceiverHull," reflectionReceivers=",haveReflectionReceivers,
+                 " nearWorldTexel=",2.0f*nearShadowHalfExtent_/SHADOW_MAP_SIZE,
+                 " farWorldTexel=",4.0f*shadowHalfExtent_/SHADOW_MAP_SIZE);
 
     vkCmdEndRenderPass(currentCmd);
 
     // Barrier 2: DEPTH_STENCIL_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
     VkImageMemoryBarrier2 b2{};
     b2.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    b2.srcStageMask = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    b2.srcStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
     b2.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
     b2.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     b2.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -4187,6 +4573,14 @@ void Renderer::renderShadowPass() {
     b2Dep.pImageMemoryBarriers = &b2;
     cmdPipelineBarrier2(currentCmd, b2Dep);
     shadowDepthLayout_[frame] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+#ifdef WOWEE_PS4
+    shadowDepthRecorded_ = true;
+    shadowDepthExpectedPlayer_[frame] = glm::vec2(
+        (nearLightSpaceMatrix_ * glm::vec4(characterPosition, 1.0f)).z,
+        (lightSpaceMatrix * glm::vec4(characterPosition, 1.0f)).z);
+    shadowDepthReceiptQuality_[frame] = shadowQuality_;
+    shadowDepthReceiptCasters_[frame] = drawCasters;
+#endif
     if (vkCtx) vkCtx->gpuMark(currentCmd, "shadows");
 }
 

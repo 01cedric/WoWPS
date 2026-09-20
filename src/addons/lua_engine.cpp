@@ -6,6 +6,7 @@
 #include "ui/text_markup.hpp"
 #include "ui/plural_escape.hpp"
 #include "ui/widget_tree.hpp"
+#include "ui/framexml_frame_type.hpp"
 #include "ui/interface_fonts.hpp"
 #include "ui/ui_colors.hpp"
 #include "ui/framexml_takeover.hpp"
@@ -5356,9 +5357,9 @@ static int lua_CreateFrame(lua_State* L) {
         // A Button takes the mouse without being asked; a plain Frame does not,
         // which is what EnableMouse is for.
         if (auto* w = tree->get(id)) {
-            const std::string ft = frameType ? frameType : "Frame";
-            // Kept as it was asked for, so GetObjectType and IsObjectType
-            // can answer with it rather than with "Frame" for everything.
+            const std::string ft = ui::canonicalFrameType(frameType ? frameType : "Frame");
+            // Retail category rows use uppercase BUTTON. Normalize before
+            // default mouse state and pad/type checks, not only for display.
             w->objectType = ft;
             w->mouseEnabled = (ft == "Button" || ft == "CheckButton");
             w->isStatusBar = (ft == "StatusBar");
@@ -8650,7 +8651,6 @@ void LuaEngine::registerCoreAPI() {
         "CONTAINER_BAG_OFFSET = 19\n"
         "MAX_SKILLLINE_TABS = 8\n"
         "TRADE_ENCHANT_SLOT = 7\n"
-        "function GetPetActionsUsable() return false end\n"
     );
 
     // WoW table/string utility functions used by many addons

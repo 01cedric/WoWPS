@@ -29,6 +29,11 @@ constexpr uint32_t UNIT_FLAG_IN_COMBAT   = 0x00080000;
 /// summoner, and only the one the player steers answers to this.
 constexpr uint32_t UNIT_FLAG_PLAYER_CONTROLLED = 0x00000008;
 constexpr uint32_t UNIT_FLAG_NOT_SELECTABLE = 0x02000000;
+/// P04 control flags. The client already reads STUNNED for its own player to
+/// suppress the swing, the shot and the charge; the same bits on a creature are
+/// what its nameplate and the pick code read.
+constexpr uint32_t UNIT_FLAG_STUNNED = 0x00040000;
+constexpr uint32_t UNIT_FLAG_SILENCED = 0x00002000;
 
 // Unit visibility flags (byte 2 of UNIT_FIELD_BYTES_1).
 // CREEP marks a unit using the client-side stealth presentation. The server
@@ -132,6 +137,11 @@ constexpr uint32_t SPELL_STEALTH         = 1784;
 
 // Priest
 constexpr uint32_t SPELL_SHADOWFORM      = 15473;
+
+// Shaman. Ghost Wolf is a real shapeshift, not a mount: its aura 36 names form
+// 16 and SpellShapeshiftForm.dbc's flags1 for that record is 0xd8, which has no
+// SHAPESHIFT_FLAG_STANCE bit (UnitDefines.h:107).
+constexpr uint32_t SPELL_GHOST_WOLF      = 2645;
 
 // ---------------------------------------------------------------------------
 // Session / network timing

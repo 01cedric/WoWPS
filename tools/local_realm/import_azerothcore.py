@@ -20,7 +20,16 @@ REPOSITORY = "https://github.com/azerothcore/azerothcore-wotlk"
 TABLES = ["creature", "creature_template", "creature_template_model",
           "creature_classlevelstats", "quest_template", "quest_template_addon",
           "creature_queststarter", "creature_questender", "item_template",
-          "creature_loot_template", "playercreateinfo", "game_event_creature", "pool_creature"]
+          "creature_loot_template", "playercreateinfo", "game_event_creature", "pool_creature",
+          # the implementation (P04): the immunity sets creature_template.CreatureImmunitiesId
+          # points at, and the per-school resistance rows. Both files are
+          # byte-identical between the pinned commit and 9c416aaacb5537636abb13c80f55a88947838e33.
+          "creature_immunities", "creature_template_resistance",
+          # the implementation (P05): CombatReach and BoundingRadius per display id, joined
+          # through creature_template_model as Creature::SetObjectScale does
+          # (Creature.cpp:3536-3550). Byte-identical between the pinned commit
+          # and 9c416aaacb5537636abb13c80f55a88947838e33.
+          "creature_model_info"]
 TOKEN = re.compile(r"\s*(NULL|'(?:[^'\\]|\\.|'')*'|[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|[,();])", re.S)
 INSERT = re.compile(r"INSERT\s+INTO\s+`([^`]+)`\s*(\([^;]*?\))?\s+VALUES\s*", re.I)
 

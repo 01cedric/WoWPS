@@ -33,7 +33,6 @@
     bool mailReach(const LocalRealmPlayer& player,uint64_t service)const {
         if(!tradeAvailable(player))return false;
         if(nearbyLocalMailbox(gameplay.content(),player,service))return true;
-        for(const auto& npc:gameplay.npcs())if(npc.guid==service && npc.innkeeper && localNpcInTalkRange(player,npc))return true;
         return false;
     }
     bool hasMailAssets(uint64_t guid)const {
@@ -44,7 +43,7 @@
     }
     bool executeMail(LocalRealmPlayer& player,const LocalRealmCommand& cmd,std::string& result) {
         auto reject=[&](const char* why){result=why;return false;};
-        if(!mailReach(player,cmd.serviceNpcGuid))return reject("Stand near a mailbox or visit an available innkeeper");
+        if(!mailReach(player,cmd.serviceNpcGuid))return reject("Stand near a mailbox");
         auto candidate=mailbox;auto candidatePlayer=player;
         if(cmd.action==LocalAction::MailSend){
             const LocalRealmPlayer* recipient=nullptr;
@@ -101,7 +100,7 @@
             if(botDirector.isBot(it->recipient) || LocalBotDirector::isMarketSeller(it->recipient)){it=remaining.erase(it);changed=true;continue;}
             if(!findSaved(it->recipient) || !candidate.room(it->recipient)){++it;continue;}
             LocalMail mail;mail.recipient=it->recipient;mail.system=true;mail.senderName="Auction House";
-            mail.subject="Auction delivery";mail.body="Your auction item, proceeds or refund. Collect at an innkeeper.";
+            mail.subject="Auction delivery";mail.body="Your auction item, proceeds or refund. Collect at a mailbox.";
             mail.money=it->money;if(it->itemId)mail.items[0]={it->itemId,it->count};
             if(!candidate.append(std::move(mail))){++it;continue;}
             it=remaining.erase(it);changed=true;

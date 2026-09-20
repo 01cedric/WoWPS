@@ -53,17 +53,17 @@ std::vector<uint8_t> readBounded(const IntroReadFile& read,const std::string& pa
 class Dbc {
 public:
     Dbc(const IntroReadFile& read,const char* name,uint32_t fields)
-        :data_(readBounded(read,std::string("DBFilesClient/")+name+".dbc",kMaxTableBytes)),view_{data_},fields_(fields) {
-        if(!view_.has(0,20) || std::memcmp(data_.data(),"WDBC",4)!=0) throw Invalid{"intro requires WDBC tables"};
+        :name_(name),data_(readBounded(read,std::string("DBFilesClient/")+name+".dbc",kMaxTableBytes)),view_{data_},fields_(fields) {
+        if(!view_.has(0,20) || std::memcmp(data_.data(),"WDBC",4)!=0) throw Invalid{name_+".dbc: intro requires WDBC tables"};
         rows_=view_.u32(4);const uint32_t strings=view_.u32(16);
-        if(view_.u32(8)!=fields || view_.u32(12)!=fields*4u)throw Invalid{"intro DBC schema differs from build 12340"};
+        if(view_.u32(8)!=fields || view_.u32(12)!=fields*4u)throw Invalid{name_+".dbc: intro schema differs from build 12340"};
         const uint64_t end=20ull+uint64_t(rows_)*fields*4u;
-        if(end>data_.size() || strings>data_.size()-end)throw Invalid{"intro DBC is truncated"};
+        if(end>data_.size() || strings>data_.size()-end)throw Invalid{name_+".dbc: intro table is truncated"};
         stringsAt_=static_cast<size_t>(end);stringsSize_=strings;
     }
     uint32_t row(uint32_t id) const {
         for(uint32_t i=0;i<rows_;++i)if(u(i,0)==id)return i;
-        throw Invalid{"intro DBC reference does not exist"};
+        throw Invalid{name_+".dbc: intro reference id="+std::to_string(id)+" does not exist"};
     }
     uint32_t u(uint32_t row,uint32_t field) const {return view_.u32(offset(row,field));}
     float f(uint32_t row,uint32_t field) const {return view_.number(offset(row,field));}
@@ -81,6 +81,7 @@ private:
         if(row>=rows_ || field>=fields_)throw Invalid{"intro DBC field is invalid"};
         return 20+size_t(row)*fields_*4+field*4;
     }
+    std::string name_;
     std::vector<uint8_t> data_;Bytes view_;uint32_t fields_,rows_=0;size_t stringsAt_=0,stringsSize_=0;
 };
 // ---------------------------------------------------------------------------
@@ -272,7 +273,10 @@ bool loadCharacterIntro(uint8_t race,uint8_t classId,uint32_t mapId,const IntroR
         }
         for(auto& shot:plan.shots){
             size_t decoded=0;auto bytes=readBounded(read,shot.modelPath,kMaxModelBytes);
-            if(!parseCharacterIntroCamera(bytes,shot.camera,shot.durationMs,decoded,reason))return false;
+            if(!parseCharacterIntroCamera(bytes,shot.camera,shot.durationMs,decoded,reason)){
+                reason="camera="+std::to_string(shot.cameraId)+" model="+shot.modelPath+": "+reason;
+                return false;
+            }
             if(decoded>kMaxDecodedBytes-plan.decodedBytes || shot.durationMs>kMaxDurationMs-plan.durationMs)throw Invalid{"cinematic sequence exceeds duration or memory budget"};
             plan.decodedBytes+=decoded;plan.durationMs+=shot.durationMs;
         }

@@ -58,21 +58,16 @@ inline constexpr uint16_t kLightHalfMinutesPerDay = 2880;
                                     std::cos(angle) * 0.6f));
 }
 
-// Keep the celestial sun path unchanged. World shading and shadow projection
-// share this Z-up light-ray convention instead: nighttime key light must not
-// illuminate the undersides of terrain and buildings from below the horizon.
+// One celestial direction drives the disc, surface shading, shadow camera and
+// scattering. The White Lady is opposite the sun and supplies the nighttime
+// key. Never force the light overhead: that detached shadows/rays from both
+// visible discs and erased the long silhouettes at low celestial elevations.
 [[nodiscard]] inline glm::vec3 outdoorKeyLightTravelDirection(glm::vec3 ray) {
     const float len2 = glm::dot(ray, ray);
     if (!std::isfinite(len2) || len2 < 1.0e-8f)
         return glm::normalize(glm::vec3(0.3f, -0.7f, -0.6f));
     ray /= std::sqrt(len2);
-    // Keep outdoor key light decisively above the scene.  The client sky may
-    // keep its authored horizon motion, but surface lighting should not read
-    // as a side/below light on steep terrain and character faces.
-    ray.x *= 0.35f;
-    ray.y *= 0.35f;
-    ray.z = -std::max(std::abs(ray.z), 0.85f);
-    return glm::normalize(ray);
+    return ray.z > 0.0f ? -ray : ray;
 }
 
 /// The same, keyed the way the DBC bands are - so the sun and the colours

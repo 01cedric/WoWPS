@@ -12,7 +12,9 @@ static std::vector<uint8_t> table(const std::vector<uint32_t>& fields,const std:
     std::memcpy(bytes.data()+20+fields.size()*4,strings.data(),strings.size());return bytes;
 }
 int main() {
-    std::vector<uint32_t> row(234);row[0]=6648;row[28]=1;row[39]=20;row[136]=1;
+    // A client mount declares the movement interruption its cast obeys; the
+    // decoder takes that field from the row rather than assuming a default.
+    std::vector<uint32_t> row(234);row[0]=6648;row[28]=1;row[39]=20;row[136]=1;row[spell335::InterruptFlags]=1;
     row[71]=row[72]=6;row[86]=row[87]=1;row[95]=78;row[96]=32;row[80+1]=59;row[110]=284;
     pipeline::DBCFile spells,casts;assert(spells.load(table(row,std::string("\0Test mount\0",12))));assert(casts.load(table({1,0,0,0})));
     detail::ClientSpellTables source;source.spells=&spells;source.casts=&casts;source.castIndex={{1,0}};

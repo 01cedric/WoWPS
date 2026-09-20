@@ -11,6 +11,8 @@
 #include "game/local_social.hpp"
 #include "game/local_mail.hpp"
 #include "game/local_gameplay.hpp"
+#include "game/local_pet.hpp"
+#include "game/local_test_characters.hpp"
 
 namespace wowee::game {
 
@@ -83,6 +85,15 @@ public:
     bool sendMail(uint64_t service,const std::string& recipient,const std::string& subject,
                   const std::string& body,uint32_t money,uint32_t cod,const std::vector<LocalTradeItem>& items);
     bool mailAction(LocalAction action,uint64_t service,uint32_t mail,uint32_t slot=0);
+    /// Create the ten level-80 test characters described by `specs` in a save
+    /// directory and write them, then leave the realm stopped. Returns how many
+    /// were created; a slot that already owns a character is never overwritten,
+    /// and zero means nothing was written (see error()).
+    ///
+    /// The realm must already have its content, catalog and starter spells:
+    /// the characters' spellbooks and pools are derived from them, not stored.
+    size_t seedTestCharacters(const std::string& saveDirectory,
+                              const std::vector<LocalTestCharacterSpec>& specs);
     bool startSinglePlayer(const std::string& saveDirectory, const std::string& name);
     bool startHost(const std::string& saveDirectory, const std::string& name,
                    uint16_t port = DefaultPort, size_t playerLimit = DefaultPlayers);
@@ -117,6 +128,13 @@ public:
     bool castSpell(uint32_t spellId, uint64_t targetGuid);
     bool cancelStatAura(uint32_t spellId);
     bool cancelCast();
+    bool cancelForm(uint32_t expectedSpell=0);
+    // Retire this owner's controlled summon. Host-authoritative like every other
+    // action; the expected GUID rejects a stale pet bar instead of dismissing
+    // whatever was summoned after it.
+    bool dismissPet(uint64_t expectedPet=0);
+    bool sendPetAction(uint64_t expectedPet, uint32_t packedAction, uint64_t targetGuid = 0);
+    bool setPetSpellAutocast(uint64_t expectedPet, uint32_t spellId, bool enabled);
     // Complete or skip this owner's first-world intro; persists with the hero.
     bool completeIntro();
     bool acceptQuest(uint32_t questId, uint64_t npcGuid);
@@ -127,7 +145,11 @@ public:
     bool unequipItem(uint8_t slot);
     bool useItem(uint32_t itemId);
     bool dismount();
-    bool respawn();
+    bool respawn(); // Compatibility action: release spirit, never instant revive.
+    void setLocalZone(uint32_t zoneId);
+    bool reclaimCorpse();
+    bool canReclaimCorpse() const;
+    bool setGraveyards(const std::vector<LocalGraveyardSite>& sites);
     bool interact(uint64_t npcGuid);
     bool enterPortal(uint32_t portalId, bool privateInstance = false);
     bool leaveInstance();
@@ -237,6 +259,9 @@ public:
     bool leaveTransport();
     std::vector<LocalQuestDefinition> questsForNpc(uint32_t entry) const;
     const std::vector<LocalRealmNpc>& npcs() const;
+    /// The owned creatures on this character's map and instance: the authority's
+    /// own roster, or the replicated copy a guest received.
+    const std::vector<LocalRealmPet>& pets() const;
     const LocalWorldContent& content() const;
     const std::string& actionStatus() const;
     uint64_t actionStatusRevision() const;

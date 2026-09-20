@@ -419,7 +419,7 @@ vk_ps4_GetPhysicalDeviceFeatures2(
             VkPhysicalDeviceHostQueryResetFeatures *f =
                 (VkPhysicalDeviceHostQueryResetFeatures *)chain;
             f->sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_QUERY_RESET_FEATURES;
-            f->hostQueryReset = VK_TRUE;
+            f->hostQueryReset = VK_FALSE; /* no supported query pool implementation */
             break;
         }
         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES: {

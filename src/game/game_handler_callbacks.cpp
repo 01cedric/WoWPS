@@ -1,4 +1,6 @@
 #include "game/local_realm.hpp"
+#include "game/local_combat_state.hpp"
+#include "game/local_aura_presentation.hpp"
 #include "game/game_handler.hpp"
 #include "game/gather_spells.hpp"
 #include "game/packed_time.hpp"
@@ -2167,10 +2169,12 @@ bool GameHandler::hasAutoAttackIntent() const {
 }
 
 bool GameHandler::isInCombat() const {
+    if(const auto* realm=localServiceRealm()){const auto* p=realm->localPlayer();return p&&localCombatActive(*p,realm->npcs());}
     return combatHandler_ ? combatHandler_->isInCombat() : false;
 }
 
 bool GameHandler::isInCombatWith(uint64_t guid) const {
+    if(const auto* realm=localServiceRealm()){const auto* p=realm->localPlayer();if(p)for(const auto& n:realm->npcs())if(n.guid==guid)return localCombatWithNpc(*p,n);return false;}
     return combatHandler_ ? combatHandler_->isInCombatWith(guid) : false;
 }
 
@@ -2392,10 +2396,19 @@ void GameHandler::requestPvpLog() {
 // ============================================================
 
 void GameHandler::castSpell(uint32_t spellId, uint64_t targetGuid) {
+    if(auto* realm=localServiceRealm()) {
+        const auto* player=realm->localPlayer();if(!player)return;
+        if(!targetGuid)targetGuid=getTargetGuid();
+        if(spellId==SPELL_ID_ATTACK){realm->attack(targetGuid);return;}
+        if(spellId==SPELL_ID_HEARTHSTONE){realm->returnHome();return;}
+        if(const auto* spell=realm->content().spell(spellId))realm->castSpell(spellId,localSpellCommandTarget(*spell,*player,targetGuid,realm->players()));
+        return;
+    }
     if (spellHandler_) spellHandler_->castSpell(spellId, targetGuid);
 }
 
 void GameHandler::cancelCast() {
+    if(auto* realm=localServiceRealm()){realm->cancelCast();return;}
     if (spellHandler_) spellHandler_->cancelCast();
 }
 
@@ -2408,6 +2421,7 @@ void GameHandler::cancelCraftQueue() {
 }
 
 void GameHandler::cancelAura(uint32_t spellId) {
+    if(auto* r=localServiceRealm()){const auto* p=r->localPlayer();if(p&&p->formSpellId==spellId)r->cancelForm(spellId);else r->cancelStatAura(spellId);return;}
     if (spellHandler_) spellHandler_->cancelAura(spellId);
 }
 
@@ -2420,6 +2434,11 @@ void GameHandler::handlePetSpells(network::Packet& packet) {
 }
 
 void GameHandler::sendPetAction(uint32_t action, uint64_t targetGuid) {
+    if (auto* realm = localServiceRealm()) {
+        if (!hasPet()) return;
+        realm->sendPetAction(getPetGuid(), action, targetGuid);
+        return;
+    }
     if (spellHandler_) spellHandler_->sendPetAction(action, targetGuid);
 }
 
@@ -2436,10 +2455,21 @@ void GameHandler::dismissCritter() {
 }
 
 void GameHandler::dismissPet() {
+    if (auto* realm = localServiceRealm()) {
+        if (hasPet()) realm->dismissPet(getPetGuid());
+        return;
+    }
     if (spellHandler_) spellHandler_->dismissPet();
 }
 
 void GameHandler::togglePetSpellAutocast(uint32_t spellId) {
+    if (auto* realm = localServiceRealm()) {
+        if (!hasPet() || !spellId) return;
+        realm->setPetSpellAutocast(getPetGuid(), spellId, !isPetSpellAutocast(spellId));
+        // The authority snapshot redraws the ring after acceptance. A refused
+        // request must never leave an optimistic client-only toggle behind.
+        return;
+    }
     if (spellHandler_) spellHandler_->togglePetSpellAutocast(spellId);
 }
 
@@ -3493,6 +3523,7 @@ void GameHandler::readItemInBag(int bagIndex, int slotIndex) {
 }
 
 void GameHandler::useItemById(uint32_t itemId, uint64_t unitTarget) {
+    if(auto* realm=localServiceRealm()){if(itemId==6948)realm->returnHome();else realm->useItem(itemId);return;}
     if (inventoryHandler_) inventoryHandler_->useItemById(itemId, unitTarget);
 }
 

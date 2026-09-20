@@ -11,6 +11,8 @@ fixture=r'''
 #include "rendering/triangle_cell_index.hpp"
 #include "rendering/shadow_ranges.hpp"
 #include "rendering/wmo_material_class.hpp"
+#include "rendering/wmo_shadow_material.hpp"
+#include "rendering/wmo_lighting.hpp"
 #include "rendering/pom_quality.hpp"
 #include <glm/glm.hpp>
 #include <chrono>
@@ -22,6 +24,7 @@ fixture=r'''
 #include <memory>
 #include <unordered_map>
 using namespace wowee::rendering;
+namespace platform = wowee::platform;
 #define LOG_WARNING(...) ((void)0)
 static long failAfter=-1;
 void* operator new(size_t n){if(failAfter==0)throw std::bad_alloc();if(failAfter>0)--failAfter;if(auto*p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
@@ -43,7 +46,7 @@ struct FakeCtx{VmaAllocator getAllocator()const{return 1;}uint64_t getDevice()co
 struct WMORenderer{
 '''
 after=r'''
-struct ModelData{std::vector<GroupResources>groups;size_t nextMaterialGroupIndex=0;std::vector<uint32_t>materialTextureIndices,materialBlendModes,materialFlags;std::vector<VkTexture*>textures;std::vector<std::string>textureNames;glm::vec3 wmoAmbientColor{.5f};};
+struct ModelData{std::vector<GroupResources>groups;size_t nextMaterialGroupIndex=0;std::vector<uint32_t>materialTextureIndices,materialBlendModes,materialFlags,materialShaders;std::vector<VkTexture*>textures;std::vector<std::string>textureNames;glm::vec3 wmoAmbientColor{.5f};};
 struct CacheEntry{std::unique_ptr<VkTexture>texture,normalHeightMap;float heightMapVariance=0;};
 std::unordered_map<std::string,CacheEntry>textureCache;
 FakeCtx context;FakeCtx*vkCtx_=&context;uint64_t materialDescPool_=1;
@@ -73,6 +76,19 @@ for(unsigned mode=0;mode<2;++mode)for(unsigned fault=0;fault<(mode?7:100);++faul
  assert(draws==3&&g.lavaLights.size()==1&&g.shadowRanges.size()==1&&g.shadowRanges[0].indexCount==9);
  r.upload(model);assert(buffers==3&&sets==3&&writes==3);
 }
+// Actual material upload partitions opaque, alpha-test and blended ranges.
+{
+ WMORenderer r;WMORenderer::ModelData model;model.groups.emplace_back();auto&g=model.groups[0];
+ VkTexture textures[6];const unsigned blend[]={0,1,2,3,1,0};
+ for(unsigned i=0;i<6;++i){model.textures.push_back(&textures[i]);model.textureNames.push_back("window.blp");model.materialTextureIndices.push_back(i);model.materialBlendModes.push_back(blend[i]);model.materialFlags.push_back(8);g.batches.push_back({i*3,3,uint8_t(i)});}
+ buffers=sets=writes=gpuAttempts=0;failGpuAt=0;failAfter=-1;r.upload(model);
+ assert(buffers==6&&sets==6&&writes==6); // existing scene sets only, no shadow allocation
+ assert(g.shadowRanges.size()==2&&g.shadowRanges[0].firstIndex==0&&g.shadowRanges[1].firstIndex==15);
+ assert(g.cutoutShadowBatches.size()==2&&g.opaqueShadowSet);
+ for(auto bi:g.cutoutShadowBatches){auto&mb=g.mergedBatches[bi];assert(mb.alphaTest&&mb.materialSet&&mb.draws.size()==1);assert(mb.draws[0].firstIndex==3||mb.draws[0].firstIndex==12);}
+ bool opaqueAlias=false;for(auto&mb:g.mergedBatches)if(mb.materialSet==g.opaqueShadowSet){assert(!mb.alphaTest&&!mb.isTransparent);opaqueAlias=true;}assert(opaqueAlias);
+}
+std::puts("PASS: actual WMO upload preserves opaque window atlas ranges; separates two cutout texture sets; blended/additive layers do not write binary depth; no shadow descriptor allocations");
 assert(failedCpu>5&&failedGpu==6);
 std::printf("PASS: actual material phase %u CPU and %u GPU allocation faults retain every handle; retries keep exactly3 draw batches/UBOs/sets,1 lava light, unchanged shadow range\n",failedCpu,failedGpu);
 }

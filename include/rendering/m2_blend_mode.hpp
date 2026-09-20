@@ -53,6 +53,13 @@ inline bool m2BatchNeedsAlphaTest(uint8_t blendMode, bool hasAlpha) {
     return blendMode >= M2_BLEND_ALPHA && !hasAlpha;
 }
 
+// Low three bits retain the authored alpha mode (ordinary/foliage/ground).
+// A single-sample target cannot realize fractional alpha-to-coverage: request
+// a binary shader test instead. Mode zero must stay zero for unmasked effects.
+inline int m2EncodeAlphaTest(int mode, bool singleSample) {
+    return mode == 0 ? 0 : mode | (singleSample ? 8 : 0);
+}
+
 /// Should this batch have its black keyed out?
 ///
 /// The key discards every texel darker than a threshold, and exists so a card

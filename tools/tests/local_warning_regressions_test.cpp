@@ -11,7 +11,10 @@ struct Fixture {
     std::shared_ptr<LocalWorldContent> content=rewardContent();
     LocalRealmPlayer p=rewardPlayer(1);
     std::string result;
-    Fixture() { p.mana=p.maxMana=100000;p.money=1000000;p.regenerationTimer=-10000; }
+    // The regeneration accumulator starts a fresh two-second cadence, which
+    // no case here advances far enough to complete, so spirit regeneration
+    // never adds to the amounts these regressions measure.
+    Fixture() { p.mana=p.maxMana=100000;p.money=1000000;p.regenerationTickMs=0; }
     void load() { game.useContent(content); }
     bool run(LocalAction action,uint64_t target=0,uint32_t id=0,uint64_t service=0) {
         LocalRealmCommand cmd{action,target,id};cmd.serviceNpcGuid=service;
@@ -46,9 +49,13 @@ static void cooldownCapacity() {
 }
 static void rankTraining() {
     Fixture f;f.content->spells.clear();f.p.knownSpells={1};f.p.level=80;
-    for(uint32_t id=1;id<=50;++id) {auto s=heal(id);s.baseLevel=id==2?2:id==3?3:1;f.content->spells.push_back(s);}
+    // The point of this case is a spellbook that is exactly full when the
+    // rank-3 upgrade arrives, so size the fixture from the shipping capacity:
+    // ranks 2 and 3 stay untrained, and everything from 4 up fills the rest.
+    constexpr uint32_t Spells=uint32_t(LocalGameplay::MaxSpells)+2;
+    for(uint32_t id=1;id<=Spells;++id) {auto s=heal(id);s.baseLevel=id==2?2:id==3?3:1;f.content->spells.push_back(s);}
     f.content->spells[0].supercededBySpell=2;f.content->spells[1].supercededBySpell=3;
-    for(uint32_t id=4;id<=50;++id) f.p.knownSpells.push_back(id);
+    for(uint32_t id=4;id<=Spells;++id) f.p.knownSpells.push_back(id);
     CHECK(f.p.knownSpells.size()==LocalGameplay::MaxSpells);
     f.p.cooldowns={{1,7000}};f.load();
     auto trainer=rewardNpc();trainer.hostile=false;trainer.classTrainer=true;trainer.trainerClass=1;
@@ -72,13 +79,18 @@ static void worldRescue() {
     f.p.castRemainingMs=100;f.p.flight.active=true;f.p.transportEntry=99;
     f.p.transportOffsetX=8;f.p.transportLastYaw=2;f.p.cooldowns={{1,5000}};
     const auto revision=f.p.positionRevision;
-    f.game.tick(.01f,{&f.p});
+    // A frame consumes the whole milliseconds it contains and banks the rest,
+    // and float(.01) is 9.99999978ms rather than a clean ten, so derive the
+    // decrement the same way the tick does instead of pinning a round number.
+    constexpr float Frame=.01f;
+    const uint32_t frameMs=uint32_t(double(Frame)*1000.0);
+    f.game.tick(Frame,{&f.p});
     CHECK(f.p.x==2 && f.p.y==3 && f.p.z==4 && f.p.positionRevision==revision+1);
     CHECK(!f.p.mountSpellId && !f.p.movementState && !f.p.falling);
     CHECK(!f.p.castingSpellId && !f.p.castTarget && f.p.castStatus==LocalCastStatus::Interrupted);
     CHECK(!f.p.flight.active && !f.p.transportEntry && !f.p.transportOffsetX && !f.p.transportLastYaw);
     CHECK(f.p.health==f.p.maxHealth && f.p.fallRevision==f.p.positionRevision && f.p.fallStartZ==4);
-    CHECK(f.p.cooldowns.size()==1 && f.p.cooldowns[0].remainingMs==4990);
+    CHECK(f.p.cooldowns.size()==1 && f.p.cooldowns[0].remainingMs==5000-frameMs);
 }
 static void questMoney() {
     Fixture f;auto& q=f.content->quests[0];q.turnInEntry=50;q.money=10;q.xp=10;

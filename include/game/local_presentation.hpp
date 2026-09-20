@@ -42,13 +42,14 @@ inline bool localMeleeDamageObserved(uint32_t oldHealth, const LocalRealmNpc& np
 }
 
 struct LocalCastPresentationEvents {
-    bool stopPrecast = false, interrupted = false, completed = false, started = false;
+    bool stopPrecast = false, interrupted = false, completed = false, started = false, delayed = false;
     uint32_t previousSpell = 0, completedSpell = 0, startedSpell = 0;
     uint64_t previousTarget = 0, completedTarget = 0, startedTarget = 0;
 };
 struct LocalCastPresentationState {
     bool seeded = false;
     uint32_t revision = 0, activeSpell = 0, remainingMs = 0, totalMs = 0;
+    uint32_t sequence = 0, pushbackMs = 0;
     uint64_t activeTarget = 0;
 
     LocalCastPresentationEvents observe(const LocalRealmPlayer& player) {
@@ -62,16 +63,18 @@ struct LocalCastPresentationState {
             event.previousSpell = activeSpell;
             event.previousTarget = activeTarget;
             event.started = active && (!activeSpell || activeSpell != player.castingSpellId ||
-                player.castRemainingMs > remainingMs + 100 || event.completed);
+                player.castSequence != sequence || event.completed);
+            event.delayed = active && !event.started && player.castPushbackMs != pushbackMs;
             const bool oldEnded = activeSpell && (!active || event.started);
             event.stopPrecast = oldEnded || event.completed;
             event.interrupted = oldEnded &&
                 !(event.completed && event.completedSpell == activeSpell);
-            event.startedSpell = active ? player.castingSpellId : 0;
-            event.startedTarget = active ? player.castTarget : 0;
-        }
+        } else event.started = active;
+        event.startedSpell = active ? player.castingSpellId : 0;
+        event.startedTarget = active ? player.castTarget : 0;
         seeded = true;
         revision = player.castRevision;
+        sequence = player.castSequence;pushbackMs = player.castPushbackMs;
         activeSpell = active ? player.castingSpellId : 0;
         activeTarget = active ? player.castTarget : 0;
         remainingMs = active ? player.castRemainingMs : 0;

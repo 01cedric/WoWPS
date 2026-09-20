@@ -1,0 +1,512 @@
+[
+  {
+    "encounterCoverage": null,
+    "mapId": 30,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": ""
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 33,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_shadowfang_keep"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 34,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_the_stockade"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 36,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_deadmines"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 43,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_wailing_caverns"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 44,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": ""
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 47,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_razorfen_kraul"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 48,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_blackfathom_deeps"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 70,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_uldaman"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 90,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_gnomeregan"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 109,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_sunken_temple"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 129,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_razorfen_downs"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 169,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": ""
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 189,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_scarlet_monastery"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 209,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_zulfarrak"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 229,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_blackrock_spire"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 230,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_blackrock_depths"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 249,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_onyxias_lair"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 269,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_the_black_morass"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 289,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_scholomance"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 309,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_zulgurub"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 329,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_stratholme"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 349,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_maraudon"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 389,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_ragefire_chasm"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 409,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_molten_core"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 429,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_dire_maul"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 469,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_blackwing_lair"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 489,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": ""
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 509,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_ruins_of_ahnqiraj"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 529,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": ""
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 531,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_temple_of_ahnqiraj"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 532,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_karazhan"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 533,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_naxxramas"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 534,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_hyjal"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 540,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_shattered_halls"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 542,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_blood_furnace"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 543,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_hellfire_ramparts"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 544,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_magtheridons_lair"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 545,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_steam_vault"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 546,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_the_underbog"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 547,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_the_slave_pens"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 548,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_serpent_shrine"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 550,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_the_eye"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 552,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_arcatraz"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 553,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_the_botanica"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 554,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_mechanar"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 555,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_shadow_labyrinth"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 556,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_sethekk_halls"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 557,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_mana_tombs"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 558,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_auchenai_crypts"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 559,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": ""
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 560,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_old_hillsbrad"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 562,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": ""
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 564,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_black_temple"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 565,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_gruuls_lair"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 566,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": ""
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 568,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_zulaman"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 572,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": ""
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 574,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_utgarde_keep"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 575,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_utgarde_pinnacle"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 576,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_nexus"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 578,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_oculus"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 580,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_sunwell_plateau"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 585,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_magisters_terrace"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 595,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_culling_of_stratholme"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 599,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_halls_of_stone"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 600,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_drak_tharon_keep"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 601,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_azjol_nerub"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 602,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_halls_of_lightning"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 603,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_ulduar"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 604,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_gundrak"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 607,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": ""
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 608,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_violet_hold"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 615,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_obsidian_sanctum"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 616,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_eye_of_eternity"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 619,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_ahnkahet"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 624,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_vault_of_archavon"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 628,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": ""
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 631,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_icecrown_citadel"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 632,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_forge_of_souls"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 649,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_trial_of_the_crusader"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 650,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_trial_of_the_champion"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 658,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_pit_of_saron"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 668,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_halls_of_reflection"
+  },
+  {
+    "encounterCoverage": null,
+    "mapId": 724,
+    "scriptExecutionStatus": "not_implemented_in_local_realm",
+    "sourceScript": "instance_ruby_sanctum"
+  }
+]

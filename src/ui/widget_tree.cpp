@@ -117,6 +117,8 @@ WidgetTree::WidgetTree() {
 
 void WidgetTree::reset() {
     widgets_.clear();
+    publishedPixelW_ = publishedPixelH_ = publishedUiScale_ = 0.0f;
+    publishedSafeArea_ = -1.0f;
     nameIndex_.clear();
     drawOrder_.clear();
     linkRects_.clear();
@@ -904,7 +906,18 @@ void WidgetTree::resolveChain(uint32_t id, float screenW, float screenH, int& de
     }
 }
 
+unsigned WidgetTree::consumeDisplayChanges() {
+    if (lastPixelW_ <= 0.0f || lastPixelH_ <= 0.0f) return 0;
+    unsigned changes = 0;
+    if (publishedPixelW_ != lastPixelW_ || publishedPixelH_ != lastPixelH_) changes |= 1;
+    if (publishedUiScale_ != uiScale_ || publishedSafeArea_ != safeAreaInset_) changes |= 2;
+    publishedPixelW_ = lastPixelW_; publishedPixelH_ = lastPixelH_;
+    publishedUiScale_ = uiScale_; publishedSafeArea_ = safeAreaInset_;
+    return changes;
+}
+
 void WidgetTree::layout(float pixelW, float pixelH) {
+    if (!std::isfinite(pixelW) || !std::isfinite(pixelH) || pixelW <= 0.0f || pixelH <= 0.0f) return;
     // Reentry would be the layout of a layout: this is called from the rect
     // getters now, and it moves widgets, and moving a widget is what raises
     // the flag those getters watch.

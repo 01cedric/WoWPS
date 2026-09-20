@@ -1,0 +1,218 @@
+[
+  {
+    "sourceLine": 238,
+    "reasonExpression": "if(!valid){if(d.unsupportedReason.empty())d.unsupportedReason=\"Unreviewed combo attack profile\";return false;}"
+  },
+  {
+    "sourceLine": 257,
+    "reasonExpression": "if(d.unsupportedReason.empty()) d.unsupportedReason=reason;"
+  },
+  {
+    "sourceLine": 269,
+    "reasonExpression": "if(u(spell335::StackAmount)>255) unavailable(\"Aura stack limit exceeds local capacity\");"
+  },
+  {
+    "sourceLine": 278,
+    "reasonExpression": "else unavailable(\"Unreviewed shapeshift effect profile\");"
+  },
+  {
+    "sourceLine": 287,
+    "reasonExpression": "unavailable(\"This proc family or its trigger conditions are not implemented\");"
+  },
+  {
+    "sourceLine": 289,
+    "reasonExpression": "if(d.cooldownCategory>100000||d.spellFamily>1000||(d.categoryCooldownMs&&!d.cooldownCategory))unavailable(\"Invalid spell cooldown category metadata\");"
+  },
+  {
+    "sourceLine": 292,
+    "reasonExpression": "unavailable(\"This power system is not implemented\");"
+  },
+  {
+    "sourceLine": 295,
+    "reasonExpression": "if(runeRow<0) unavailable(\"SpellRuneCost record missing or incompatible\");"
+  },
+  {
+    "sourceLine": 306,
+    "reasonExpression": "if(!valid) unavailable(\"Invalid or unsupported rune cost/power gain\");"
+  },
+  {
+    "sourceLine": 309,
+    "reasonExpression": "if(u(41)==5&&(d.mana||d.manaPercent)) unavailable(\"Rune spell has a non-rune resource cost\");"
+  },
+  {
+    "sourceLine": 310,
+    "reasonExpression": "if(u(43)||u(44)||u(45)) unavailable(\"Scaling or periodic resource costs are not implemented\");"
+  },
+  {
+    "sourceLine": 311,
+    "reasonExpression": "if(u(4)&0x404u) unavailable(\"Next-swing attacks are not implemented\");"
+  },
+  {
+    "sourceLine": 312,
+    "reasonExpression": "if(u(5)&0x44u) unavailable(\"Channeled spells are not implemented\");"
+  },
+  {
+    "sourceLine": 316,
+    "reasonExpression": "if(u(20)||u(21)||u(22)||u(23)||u(24)||u(25)||u(26)||u(27)) unavailable(\"Aura requirements are not implemented\");"
+  },
+  {
+    "sourceLine": 319,
+    "reasonExpression": "if(i(68)!=2&&i(68)!=4)unavailable(\"Unsupported spell equipment class\");"
+  },
+  {
+    "sourceLine": 322,
+    "reasonExpression": "for(uint32_t reagent=0;reagent<8;++reagent) if(i(52+reagent)>0) unavailable(\"Spell reagents are not implemented\");"
+  },
+  {
+    "sourceLine": 323,
+    "reasonExpression": "if(u(50)||u(51)) unavailable(\"Totem requirements are not implemented\");"
+  },
+  {
+    "sourceLine": 325,
+    "reasonExpression": "if(castRow<0) unavailable(\"Cast-time record missing\");"
+  },
+  {
+    "sourceLine": 327,
+    "reasonExpression": "unavailable(\"Variable or invalid cast time is not implemented\");"
+  },
+  {
+    "sourceLine": 330,
+    "reasonExpression": "if(u(40)&&durationRow<0) unavailable(\"Duration record missing\");"
+  },
+  {
+    "sourceLine": 334,
+    "reasonExpression": "if(t.durations->getInt32(durationRow,2)!=0) unavailable(\"Variable duration is not implemented\");"
+  },
+  {
+    "sourceLine": 336,
+    "reasonExpression": "if(snare&&(!d.durationMs||d.durationMs>600000))unavailable(\"Invalid NPC snare duration\");"
+  },
+  {
+    "sourceLine": 344,
+    "reasonExpression": "} else unavailable(\"Unreviewed chain-target profile is not implemented\");"
+  },
+  {
+    "sourceLine": 350,
+    "reasonExpression": "if(!t.radii||radius<0)unavailable(\"Area radius record missing\");"
+  },
+  {
+    "sourceLine": 354,
+    "reasonExpression": "unavailable(\"Unsupported variable area radius\");"
+  },
+  {
+    "sourceLine": 359,
+    "reasonExpression": "if(d.schoolMask>127)unavailable(\"Invalid spell school mask\");"
+  },
+  {
+    "sourceLine": 367,
+    "reasonExpression": "if(!arcaneExplosion && (secondary || (target!=1&&target!=6&&target!=21&&target!=25&&!(chainHeal&&target==45)))) unavailable(\"Area or scripted targeting is not implemented\");"
+  },
+  {
+    "sourceLine": 369,
+    "reasonExpression": "unavailable(\"Periodic proc, charge or triggered effects are not implemented\");"
+  },
+  {
+    "sourceLine": 375,
+    "reasonExpression": "unavailable(\"Invalid or combo-point effect amount is not implemented\");continue;"
+  },
+  {
+    "sourceLine": 384,
+    "reasonExpression": "if(low>1000||!low||dice>1||scale!=0||perCombo!=0)unavailable(\"Invalid weapon percentage\");"
+  },
+  {
+    "sourceLine": 399,
+    "reasonExpression": "if(buffTarget && buffTarget!=target)unavailable(\"Mixed buff targets are not implemented\");"
+  },
+  {
+    "sourceLine": 403,
+    "reasonExpression": "else {if(d.absorbSchoolMask && d.absorbSchoolMask!=u(110+effect))unavailable(\"Mixed absorb schools are not implemented\");"
+  },
+  {
+    "sourceLine": 410,
+    "reasonExpression": "unavailable(\"Mixed or hostile healing targets are not implemented\");"
+  },
+  {
+    "sourceLine": 420,
+    "reasonExpression": "unavailable(\"Mixed or hostile healing targets are not implemented\");"
+  },
+  {
+    "sourceLine": 422,
+    "reasonExpression": "} else unavailable(\"Unsupported effect \"+std::to_string(type)+(type==6?\" / aura \"+std::to_string(u(95+effect)):\"\"));"
+  },
+  {
+    "sourceLine": 424,
+    "reasonExpression": "if(harm&&!d.schoolMask)unavailable(\"Damaging spell has no school\");"
+  },
+  {
+    "sourceLine": 425,
+    "reasonExpression": "if(buff&&(harm||healing)) unavailable(\"Mixed stat buffs and other effects are not implemented\");"
+  },
+  {
+    "sourceLine": 426,
+    "reasonExpression": "if(harm&&healing) unavailable(\"Mixed hostile/friendly spells are not implemented\");"
+  },
+  {
+    "sourceLine": 427,
+    "reasonExpression": "if(!harm&&!healing&&!buff&&!d.formId) unavailable(\"No supported direct or periodic damage/healing effect\");"
+  },
+  {
+    "sourceLine": 430,
+    "reasonExpression": "if(rangeRow<0) unavailable(\"Range record missing\");"
+  },
+  {
+    "sourceLine": 434,
+    "reasonExpression": "unavailable(\"Invalid or unsupported range\");"
+  },
+  {
+    "sourceLine": 437,
+    "reasonExpression": "unavailable(\"Invalid spell resource or cooldown metadata\");"
+  },
+  {
+    "sourceLine": 438,
+    "reasonExpression": "if((reactive||simpleShield!=SimpleShieldKind::None)&&!validLocalProc(d))unavailable(\"Invalid shield metadata\");"
+  },
+  {
+    "sourceLine": 598,
+    "reasonExpression": "else if(d.unsupportedReason.empty())d.unsupportedReason=\"Passive talent effect is not implemented\";"
+  },
+  {
+    "sourceLine": 620,
+    "reasonExpression": "talent.unsupportedReason=\"Affected pushback spells are not implemented yet\";"
+  },
+  {
+    "sourceLine": 628,
+    "reasonExpression": "if(!relevant){talent.unsupportedReason=\"Affected school-threat spells are not implemented yet\";for(auto& row:out.audit)if(row.talent&&row.id==talent.id)row.status=talent.unsupportedReason;}"
+  },
+  {
+    "sourceLine": 663,
+    "reasonExpression": "talent.unsupportedReason=\"First-effect modifiers for ordinary spells are not implemented yet\";"
+  },
+  {
+    "sourceLine": 666,
+    "reasonExpression": "talent.unsupportedReason=\"Affected spells are not implemented for this modifier\";"
+  },
+  {
+    "sourceLine": 823,
+    "reasonExpression": "if(!tables.ready) d.unsupportedReason=\"WotLK spell tables missing or incompatible (Spell, SpellRange, SpellCastTimes, SpellDuration)\";"
+  },
+  {
+    "sourceLine": 824,
+    "reasonExpression": "else if(found==selectedRows.end()) d.unsupportedReason=\"Starter spell is missing from installed Spell.dbc\";"
+  },
+  {
+    "sourceLine": 875,
+    "reasonExpression": "if(row->ambiguousRecipe) recipe.unsupportedReason=\"Ambiguous recipe skill-line requirements\";"
+  },
+  {
+    "sourceLine": 883,
+    "reasonExpression": "recipe.unsupportedReason=\"Additional recipe effects are not implemented\";continue;"
+  },
+  {
+    "sourceLine": 888,
+    "reasonExpression": "if(amount<1 || amount>1000)recipe.unsupportedReason=\"Invalid recipe output amount\";"
+  },
+  {
+    "sourceLine": 896,
+    "reasonExpression": "recipe.unsupportedReason=\"Invalid recipe reagent item/count\";continue;"
+  }
+]

@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "dbcRepository": "https://github.com/Elwynsiaa/data",
+  "dbcCommit": "cefe45546e001f7745022479912dd140861a3647",
+  "sqlRepository": "https://github.com/azerothcore/azerothcore-wotlk",
+  "sqlCommit": "9c416aaacb5537636abb13c80f55a88947838e33",
+  "classLevelRows": 800,
+  "itemRows": 6147,
+  "formula": "100*(classBase+currentIntellect*classLevelRatio)+spellRating*classRatingScalar/levelRating",
+  "ratingIndex": 10,
+  "rangedRatingIndex": 9,
+  "itemStatTypes": [
+    21,
+    32
+  ],
+  "rangedItemStatTypes": [
+    20,
+    32
+  ],
+  "sourceHashes": {
+    "gtChanceToSpellCritBase.dbc": "45963fe68a4293216a5345fb8cc5ba9acace8d93175d008148e11465416ffc5b",
+    "gtChanceToSpellCrit.dbc": "8ec9ba0579200283619491509618f2a176a52bcbaf60f4d5a885e2c7d90ef4de",
+    "gtCombatRatings.dbc": "92f4ef0247f6a23c7911e1a51ae0e9648e5d1ed1b5cbc1b01e646ddcae13f280",
+    "gtOCTClassCombatRatingScalar.dbc": "7a4f0d2bdf163ab83f7e9260d6f4c577477053847e5df3fc14df9e4248b680fa",
+    "item_template.sql": "bd4859be01946ca1521f7896f558f665e1e1d98890757a3df30e717b62768cc6"
+  },
+  "scope": "Generated metadata, not gameplay/console acceptance"
+}

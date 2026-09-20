@@ -292,7 +292,7 @@ private:
         float fogSkyBlend    = 0.7f;
         float fogStrength    = 0.4f;
         bool  sharpStars     = true;
-        int  antiAliasing    = 1;   // 0=Off 1=2x 2=4x 3=8x
+        int  antiAliasing    = kDefaultAntiAliasing;   // 0=Off 1=2x 2=4x 3=8x
         bool fxaa            = false;
         bool normalMapping   = true;
         bool pom             = true;

@@ -3,6 +3,10 @@
 #include "game/shapeshift_forms.hpp"
 #include "game/bg_score_defs.hpp"
 #include "addons/lua_api_helpers.hpp"
+#include "game/local_realm.hpp"
+#include "game/local_melee.hpp"
+#include "game/local_forms.hpp"
+#include "game/local_threat_view.hpp"
 
 namespace wowee::addons {
 
@@ -439,6 +443,14 @@ bool threatStandingFor(game::GameHandler* gh, uint64_t unitGuid, uint64_t mobGui
 
 }  // namespace
 
+static game::LocalNpcThreatView localStanding(game::GameHandler* gh,uint64_t unit,uint64_t mob) {
+    const auto* realm=gh->localServiceRealm();const auto* player=realm?realm->localPlayer():nullptr;
+    if(!player||unit!=player->guid)return {};
+    if(!mob)mob=gh->getTargetGuid();
+    for(const auto& npc:realm->npcs())if(npc.guid==mob)return game::localThreatView(npc,*player);
+    return {};
+}
+
 // UnitThreatSituation(unit, mobUnit) → 0=not tanking, 1=not tanking but threat, 2=insecurely tanking, 3=securely tanking
 static int lua_UnitThreatSituation(lua_State* L) {
     auto* gh = getGameHandler(L);
@@ -455,6 +467,11 @@ static int lua_UnitThreatSituation(lua_State* L) {
         std::string mStr(mobUid);
         toLowerInPlace(mStr);
         mobGuid = resolveUnitGuid(gh, mStr);
+    }
+    if(gh->localServiceRealm()) {
+        const auto standing=localStanding(gh,playerUnitGuid,mobGuid);
+        if(standing.present)lua_pushnumber(L,standing.status);else lua_pushnil(L);
+        return 1;
     }
     // The mob's own threat list first, which is what the server actually sent.
     // This used to go straight to the guess below because the list was built
@@ -505,6 +522,13 @@ static int lua_UnitDetailedThreatSituation(lua_State* L) {
         mobGuid = resolveUnitGuid(gh, mStr);
     }
 
+    if(gh->localServiceRealm()) {
+        const auto standing=localStanding(gh,unitGuid,mobGuid);
+        if(!standing.present){for(unsigned i=0;i<5;++i)lua_pushnil(L);return 5;}
+        lua_pushboolean(L,standing.status>=2);lua_pushnumber(L,standing.status);
+        lua_pushnumber(L,standing.scaledBasisPoints/100.0);lua_pushnumber(L,standing.rawBasisPoints/100.0);lua_pushnumber(L,standing.amount/1000.0);
+        return 5;
+    }
     ThreatStanding standing;
     if (threatStandingFor(gh, unitGuid, mobGuid, standing)) {
         const bool isTanking = (standing.status >= 2);
@@ -794,6 +818,10 @@ static int lua_UnitStat(lua_State* L) {
     // paperdoll's pet tab listed the hunter's own Strength as the pet's.
     std::string who(luaL_optstring(L, 1, "player"));
     toLowerInPlace(who);
+    if(who=="player"&&statIdx>=0&&statIdx<5)if(const auto* realm=gh->localServiceRealm())if(const auto* p=realm->localPlayer()){
+        const auto stats=game::localMeleeStats(*p,realm->content());const auto bonus=stats.attributes[statIdx]-stats.base[statIdx];
+        lua_pushnumber(L,stats.base[statIdx]);lua_pushnumber(L,stats.attributes[statIdx]);lua_pushnumber(L,std::max(0,bonus));lua_pushnumber(L,std::min(0,bonus));return 4;
+    }
     int32_t val = 0;
     if (who == "pet") {
         if (statIdx >= 0 && statIdx < 5) val = gh->getPetStats()[static_cast<size_t>(statIdx)];
@@ -1393,6 +1421,13 @@ static int lua_UnitAttackPower(lua_State* L) {
         lua_pushnumber(L, 0);
         return 3;
     }
+    if(gh&&who=="player")if(const auto* realm=gh->localServiceRealm())if(const auto* p=realm->localPlayer()){
+        const auto main=game::localWeaponAmounts(*p,realm->content()),off=game::localWeaponAmounts(*p,realm->content(),true);
+        const auto* form=game::localActiveForm(*p);const double scale=form?form->damagePercent/100.0:1.0;
+        lua_pushnumber(L,(main.low+main.magicLow)*scale);lua_pushnumber(L,(main.high+main.magicHigh)*scale);
+        lua_pushnumber(L,(off.low+off.magicLow)*scale);lua_pushnumber(L,(off.high+off.magicHigh)*scale);
+        lua_pushnumber(L,0);lua_pushnumber(L,0);lua_pushnumber(L,scale);return 7;
+    }
     const int32_t ap = gh ? gh->getMeleeAttackPower() : -1;
     lua_pushnumber(L, ap > 0 ? ap : 0);
     lua_pushnumber(L, 0);
@@ -1440,6 +1475,10 @@ static int lua_UnitAttackSpeed(lua_State* L) {
     const char* uid = luaL_optstring(L, 1, "player");
     std::string u(uid);
     toLowerInPlace(u);
+    if(gh&&u=="player")if(const auto* realm=gh->localServiceRealm())if(const auto* p=realm->localPlayer()){
+        lua_pushnumber(L,game::localMeleeSpeed(*p,realm->content()));
+        if(game::localMeleeStats(*p,realm->content()).offHand)lua_pushnumber(L,game::localMeleeSpeed(*p,realm->content(),true));else lua_pushnil(L);return 2;
+    }
     // The comment above used to say nothing tracked weapon speed. The equipped
     // item carries delayMs and always has, so both hands answer from the
     // weapon rather than from a flat two seconds - which every damage-per-
@@ -1486,6 +1525,13 @@ static int lua_UnitDamage(lua_State* L) {
         lua_pushnumber(L, 0.0);  // ...and negative
         lua_pushnumber(L, 1.0);  // damage percent
         return 7;
+    }
+    if(gh&&who=="player")if(const auto* realm=gh->localServiceRealm())if(const auto* p=realm->localPlayer()){
+        const auto main=game::localWeaponAmounts(*p,realm->content()),off=game::localWeaponAmounts(*p,realm->content(),true);
+        const auto* form=game::localActiveForm(*p);const double scale=form?form->damagePercent/100.0:1.0;
+        lua_pushnumber(L,(main.low+main.magicLow)*scale);lua_pushnumber(L,(main.high+main.magicHigh)*scale);
+        lua_pushnumber(L,(off.low+off.magicLow)*scale);lua_pushnumber(L,(off.high+off.magicHigh)*scale);
+        lua_pushnumber(L,0);lua_pushnumber(L,0);lua_pushnumber(L,scale);return 7;
     }
     const int32_t ap = gh ? gh->getMeleeAttackPower() : -1;
     double baseMin = 1.0, baseMax = 2.0;   // bare hands
@@ -2248,7 +2294,9 @@ static int lua_UnitClassification(lua_State* L) {
 // GetComboPoints("player"|"vehicle", "target") → number
 static int lua_GetComboPoints(lua_State* L) {
     auto* gh = getGameHandler(L);
-    lua_pushnumber(L, gh ? gh->getComboPoints() : 0);
+    const auto owner=gh?resolveUnitGuid(gh,luaL_optstring(L,1,"player")):0;
+    const auto target=gh?resolveUnitGuid(gh,luaL_optstring(L,2,"target")):0;
+    lua_pushnumber(L,gh&&owner==gh->getPlayerGuid()&&target&&target==gh->getComboTarget()?gh->getComboPoints():0);
     return 1;
 }
 

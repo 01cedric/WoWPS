@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include "platform/cpu_geometry.hpp"
 #include <string>
 #include <unordered_map>
 #include <glm/glm.hpp>
@@ -143,6 +144,7 @@ struct WMOBatch {
 // WMO Group (individual room/section)
 struct WMOGroup {
     uint32_t flags;
+    bool hasVertexColors = false; // Complete first MOCV, never the default white color.
     glm::vec3 boundingBoxMin;
     glm::vec3 boundingBoxMax;
     uint16_t portalStart;
@@ -154,8 +156,8 @@ struct WMOGroup {
     uint32_t groupId;
 
     // Geometry
-    std::vector<WMOVertex> vertices;
-    std::vector<uint16_t> indices;
+    platform::CpuGeometryVector<WMOVertex> vertices;
+    platform::CpuGeometryVector<uint16_t> indices;
     std::vector<WMOBatch> batches;
     std::vector<uint8_t> triFlags;  // Per-triangle MOPY flags (0x04 = detail/no-collide)
 

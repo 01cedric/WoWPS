@@ -2,24 +2,124 @@
   "format": 1,
   "shaders": {
     "terrain.frag": {
-      "source_sha256": "a7e285f4e005f6006a7b2be343042aede2fba277a30a9c52e7789355839c8b35",
-      "spirv_sha256": "a444dd04989f121d26f3502850b460dbaff80015151551008e91a2ccaba11df5"
+      "source_sha256": "224ea35130d0789af83bde1eccaffcaa4eece8233b2dd4f1b3476272936a738a",
+      "spirv_sha256": "23871f3426e6cbbfeea1589bee5a1608758f7cdd7b7597187390e5adc9e17973"
     },
     "character.frag": {
-      "source_sha256": "dac7cc23b3d80c48a08216fd3c7b7cb7f67572c95be386d9923b0ee8435ada35",
-      "spirv_sha256": "e76d0f06728e46167da2eb4a3ae849d3cccc7c55c6adebae4822776c089c8b28"
+      "source_sha256": "72f91be3417dfdea67f197c65f77f98611d18f4cf9eb4c2217ad980b8baa4312",
+      "spirv_sha256": "c2c6fd8cd5d011614cc69a8d280cebc11cb139bd700287d929470b5648ee6fd8"
     },
     "wmo.frag": {
-      "source_sha256": "898332504e015fd1e563dbbf8dccc1e4e274ce96d8b08cb1d3fa53c3f53c7243",
-      "spirv_sha256": "880ab8e157443ff337d703f970390cbc12f9c841ecd42e84dfa5b2921c3bb61c"
+      "source_sha256": "22914ea65ce612ba2cceb9d4371c7f177545856d8de7c616761d4a9ca0e009fc",
+      "spirv_sha256": "2d000c3171851372e50b337f81616e08169d9654c01df3ee778ebe5323192f6d"
     },
     "m2.frag": {
-      "source_sha256": "899dea76489398e9a2378cb8bef7a86a85ddbb35f2262d61a806538990919411",
-      "spirv_sha256": "69028821d0d85e7749e341781ff343fe7099d2bdaf42f01ec9f773ada6f06b20"
+      "source_sha256": "b081c11b451255bf2afb23d180b71a5ef6dcdea265fe47071cb5f138f4330a31",
+      "spirv_sha256": "f0717adbefb9c412da75706c4f2df552c9c79f93bffe38ece5a1ea743ca364e3"
     },
     "shadow_instanced.vert": {
       "source_sha256": "ad069cb94eb70b29f3b06078e82296fbab36b96f2d38af4c90417699d6ab1975",
       "spirv_sha256": "8dc4cdbebaab291ec73604acde9d6eceb9b8415a696c1c5131d4ac17847d292e"
+    },
+    "volumetric.frag": {
+      "source_sha256": "70846a1939e11ff54bff785265ea1857a88143c8bc900eb1cd9824cb056f9cde",
+      "spirv_sha256": "90f043d1d90b54785429bf26e1d1a17e17e4f7b98dab9f24e7b8847f848f607b"
+    },
+    "volumetric_composite.frag": {
+      "source_sha256": "af41621ce794bc324f14bf3b4b53b7ad29a7276a5e96fb29043bf6f2f9c4f5f2",
+      "spirv_sha256": "ee354a384b6a5a068ad10df3584f3c26ba4cc7fbc92b8088be80ee6647241d3e"
+    },
+    "celestial.vert": {
+      "source_sha256": "bb5b85687ea04fe50bd356596404194de2cbb31bd26c6b286b025c377be8d252",
+      "spirv_sha256": "8034545a547f80a1d4173b2fa79157534806a2468f14a69ee71c1312a947641e"
+    },
+    "skybox.frag": {
+      "source_sha256": "8a827c94d3fa61bdd70b755b1871dc4e518febbacc6bcd386ae615382b3d418c",
+      "spirv_sha256": "650d3db51cd648de610013e2156ab41a7628220267b126617cd10e027bfd178c"
+    },
+    "skybox.vert": {
+      "source_sha256": "7b9dbf7a9decbef4ab24b767679039d66c63adfd14d39a9f13baf57ac529d823",
+      "spirv_sha256": "eb57089f08fe1054f19db8595adae8e4148e7220a15a28f361e921d12ba6f253"
+    },
+    "clouds.frag": {
+      "source_sha256": "0cae5b2f561ef4790b44a3d5abe3b0f3eb87bc7e88013a3b16a932c8c7d43159",
+      "spirv_sha256": "a6f7bd7ff65868b9ca6c704cb5dff3906160f7fdaf85e070d40f7580cf35710e"
+    },
+    "wmo_shadow.vert": {
+      "source_sha256": "e17ab0413a88596611272a451cd4b5e09f0fccc4710aedfe2ba5d6dee0f32083",
+      "spirv_sha256": "5be9b2474dee557bf0a3ed875da3ea6d6900d8709008e562f6b9a1c48147200a"
+    },
+    "wmo_shadow.frag": {
+      "source_sha256": "ca8524ef3bbb95c3dff2adf66695d01f0518be0e474a9e7885d3bb3494d8606f",
+      "spirv_sha256": "c6a8202e6fecaf257adb90fee42328a3352d7ab78b3ccdd1d616ae33ad2f493f"
+    },
+    "m2_shadow.vert": {
+      "source_sha256": "083611824c054670468547433d7e962f4c1dd1abcc7201159e4542e8b28f09e4",
+      "spirv_sha256": "73db5b188a4366ba12d10bb25a6fc3984a4a76a946cb961f51d10da9408d47ec"
+    },
+    "m2_shadow_instanced.vert": {
+      "source_sha256": "c7d6485436b8fbcc37296969f2bf4e09e6f21ad7e1555578ac1470cac714f139",
+      "spirv_sha256": "24a4fc889d0c2570c86abca75acd00e65eb5f14d14b5869290ec2d19ba5d4b45"
+    },
+    "m2_shadow.frag": {
+      "source_sha256": "ed78960cb51cf8782d1245297e4ab5bf2c9b52541d0699fbe114e9f975861a76",
+      "spirv_sha256": "6f590a5e1edf89580ae5aec0e41f6654b84d7a7462112dc3e8b8036328c5f0d0"
+    },
+    "water.vert": {
+      "source_sha256": "ed6ed65a2b4b44fabec89d1f0ad7599e06e1a0ca3e72088b91dcbe8ca3c679c7",
+      "spirv_sha256": "0dbc7b2b9e80bae9f10762e302a51165290f72f9f44b223664fd2195f843868e"
+    },
+    "water.frag": {
+      "source_sha256": "3177fc4ae6a8b90d75d6285846ed2e181ff4f2452bfd44eecc0f880f34c326ce",
+      "spirv_sha256": "b1ee1475c2d18519434b5989caa186a5011e8c2ef338bbed9aa99055439d94af"
+    },
+    "shadow.frag": {
+      "source_sha256": "7afa8f8537cc0c8dfd0333888432ef9fec2a38afedbe7592e8a25e9f47b3e0e2",
+      "spirv_sha256": "7228395db9b563ed9d2b08c3e1178f78fbc26c4fc848218857dceba2845b1af5"
+    },
+    "character_shadow.frag": {
+      "source_sha256": "bc92c519b140d61a0bd54c173899d7031b801dd0d726362fd9df9010e8fe8d37",
+      "spirv_sha256": "34cdaa68bd13f26e1b468fd6241bccbab5f2c7e6135b124bbc88926d471f8ad0"
+    },
+    "bloom_blur.frag": {
+      "source_sha256": "096c02f9f352e4108639d3d807f6c7e17fe29ccdf43adf66e2dab885058b248b",
+      "spirv_sha256": "31b529f404912602ad92d0e8f7f383ee1bf322357603e69d7e8b70f0915ba152"
+    },
+    "bloom_composite.frag": {
+      "source_sha256": "f33df02d6801b7ef8b8b425aa4d52617daa2e5a80e915d3faeff093926198e82",
+      "spirv_sha256": "1eb07b22b8fa5314851297f44a1c6c75c976362b1d9e499ef07fc24ef40f95e3"
+    },
+    "volumetric_resolve.frag": {
+      "source_sha256": "faa3978b422492d89f309666ffc2389875dc8696f1bc898eb72139dc6798a2b0",
+      "spirv_sha256": "16f7bf0a87d7db6949e02bcbd67624dd2d410929197febffe8e4ab7bbe33ae30"
+    },
+    "celestial.frag": {
+      "source_sha256": "07b2015762cf51452760b4893a32dcf7d9b6819421fc426b62c067ab99fb79c6",
+      "spirv_sha256": "2b66ddde61612b64be7fecce7a763df2bdbeaa8eb7e2abdb1d7a3519c94d11c4"
+    },
+    "weather.frag": {
+      "source_sha256": "7c36383e5b0a6d74e1c97c774018405c50a6214731653fdcf902e7c06c21fa6c",
+      "spirv_sha256": "93a6f13bbafc858fd299543d0add755e87bb924001a6a36d28591f0e90947071"
+    },
+    "m2_smoke.frag": {
+      "source_sha256": "64740697405c339712d4c68500d010af3eb45ed5ce1c0748edb87d3bb28d610b",
+      "spirv_sha256": "f5bd04a4beea32489f31353e56fd4d34c0e13261f50b4a925f20c319ea2bccb4"
+    },
+    "mount_dust.frag": {
+      "source_sha256": "bdc59463ff4783840cf9d24df2fbb3ed4f2cf0c12f4b6162a9a60b7adf25c8ed",
+      "spirv_sha256": "87ab5cdb3ef1d3841042793acf528e32d17438382183894152bba1d91fe9413e"
+    },
+    "lens_flare.frag": {
+      "source_sha256": "7064c1f2715c3751d7bd57b04f3a75a6016ee3602043b97542182a364c6161d2",
+      "spirv_sha256": "5b3009a110d91eb48f7e1a5878ff36af2c5ce3b0076201b7e9e1312d4a26136e"
+    },
+    "character.vert": {
+      "source_sha256": "005ce34e8a175b6f9e091258d0db8978adca39cdd493ce59fa5024d64618b114",
+      "spirv_sha256": "4da916fa4c9ea2b669d907e0fdfb47ea6e9b598c650778acc6ef1218ecab616d"
+    },
+    "character_shadow.vert": {
+      "source_sha256": "c4d1e59b19b985613bc86f9c0dadfc3910200ac825748e780c756cd24f5cfb00",
+      "spirv_sha256": "7e3e6bc045fff13b24c2e08c9bc2bb3e055354cae80346a311683729f57576ad"
     }
   }
 }

@@ -1,4 +1,7 @@
 #include "ui/graphics_choices.hpp"
+#ifdef WOWEE_PS4
+#include "platform/ps4/ps4_platform.hpp"
+#endif
 #include "ui/game_screen.hpp"
 #include "rendering/render_setting_bridge.hpp"
 #include "addons/lua_api_registrations.hpp"
@@ -633,8 +636,16 @@ void GameScreen::render(game::GameHandler& gameHandler) {
     // read from the file and handed to nothing.
     if (!settingsPanel_.renderSettingsApplied_) {
         auto& sinks = rendering::renderSettingSinks();
-        if (sinks.setShadowQuality) {
+        if (sinks.setShadowQuality && sinks.setVolumetricQuality) {
             sinks.setShadowQuality(settingsPanel_.pendingShadowQuality);
+            sinks.setVolumetricQuality(settingsPanel_.pendingVolumetricQuality);
+            if (sinks.setVolumetricIntensity) sinks.setVolumetricIntensity(settingsPanel_.pendingVolumetricIntensity);
+            if (sinks.setVolumetricFogIntensity) sinks.setVolumetricFogIntensity(settingsPanel_.pendingVolumetricFogIntensity);
+            if (sinks.setVolumetricRaysEnabled) sinks.setVolumetricRaysEnabled(settingsPanel_.pendingVolumetricRaysEnabled);
+            if (sinks.setVolumetricFogEnabled) sinks.setVolumetricFogEnabled(settingsPanel_.pendingVolumetricFogEnabled);
+            if (sinks.setBloomEnabled) sinks.setBloomEnabled(settingsPanel_.pendingBloomEnabled);
+            if (sinks.setBloomIntensity) sinks.setBloomIntensity(settingsPanel_.pendingBloomIntensity);
+            if (sinks.setVolumetricDebug) sinks.setVolumetricDebug(settingsPanel_.pendingVolumetricDebug);
             // The reflection pass reads its CVar every frame rather than taking
             // a call, so applying the stored value means telling the CVar store
             // what the settings file says - which is exactly what
@@ -1793,7 +1804,11 @@ void GameScreen::processTargetInput(game::GameHandler& gameHandler) {
     // Cursor affordance: show hand cursor over interactable entities.
     // Not while the cursor is over a frame FrameXML owns: ImGui has never heard
     // of those, so its own answer is no wherever they are.
-    if (!io.WantCaptureMouse && !frameXmlOwnsMouse()) {
+    if (!io.WantCaptureMouse && !frameXmlOwnsMouse()
+#ifdef WOWEE_PS4
+        && platform::ps4::inputCursorVisible()
+#endif
+    ) {
         auto* renderer = services_.renderer;
         auto* camera = renderer ? renderer->getCamera() : nullptr;
         auto* window = services_.window;

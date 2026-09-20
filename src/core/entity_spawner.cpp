@@ -412,6 +412,7 @@ void EntitySpawner::logCompositeDegradation() {
 #endif
 
 void EntitySpawner::shutdown() {
+    invalidateGameObjectDisplayLookups();
 #ifdef WOWEE_PS4
     logCompositeDegradation();
 #endif
@@ -519,15 +520,20 @@ void EntitySpawner::resetAllState() {
     charSectionsCache_.clear();
     charSectionsCacheBuilt_ = false;
 
+    // Character/world changes may mount a different asset set.
+    invalidateGameObjectDisplayLookups();
     // Clear GO display caches
     gameObjectDisplayIdModelCache_.clear();
     gameObjectDisplayIdWmoCache_.clear();
     gameObjectDisplayIdFailedCache_.clear();
+    gameObjectUploadRetryAt_.clear();
     // Instance ids in here belong to a renderer that has just been cleared.
     gameObjectPendingAnimPolicy_.clear();
 }
 
 void EntitySpawner::rebuildLookups() {
+    invalidateGameObjectDisplayLookups();
+    gameObjectDisplayIdFailedCache_.clear();
     creatureLookupsBuilt_ = false;
     displayDataMap_.clear();
     humanoidExtraMap_.clear();
@@ -629,6 +635,18 @@ void EntitySpawner::queuePlayerSpawn(uint64_t guid, uint8_t raceId, uint8_t gend
     pendingPlayerSpawnGuids_.insert(guid);
 }
 
+bool EntitySpawner::isGameObjectSpawned(uint64_t guid) const {
+    const auto it = gameObjectInstances_.find(guid);
+    if (it == gameObjectInstances_.end() || !renderer_) return false;
+    const auto& instance = it->second;
+    if (instance.isWmo) {
+        const auto* renderer = renderer_->getWMORenderer();
+        return renderer && renderer->hasInstance(instance.instanceId);
+    }
+    const auto* renderer = renderer_->getM2Renderer();
+    return renderer && renderer->hasInstance(instance.instanceId);
+}
+
 void EntitySpawner::queueGameObjectSpawn(uint64_t guid, uint32_t entry, uint32_t displayId,
                                           float x, float y, float z, float orientation, float scale) {
     // The local scheduler can ask on every frame until the hull is uploaded.
@@ -689,6 +707,7 @@ void EntitySpawner::clearAllQueues() {
     asyncNpcCompositeLoads_.clear();
     asyncGameObjectLoads_.clear();
     gameObjectGenerations_.clear();
+    gameObjectUploadRetryAt_.clear();
 }
 
 void EntitySpawner::despawnAllCreatures() {
@@ -1216,35 +1235,63 @@ audio::VoiceType EntitySpawner::detectVoiceTypeFromDisplayId(uint32_t displayId)
     return result;
 }
 
+void EntitySpawner::invalidateGameObjectDisplayLookups() {
+    gameObjectDisplayIdToPath_.clear();
+    gameObjectLookupsBuilt_ = false;
+    localMailboxDisplayId_ = 0;
+    gameObjectLookupAttempts_ = 0;
+    gameObjectLookupRetryAt_ = {};
+}
+
+uint32_t EntitySpawner::localMailboxDisplayId() {
+    buildGameObjectDisplayLookups();
+    return localMailboxDisplayId_;
+}
+
 void EntitySpawner::buildGameObjectDisplayLookups() {
     if (gameObjectLookupsBuilt_ || !assetManager_ || !assetManager_->isInitialized()) return;
+    const auto now = std::chrono::steady_clock::now();
+    if (now < gameObjectLookupRetryAt_) return;
+    gameObjectLookupRetryAt_ = now + std::chrono::seconds(5);
+    ++gameObjectLookupAttempts_;
 
-    LOG_INFO("Building gameobject display lookups from DBC files");
-
-    // GameObjectDisplayInfo.dbc structure (3.3.5a):
-    // Col 0: ID (displayId)
-    // Col 1: ModelName
+    // Build atomically: a missing DBC (or a failed partial allocation) must not
+    // latch an empty/partial table as ready for the rest of the session.
+    std::unordered_map<uint32_t, std::string> paths;
+    uint32_t mailboxDisplay = 0;
     if (auto godi = assetManager_->loadDBC("GameObjectDisplayInfo.dbc"); godi && godi->isLoaded()) {
-        const auto* godiL = pipeline::getActiveDBCLayout() ? pipeline::getActiveDBCLayout()->getLayout("GameObjectDisplayInfo") : nullptr;
-        for (uint32_t i = 0; i < godi->getRecordCount(); i++) {
-            uint32_t displayId = godi->getUInt32(i, godiL ? (*godiL)["ID"] : 0);
-            std::string modelName = godi->getString(i, godiL ? (*godiL)["ModelName"] : 1);
-            if (modelName.empty()) continue;
-            // GameObjectDisplayInfo names .mdx and .mdl alike; this knew only
-            // the first, so a .mdl gameobject had no model path at all.
-            modelName = pipeline::modelPathToM2(modelName);
-            gameObjectDisplayIdToPath_[displayId] = modelName;
+        const auto* layout = pipeline::getActiveDBCLayout() ? pipeline::getActiveDBCLayout()->getLayout("GameObjectDisplayInfo") : nullptr;
+        for (uint32_t row = 0; row < godi->getRecordCount(); ++row) {
+            const uint32_t displayId = godi->getUInt32(row, layout ? (*layout)["ID"] : 0);
+            std::string path = godi->getString(row, layout ? (*layout)["ModelName"] : 1);
+            if (!displayId || path.empty()) continue;
+            path = pipeline::modelPathToM2(path);
+            std::string lower = path;
+            std::transform(lower.begin(), lower.end(), lower.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            // Use the same authoritative mapping as the spawn. Deterministic
+            // when the data has several display rows for this mailbox model.
+            if (lower.find("postboxhuman") != std::string::npos &&
+                (!mailboxDisplay || displayId < mailboxDisplay)) mailboxDisplay = displayId;
+            paths[displayId] = std::move(path);
         }
-        LOG_INFO("Loaded ", gameObjectDisplayIdToPath_.size(), " gameobject display mappings");
-    } else {
-        LOG_WARNING("GameObjectDisplayInfo.dbc failed to load - no GO display mappings available");
     }
-
-    if (gameObjectDisplayIdToPath_.empty()) {
-        LOG_WARNING("GO display mapping table is EMPTY - game objects will not render");
+    if (paths.empty()) {
+        if (gameObjectLookupAttempts_ <= 3 || gameObjectLookupAttempts_ % 12 == 0)
+            LOG_WARNING("[GO_LOOKUP] GameObjectDisplayInfo unavailable/empty; preserving queued spawns, retry in 5s; attempt=", gameObjectLookupAttempts_);
+        return;
     }
-
+    gameObjectDisplayIdToPath_.swap(paths);
+    localMailboxDisplayId_ = mailboxDisplay;
     gameObjectLookupsBuilt_ = true;
+    gameObjectLookupRetryAt_ = {};
+    LOG_INFO("[GO_LOOKUP] loaded mappings=", gameObjectDisplayIdToPath_.size(),
+             " attempts=", gameObjectLookupAttempts_);
+    if (mailboxDisplay)
+        LOG_INFO("[LOCAL_MAILBOX] model display=", mailboxDisplay,
+                 " path=", getGameObjectModelPathForDisplayId(mailboxDisplay));
+    else
+        LOG_WARNING("[LOCAL_MAILBOX] no PostBoxHuman model in GameObjectDisplayInfo; mailbox visuals unavailable for this asset set");
 }
 
 std::string EntitySpawner::getGameObjectModelPathForDisplayId(uint32_t displayId) const {

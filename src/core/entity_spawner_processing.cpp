@@ -1206,6 +1206,9 @@ void EntitySpawner::processGameObjectSpawnQueue() {
     processPendingWmoUploads();
 
     if (pendingGameObjectSpawns_.empty()) return;
+    // Keep server CREATE requests until their metadata can actually resolve.
+    buildGameObjectDisplayLookups();
+    if (!gameObjectLookupsBuilt_) return;
 
     static int goQueueLogCounter = 0;
     if (++goQueueLogCounter % 60 == 1) {
@@ -1219,12 +1222,21 @@ void EntitySpawner::processGameObjectSpawnQueue() {
     static constexpr float kBudgetMs = 2.0f;
     static constexpr int kMaxAsyncLoads = 2;
 
-    while (!pendingGameObjectSpawns_.empty()) {
+    size_t remaining = pendingGameObjectSpawns_.size();
+    while (!pendingGameObjectSpawns_.empty() && remaining--) {
         float elapsedMs = std::chrono::duration<float, std::milli>(
             std::chrono::steady_clock::now() - startTime).count();
         if (elapsedMs >= kBudgetMs) break;
 
         auto& s = pendingGameObjectSpawns_.front();
+        if (const auto retry = gameObjectUploadRetryAt_.find(s.displayId);
+            retry != gameObjectUploadRetryAt_.end() &&
+            std::chrono::steady_clock::now() < retry->second) {
+            std::rotate(pendingGameObjectSpawns_.begin(), std::next(pendingGameObjectSpawns_.begin()), pendingGameObjectSpawns_.end());
+            continue;
+        }
+
+        gameObjectUploadRetryAt_.erase(s.displayId);
 
         // Check if this is an uncached WMO that needs async loading
         std::string modelPath;
@@ -1332,8 +1344,18 @@ void EntitySpawner::processGameObjectSpawnQueue() {
         }
 
         // Cached WMO or M2 - spawn synchronously (cheap)
-        spawnOnlineGameObject(s.guid, s.entry, s.displayId, s.x, s.y, s.z, s.orientation, s.scale);
-        pendingGameObjectSpawns_.erase(pendingGameObjectSpawns_.begin());
+        try {
+            spawnOnlineGameObject(s.guid, s.entry, s.displayId, s.x, s.y, s.z, s.orientation, s.scale);
+        } catch (const std::bad_alloc&) {
+            // Retain the request, but yield to world memory recovery before retrying.
+            gameObjectUploadRetryAt_[s.displayId] = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            LOG_WARNING("Gameobject allocation deferred: display=", s.displayId);
+        }
+        if (gameObjectUploadRetryAt_.count(s.displayId)) {
+            std::rotate(pendingGameObjectSpawns_.begin(), std::next(pendingGameObjectSpawns_.begin()), pendingGameObjectSpawns_.end());
+        } else {
+            pendingGameObjectSpawns_.erase(pendingGameObjectSpawns_.begin());
+        }
     }
 }
 

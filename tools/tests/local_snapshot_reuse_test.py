@@ -21,6 +21,7 @@ methods += function('    void refreshPlayers()')
 fixture = r'''
 #include "core/retained_guid_set.hpp"
 #include "game/local_gameplay.hpp"
+#include "game/local_pet.hpp"
 #include <cassert>
 #include <cstdlib>
 #include <iostream>
@@ -44,7 +45,9 @@ struct Fixture {
     struct Saved{LocalRealmPlayer player;};
     struct Game {
         std::vector<LocalRealmNpc> rows;
+        std::vector<LocalRealmPet> petRows;
         const auto& npcs() const{return rows;}
+        const auto& pets() const{return petRows;}
         bool canAttack(const LocalRealmPlayer&,const LocalRealmNpc& n)const{return n.guid%2;}
         bool isAggressive(const LocalRealmPlayer&,const LocalRealmNpc& n)const{return n.guid%3==0;}
     } gameplay;
@@ -52,6 +55,7 @@ struct Fixture {
     std::vector<LocalRealmPlayer> players,botPlayers;
     std::vector<LocalRealmPlayer*> activePlayerScratch;
     std::vector<LocalRealmNpc> npcView;
+    std::vector<LocalRealmPet> petView;
     std::vector<Peer> peers;
     std::vector<Saved> saved;
     Saved* findSaved(uint64_t guid){for(auto& s:saved)if(s.player.guid==guid)return &s;return nullptr;}
@@ -66,20 +70,24 @@ int main(){
     auto peer=f.self;peer.guid=2;f.saved.push_back({peer});f.peers.push_back({2});
     auto bot=f.self;bot.guid=3;f.botPlayers.push_back(bot);
     for(uint64_t i=0;i<128;++i){LocalRealmNpc n;n.guid=100+i;n.mapId=f.self.mapId;n.name=std::string(48,'n');f.gameplay.rows.push_back(n);}
+    // Owned creatures are copied into their own presentation view by the same
+    // method, so they are warmed and measured with the rest of the roster.
+    for(uint64_t i=0;i<8;++i){LocalRealmPet s;s.guid=300+i;s.ownerGuid=1;s.mapId=f.self.mapId;s.instanceId=f.self.instanceId;s.name=std::string(48,'p');f.gameplay.petRows.push_back(s);}
     f.refreshPlayers();f.activePlayers();
     LocalRealmPlayer snapshot=f.self;
     const auto before=allocations;
     denyAllocations=true;
     for(unsigned frame=0;frame<500;++frame){
-        f.self.health=frame;f.gameplay.rows[7].health=frame+1;
+        f.self.health=frame;f.gameplay.rows[7].health=frame+1;f.gameplay.petRows[3].health=frame+2;
         f.refreshPlayers();const auto& active=f.activePlayers();snapshot=f.self;
         assert(active.size()==3&&active[0]==&f.self&&active[1]==&f.saved[0].player);
         assert(f.players[0].health==frame&&snapshot.health==frame);
         assert(f.npcView[7].health==frame+1&&f.npcView[7].hostile);
+        assert(f.petView.size()==8&&f.petView[3].health==frame+2&&f.petView[3].name.size()==48);
         assert(f.players[0].money==500&&f.players[0].inventory[0].count==3);
     }
     denyAllocations=false;assert(allocations==before);
-    std::cout<<"PASS actual refreshPlayers/activePlayers and snapshot: 500 warmed frames, zero allocations, unchanged authority and current presentation values\n";
+    std::cout<<"PASS actual refreshPlayers/activePlayers and snapshot: 500 warmed frames, zero allocations, unchanged authority and current presentation values for players, creatures and owned creatures\n";
     // A bigger roster may still allocate. Failed view growth cannot change
     // authority inventory/gold or retain pointers into temporary player copies.
     f.players.shrink_to_fit();auto newPeer=peer;newPeer.guid=4;
@@ -88,8 +96,8 @@ int main(){
     try{f.refreshPlayers();}catch(const std::bad_alloc&){failed=true;}
     denyAllocations=false;assert(failed&&f.self.money==500&&f.self.inventory[0].count==3);
     f.refreshPlayers();assert(f.players.size()==4);
-    f.gameplay.rows.resize(5);f.peers.clear();f.botPlayers.clear();f.refreshPlayers();
-    assert(f.players.size()==1&&f.npcView.size()==5&&f.activePlayers().size()==1);
+    f.gameplay.rows.resize(5);f.gameplay.petRows.resize(2);f.peers.clear();f.botPlayers.clear();f.refreshPlayers();
+    assert(f.players.size()==1&&f.npcView.size()==5&&f.petView.size()==2&&f.activePlayers().size()==1);
     std::cout<<"PASS roster growth failure preserves authority; retry and departed rows converge\n";
     wowee::core::RetainedGuidSet remote,npcs,transports,scratch;
     auto cycle=[&]{

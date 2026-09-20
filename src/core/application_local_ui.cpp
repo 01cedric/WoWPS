@@ -1,3 +1,4 @@
+#include "game/local_talents.hpp"
 #include "core/application.hpp"
 #include "ui/local_nameplate_policy.hpp"
 #include "ui/local_pad_focus.hpp"
@@ -60,6 +61,12 @@ void Application::renderLocalRealmOverlay() {
     if (!livePlayer) return;
     // Action methods may mutate snapshots; retain a stable view for this frame.
     const auto self = *livePlayer;
+    if (self.dead) {
+        // Death ends NPC services; stale talk panels must not own ghost input.
+        localRealmDialogueNpc_=0;localRealmDialogueQuest_=0;
+        localRealmVendorOpen_=localRealmTrainerOpen_=localRealmAuctionOpen_=false;
+        localRealmNpcPanelOpen_=false;
+    }
     // UI actions enqueue/apply commands without replacing the NPC snapshot.
     // Keep the existing per-frame copy: commands are allowed to mutate it.
     const auto npcs = localRealm_->npcs();
@@ -102,16 +109,17 @@ void Application::renderLocalRealmOverlay() {
     bool toggleTarget=pressed(ImGuiKey_Tab);
 #ifdef WOWEE_PS4
     const auto& targetPad=platform::ps4::padState();
-    if(localFrameXml_.ready() && targetPad.connected && !io.WantTextInput &&
-       !platform::ps4::keyboardCapturesInput() && (targetPad.pressed&ORBIS_PAD_BUTTON_TRIANGLE))toggleTarget=true;
+    if(keys && localFrameXml_.ready() && targetPad.connected &&
+       !platform::ps4::inputTextFocus() && !platform::ps4::keyboardCapturesInput() && (targetPad.pressed&ORBIS_PAD_BUTTON_TRIANGLE))toggleTarget=true;
 #endif
-    if(toggleTarget){
+    if(toggleTarget && !self.dead){
         const auto next=ui::toggledLocalTarget(localRealmTarget_,game::nearestLivingLocalTarget(self,npcs));
         if(!next){localRealm_->stopAttack();if(gameHandler)gameHandler->clearFocus();}
         select(next);
         LOG_INFO("[PAD_TARGET] ",next?"selected nearest target":"cleared target");
     }
     auto interactWith = [&](const game::LocalRealmNpc& npc) {
+        if (self.dead) return;
         if (npc.dead) { localRealm_->loot(npc.guid); return; }
         // The realm validates range, map, life state and faction. Preserve its
         // diagnostic when the selected character cannot be spoken to.
@@ -124,6 +132,7 @@ void Application::renderLocalRealmOverlay() {
         localRealmNpcPanelOpen_ = localRealmInventoryOpen_ = localRealmJournalOpen_ = false;
     };
     auto interact = [&] {
+        if (self.dead) return;
         const auto* npc = target();
         if (!npc || distanceTo(self, *npc) > 8.0f) {
             npc = nullptr;
@@ -137,10 +146,16 @@ void Application::renderLocalRealmOverlay() {
         if (!npc) { localRealmNpcPanelOpen_ = true; return; }
         interactWith(*npc);
     };
-    if(keys && game::nearbyLocalMailbox(content,self))
+    const auto* actionTarget = target();
+    const bool mailboxOwnsAction = !actionTarget || actionTarget->dead || !actionTarget->hostile;
+    if(keys && !self.dead && mailboxOwnsAction && game::nearbyLocalMailbox(content,self))
         ImGui::GetForegroundDrawList()->AddText(ImVec2(24.f,io.DisplaySize.y*.58f),IM_COL32(255,220,130,255),"Square: Mailbox");
     auto primaryAction = [&](bool contextual) {
-        if(contextual && gameHandler)if(const auto* mailbox=game::nearbyLocalMailbox(content,self)) {
+        // Corpse recovery owns the contextual action before mail, NPCs or
+        // combat. The authority checks corpse identity, map/instance and range.
+        if (self.ghost) { localRealm_->reclaimCorpse(); return; }
+        if (self.dead) return;
+        if(contextual && mailboxOwnsAction && gameHandler)if(const auto* mailbox=game::nearbyLocalMailbox(content,self)) {
             gameHandler->openMailbox(mailbox->guid);return;
         }
         const auto* npc = target();
@@ -208,7 +223,7 @@ void Application::renderLocalRealmOverlay() {
             if (item && item->heal && stack.count) { localRealm_->useItem(item->id); break; }
         }
     }
-    if (pressed(ImGuiKey_8)) { if (self.dead) localRealm_->respawn(); else localRealm_->stopAttack(); }
+    if (pressed(ImGuiKey_8) && !self.dead) localRealm_->stopAttack();
     if (pressed(ImGuiKey_9)) localRealmNpcPanelOpen_ = !localRealmNpcPanelOpen_;
     // A nested popup owns its Back press, including the frame where ImGui
     // has already dismissed a combo during NewFrame. Original FrameXML may
@@ -397,12 +412,12 @@ void Application::renderLocalRealmOverlay() {
         if(clicked&&!disabled)action();
         ImGui::PopID();ImGui::SameLine();
     };
-    actionButton("attack","Interface/Icons/Ability_MeleeDamage.blp","S","Talk / Attack / Loot — Square | Attack — R2 + Square",self.dead,[&]{primaryAction(true);});
+    actionButton("attack","Interface/Icons/Ability_MeleeDamage.blp","S",self.ghost?"Reclaim corpse nearby — Square / 1":"Talk / Attack / Loot — Square | Attack — R2 + Square",self.dead&&!self.ghost,[&]{primaryAction(true);});
     for(bool healing:{false,true}) {
         const auto* spell=selectedSpell(healing);
         const auto path=spell?localRealmSpellIconPaths_.find(spell->iconId):localRealmSpellIconPaths_.end();
         const char* icon=path!=localRealmSpellIconPaths_.end()?path->second.c_str():"Interface/Icons/INV_Misc_QuestionMark.blp";
-        const uint32_t cooldownMs=spell?ui::localActionCooldownMs(self,spell->id):0;
+        const uint32_t cooldownMs=spell?ui::localActionCooldownMs(self,content,spell->id):0;
         const bool disabled=self.dead||!spell||!spell->unsupportedReason.empty()||self.castingSpellId||cooldownMs;
         actionButton(healing?"heal":"spell",icon,healing?"R2 O":"R2 T",spell?spell->name.c_str():"No learned spell",disabled,[&]{cast(healing);},cooldownMs);
     }
@@ -410,7 +425,7 @@ void Application::renderLocalRealmOverlay() {
     actionButton("bags","Interface/Buttons/Button-Backpack-Up.blp","L2 S","Inventory / Equipment — L2 + Square",false,[&]{localRealmInventoryOpen_=!localRealmInventoryOpen_;});
     actionButton("quests","Interface/Icons/INV_Misc_Book_09.blp","L2 T","Quest log — L2 + Triangle",false,[&]{localRealmJournalOpen_=!localRealmJournalOpen_;});
     actionButton("potion","Interface/Icons/INV_Potion_54.blp","L2 O","Use healing item — L2 + Circle",self.dead,[&]{for(const auto& stack:self.inventory){const auto* item=content.item(stack.itemId);if(item&&item->heal&&stack.count){localRealm_->useItem(item->id);break;}}});
-    actionButton("stop","Interface/Icons/Ability_Vanish.blp","L2 X",self.dead?"Revive — L2 + Cross":"Stop attack — L2 + Cross",false,[&]{if(self.dead)localRealm_->respawn();else localRealm_->stopAttack();});
+    actionButton("stop","Interface/Icons/Ability_Vanish.blp","L2 X","Stop attack — L2 + Cross",self.dead,[&]{localRealm_->stopAttack();});
     actionButton("nearby","Interface/Icons/INV_Misc_GroupLooking.blp","R1 S","Nearby NPCs / Portals — R1 + Square",false,[&]{localRealmNpcPanelOpen_=!localRealmNpcPanelOpen_;});
     actionButton("menu","Interface/Icons/INV_Misc_Gear_01.blp","OPT","Game menu — Options",false,[&]{localRealmMenuOpen_=!localRealmMenuOpen_;});
     ImGui::NewLine();
@@ -803,8 +818,8 @@ void Application::renderLocalRealmOverlay() {
         for (auto id:self.knownSpells) {
             const auto* spell=content.spell(id);if(!spell)continue;
             ImGui::PushID(int(id));spellIcon(*spell,24);
-            const uint32_t cooldown=ui::localActionCooldownMs(self,id);
-            ImGui::TextWrapped("%s | cost %u + %u%% | %.1fs cast | %.1fs cooldown",spell->name.c_str(),spell->mana,spell->manaPercent,spell->castTimeMs/1000.f,cooldown/1000.f);
+            const uint32_t cooldown=ui::localActionCooldownMs(self,content,id);
+            ImGui::TextWrapped("%s | cost %u | %.1fs cast | %.1fs cooldown",spell->name.c_str(),game::localSpellResourceCost(self,content,*spell),game::localSpellCastTime(self,content,*spell)/1000.f,cooldown/1000.f);
             if(!spell->unsupportedReason.empty())ImGui::TextWrapped("Unavailable: %s",spell->unsupportedReason.c_str());
             else {
                 ImGui::BeginDisabled(self.dead||self.castingSpellId||cooldown);
@@ -816,11 +831,16 @@ void Application::renderLocalRealmOverlay() {
         ImGui::End();
     }
     if (self.dead) {
-        const float width=430*scale;
-        beginPanel("You Died",ImVec2((io.DisplaySize.x-width)*.5f,io.DisplaySize.y*.36f),ImVec2(width,130*scale));
-        ImGui::TextWrapped("Revive at the starting location and continue your adventure.");
-        if (ImGui::Button("Revive [L2 + Cross / 8]")) localRealm_->respawn();
-        ImGui::End();
+        // A passive hint must not capture keyboard/gamepad navigation: the
+        // released ghost needs to walk back from the graveyard immediately.
+        const char* hint = !self.ghost ? "You have died. Releasing your spirit..." :
+            localRealm_->canReclaimCorpse() ? "Square / 1: Reclaim your corpse" :
+            "Return to your corpse. Press Square / 1 when nearby to revive.";
+        const ImVec2 size=ImGui::CalcTextSize(hint);
+        const ImVec2 at((io.DisplaySize.x-size.x)*.5f,io.DisplaySize.y*.28f);
+        auto* draw=ImGui::GetForegroundDrawList();
+        draw->AddText(ImVec2(at.x+1,at.y+1),IM_COL32(0,0,0,220),hint);
+        draw->AddText(at,IM_COL32(190,220,255,255),hint);
     }
     if (localRealmMenuOpen_) {
         const float width=430*scale;

@@ -1,6 +1,8 @@
 // lua_action_api.cpp - Action bar, cursor/pickup, keyboard input, key bindings, and pet actions Lua API bindings.
 // Extracted from lua_engine.cpp as part of §5.1 (Tame LuaEngine).
 #include "game/item_text.hpp"
+#include "game/local_realm.hpp"
+#include "game/local_action_spell_ranks.hpp"
 #include "addons/lua_api_helpers.hpp"
 // For fireEvent: paging has to reach the frames as well as the addons.
 #include "addons/lua_engine.hpp"
@@ -474,7 +476,22 @@ static int lua_ClearCursor(lua_State* L) {
     return 0;
 }
 
+static void reconcileLocalSpellCursor(lua_State* L,game::GameHandler* gh) {
+    if(!gh||s_cursorType!=CursorType::SPELL||!s_cursorId)return;
+    const auto* realm=gh->localServiceRealm();const auto* player=realm?realm->localPlayer():nullptr;
+    if(!player||!realm->content().talentIndexReady)return;
+    const auto replacement=game::localActionSpellRank(realm->content(),player->knownSpells,s_cursorId);
+    if(replacement==s_cursorId)return;
+    if(!replacement){clearCursorItem(L);return;}
+    s_cursorId=replacement;
+    const auto* spell=realm->content().spell(replacement);
+    wowee::ui::frameXmlSetCursorItem(spell?spell->iconPath:gh->getSpellIconPath(replacement));
+    lua_getfield(L,LUA_REGISTRYINDEX,"wowee_lua_engine");auto* engine=static_cast<LuaEngine*>(lua_touserdata(L,-1));lua_pop(L,1);
+    if(engine)engine->fireEvent("CURSOR_UPDATE",{});
+}
+
 static int lua_GetCursorInfo(lua_State* L) {
+    reconcileLocalSpellCursor(L,getGameHandler(L));
     switch (s_cursorType) {
         case CursorType::SPELL:
             lua_pushstring(L, "spell");
@@ -526,6 +543,7 @@ static int lua_CursorHasItem(lua_State* L) {
 }
 
 static int lua_CursorHasSpell(lua_State* L) {
+    reconcileLocalSpellCursor(L,getGameHandler(L));
     lua_pushboolean(L, s_cursorType == CursorType::SPELL ? 1 : 0);
     return 1;
 }
@@ -547,6 +565,7 @@ static int lua_CursorHasSpell(lua_State* L) {
 static int lua_PickupAction(lua_State* L) {
     auto* gh = getGameHandler(L);
     if (!gh) return 0;
+    reconcileLocalSpellCursor(L,gh);
     int slot = static_cast<int>(luaL_checknumber(L, 1));
     const auto& bar = gh->getActionBar();
     if (slot < 1 || slot > static_cast<int>(bar.size())) return 0;
@@ -622,6 +641,7 @@ static int lua_PickupAction(lua_State* L) {
 static int lua_PlaceAction(lua_State* L) {
     auto* gh = getGameHandler(L);
     if (!gh) return 0;
+    reconcileLocalSpellCursor(L,gh);
     int slot = static_cast<int>(luaL_checknumber(L, 1));
     if (slot < 1 || slot > static_cast<int>(gh->getActionBar().size())) return 0;
     if (s_cursorType == CursorType::SPELL && s_cursorId != 0) {
@@ -2456,8 +2476,8 @@ void registerActionLuaAPI(lua_State* L) {
                 lua_pushboolean(L, 0);
                 return 1;
             }
-            const uint32_t spellId = gh->getPetActionSlot(index - 1) & 0x00FFFFFF;
-            lua_pushboolean(L, spellId != 0 ? 1 : 0);
+            lua_pushboolean(L, gh->hasPet() &&
+                game::pet::populatedPetActionSlot(gh->getPetActionSlot(index - 1)));
             return 1;
         }},
                 // GetPetActionInfo(index) →
@@ -2624,13 +2644,17 @@ void registerActionLuaAPI(lua_State* L) {
                     game::pet::packPetAction(game::pet::ActionType::Reaction, game::pet::kPassive), 0);
             return 0;
         }},
+                {"GetPetActionsUsable", [](lua_State* L) -> int {
+            auto* gh = getGameHandler(L);
+            lua_pushboolean(L, gh && gh->hasPet());
+            return 1;
+        }},
                 {"CastPetAction", [](lua_State* L) -> int {
             auto* gh = getGameHandler(L);
             int index = static_cast<int>(luaL_checknumber(L, 1));
             if (!gh || !gh->hasPet() || index < 1 || index > game::GameHandler::PET_ACTION_BAR_SLOTS) return 0;
             uint32_t packed = gh->getPetActionSlot(index - 1);
-            uint32_t spellId = packed & 0x00FFFFFF;
-            if (spellId != 0) {
+            if (game::pet::populatedPetActionSlot(packed)) {
                 // CastPetAction(action, unit) - the unit is what a click-cast
                 // binding on a unit frame passes, and dropping it sent the pet
                 // at whatever was targeted instead of what was clicked. The
@@ -2653,7 +2677,8 @@ void registerActionLuaAPI(lua_State* L) {
             if (!gh || !gh->hasPet() || index < 1 || index > game::GameHandler::PET_ACTION_BAR_SLOTS) return 0;
             uint32_t packed = gh->getPetActionSlot(index - 1);
             uint32_t spellId = packed & 0x00FFFFFF;
-            if (spellId != 0) gh->togglePetSpellAutocast(spellId);
+            if (spellId != 0 && game::pet::isPetSpellAction(packed))
+                gh->togglePetSpellAutocast(spellId);
             return 0;
         }},
                 {"PetDismiss", [](lua_State* L) -> int {

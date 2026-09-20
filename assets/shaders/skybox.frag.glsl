@@ -19,6 +19,7 @@ layout(push_constant) uniform Push {
     vec4 horizonColor;    // DBC skyBand1Color
     vec4 fogColorPush;    // DBC skyBand2Color
     vec4 sunDirAndTime;   // xyz = sun direction, w = timeOfDay
+    vec4 sunColor;        // resolved authored zone/time color
 } push;
 
 layout(location = 0) in vec2 TexCoord;
@@ -74,13 +75,16 @@ void main() {
     float sunAboveHorizon = clamp(sunDir.z, 0.0, 1.0);
 
     float rayleighStrength = pow(1.0 - elevClamped, 3.0) * 0.15;
-    vec3 scatterColor = mix(vec3(0.8, 0.45, 0.15), vec3(0.3, 0.5, 1.0), elevClamped);
+    // The lighting policy has already chosen warm sunset or cool overcast.
+    // Do not reintroduce an unconditional orange glow after that decision.
+    vec3 sourceColor = max(push.sunColor.rgb, vec3(0.0));
+    vec3 scatterColor = mix(sourceColor, push.midColor.rgb, elevClamped);
     sky += scatterColor * rayleighStrength * sunDot * sunAboveHorizon;
 
     // --- Mie-like forward scatter (sun disk glow) ---
     float mieSharp = pow(sunDot, 64.0) * 0.4;
     float mieSoft  = pow(sunDot, 8.0) * 0.1;
-    vec3 sunGlowColor = mix(vec3(1.0, 0.85, 0.55), vec3(1.0, 1.0, 0.95), elevClamped);
+    vec3 sunGlowColor = sourceColor;
     sky += sunGlowColor * (mieSharp + mieSoft) * sunAboveHorizon;
 
     // --- Subtle horizon haze ---

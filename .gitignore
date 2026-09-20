@@ -95,3 +95,15 @@ screenshots/
 Thumbs.db
 Desktop.ini
 node_modules/
+
+# Local build and test outputs
+build*/
+out/
+logs/
+*.log
+*.pkg
+*.elf
+*.oelf
+*.gp4
+*.zip
+__pycache__/

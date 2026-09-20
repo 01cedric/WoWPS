@@ -10,6 +10,9 @@ layout(set = 0, binding = 1) uniform ShadowParams {
 layout(location = 0) in vec2 TexCoord;
 
 void main() {
+    // Explicit PS4 depth export; discarded fragments still produce no depth.
+    // Set before the opaque fast return as every surviving path must write it.
+    gl_FragDepth = gl_FragCoord.z;
     vec4 texColor = texture(uTexture, TexCoord);
     if (alphaTest != 0 && texColor.a < 0.5) discard;
     if (colorKeyBlack != 0) {

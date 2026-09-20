@@ -1,4 +1,5 @@
 #include "rendering/clouds.hpp"
+#include "rendering/celestial_lighting.hpp"
 #include "rendering/sky_system.hpp"
 #include "rendering/vk_context.hpp"
 #include "rendering/vk_shader.hpp"
@@ -74,7 +75,7 @@ bool Clouds::initialize(VkContext* ctx, VkDescriptorSetLayout perFrameLayout) {
     VkPushConstantRange pushRange{};
     pushRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     pushRange.offset     = 0;
-    pushRange.size       = sizeof(CloudPush); // 48 bytes
+    pushRange.size       = sizeof(CloudPush); // 64 bytes
 
     // ------------------------------------------------------------------ pipeline layout
     pipelineLayout_ = createPipelineLayout(device, {perFrameLayout}, {pushRange});
@@ -133,21 +134,17 @@ void Clouds::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const SkyP
     glm::vec3 cloudBaseColor = params.cloudColor;
     cloudBaseColor = glm::clamp(cloudBaseColor, glm::vec3(0.0f), glm::vec3(1.0f));
 
-    // Sun direction (opposite of light direction). Guard the hemisphere like
-    // Celestial/SkySystem do - directionalDir's sign convention is not stable,
-    // and a flipped vector puts the cloud scatter glow opposite the real sun.
-    glm::vec3 sunDir = -glm::normalize(params.directionalDir);
-    if (sunDir.z < 0.0f) sunDir = -sunDir;
-    float sunAboveHorizon = glm::clamp(sunDir.z, 0.0f, 1.0f);
-
-    // Sun intensity based on elevation
-    float sunIntensity = sunAboveHorizon;
-
-    // Ambient light - brighter during day, dimmer at night
-    float ambient = glm::mix(0.3f, 0.7f, sunAboveHorizon);
+    // Use the same source selection and horizon fade as surface illumination.
+    // The primary moon is a cool authored key, not reflected full daylight.
+    const glm::vec3 solarRay = celestialSolarTravelDirection(params.directionalDir, params.timeOfDay);
+    const glm::vec3 sunDir = -outdoorKeyLightTravelDirection(solarRay);
+    const float sunIntensity = celestialKeyStrength(solarRay);
+    const float ambient = glm::clamp(glm::dot(params.ambientColor,
+        glm::vec3(0.2126f, 0.7152f, 0.0722f)), 0.0f, 1.0f);
 
     CloudPush push{};
     push.cloudColor    = glm::vec4(cloudBaseColor, 1.0f);
+    push.keyColor      = glm::vec4(celestialDiscColor(params.directionalColor), 1.0f);
     push.sunDirDensity = glm::vec4(sunDir, density_);
     push.windAndLight  = glm::vec4(windOffset_, sunIntensity, ambient, 0.0f);
 

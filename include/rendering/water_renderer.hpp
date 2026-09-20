@@ -220,6 +220,7 @@ private:
     PerFrameSceneHistory sceneHistory[SCENE_HISTORY_FRAMES];
     VkExtent2D sceneHistoryExtent = {.width = 0, .height = 0};
     bool sceneHistoryReady = false;
+    bool reflectionReady = false;
     mutable uint32_t renderDiagCounter_ = 0;
 
     // Planar reflection resources

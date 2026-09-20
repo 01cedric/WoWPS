@@ -9,6 +9,8 @@
 #include <mutex>
 #include "rendering/vk_context.hpp"
 #include "rendering/deferred_cleanup.hpp"
+#include "rendering/gpu_timestamp_validation.hpp"
+#include "rendering/cpu_phase_window.hpp"
 
 #include <fstream>
 #include "rendering/vk_utils.hpp"
@@ -172,6 +174,11 @@ void VkContext::shutdown() {
     for (auto& pool : gpuQueryPools_) {
         if (pool) { vkDestroyQueryPool(device, pool, nullptr); pool = VK_NULL_HANDLE; }
     }
+    gpuTimings_.clear();
+    gpuTimingSupported_ = false;
+    gpuTimingSampleValid_ = false;
+    gpuTimingStatus_ = "unsupported";
+    for (auto& pending : gpuMarksPending_) pending = false;
     for (auto sem : imageAcquiredSemaphores_) { if (sem) vkDestroySemaphore(device, sem, nullptr); }
     imageAcquiredSemaphores_.clear();
     for (auto sem : renderFinishedSemaphores_) { if (sem) vkDestroySemaphore(device, sem, nullptr); }
@@ -1231,7 +1238,11 @@ bool VkContext::createSwapchain(int width, int height) {
     VkSwapchainCreateInfoKHR createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
     createInfo.surface = VK_NULL_HANDLE;
-    createInfo.minImageCount = 2;
+    // Keep a free scanout image while VideoOut switches from the displayed
+    // image to the just-rendered one. With only two images the next acquire
+    // blocks on that switch even though GPU rendering has already finished.
+    // This does not add a GPU frame in flight or relax any completion wait.
+    createInfo.minImageCount = 3;
     // Native VideoOut is registered as A8B8G8R8: little-endian RGBA bytes.
     // BGRA here swapped red/blue across the entire screen, including UI text.
     createInfo.imageFormat = VK_FORMAT_R8G8B8A8_UNORM;
@@ -1248,6 +1259,17 @@ bool VkContext::createSwapchain(int width, int height) {
     createInfo.clipped = VK_TRUE;
 
     VkResult result = vkCreateSwapchainKHR(device, &createInfo, nullptr, &swapchain);
+    if ((result != VK_SUCCESS || swapchain == VK_NULL_HANDLE) &&
+        result != VK_ERROR_DEVICE_LOST) {
+        // VideoOut allocation/registration may not accommodate the extra
+        // buffer. The ICD cleans failed creations before returning; output
+        // handles from failed Vulkan calls must not be used or destroyed.
+        LOG_WARNING("PS4 three-buffer swapchain unavailable: VkResult=", result,
+                    "; retrying two scanout buffers at ", width, "x", height);
+        swapchain = VK_NULL_HANDLE;
+        createInfo.minImageCount = 2;
+        result = vkCreateSwapchainKHR(device, &createInfo, nullptr, &swapchain);
+    }
     if (result != VK_SUCCESS || swapchain == VK_NULL_HANDLE) {
         LOG_ERROR("PS4 VideoOut swapchain creation failed: VkResult=", result,
                   " extent=", width, "x", height);
@@ -1421,34 +1443,30 @@ bool VkContext::createCommandPools() {
 }
 
 void VkContext::createGpuQueryPools() {
-#if defined(__ORBIS__) || defined(PS4) || defined(WOWEE_PS4)
-    // Timestamp queries (VK_QUERY_TYPE_TIMESTAMP, vkCmdWriteTimestamp/
-    // vkCmdResetQueryPool) are GNM EOP-event machinery this ICD has not been
-    // proven against: every subsystem WoWee otherwise touches on the very
-    // first frame (instance/device/swapchain, barriers, ordinary draws) has
-    // now been exercised and works, and per-pass GPU timing is the one
-    // remaining piece of frame 0 that hasn't. Diagnostic: off until a
-    // hardware run with it disabled confirms whether it is the cause of the
-    // GPU hang/device-lost seen a few seconds into the first frame.
     gpuTimingSupported_ = false;
-    LOG_INFO("PS4: GPU timestamp queries disabled (diagnostic - suspected in "
-             "the frame-0 device-lost hang)");
-    return;
+    gpuTimingSampleValid_ = false;
+    gpuTimings_.clear();
+    timestampValidBits_ = 0;
+#if defined(__ORBIS__) || defined(PS4) || defined(WOWEE_PS4)
+    // The bundled GNM selector has no sourced tick period or valid-bit/stage
+    // contract. Keep raw ticks out of milliseconds and never submit probes in
+    // the normal rendering path until the backend contract is validated.
+    timestampPeriodNs_ = 0.0f;
+    gpuTimingStatus_ = "uncalibrated-ps4";
+    LOG_INFO("PS4 GPU timing: uncalibrated-ps4; no GPU ms available (validBits=0, period=0)");
 #else
-    // A period of zero means the device does not timestamp; a queue family can
-    // report zero valid bits even on a device that does, which MoltenVK and
-    // some mobile drivers do. Both have to hold.
+    gpuTimingStatus_ = "unsupported";
     uint32_t familyCount = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &familyCount, nullptr);
     std::vector<VkQueueFamilyProperties> families(familyCount);
     vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &familyCount, families.data());
-    const uint32_t validBits = (graphicsQueueFamily < familyCount)
+    timestampValidBits_ = (graphicsQueueFamily < familyCount)
         ? families[graphicsQueueFamily].timestampValidBits : 0;
-    gpuTimingSupported_ = (timestampPeriodNs_ > 0.0f) && (validBits > 0);
+    gpuTimingSupported_ = std::isfinite(timestampPeriodNs_) && timestampPeriodNs_ > 0.0f &&
+                          timestampValidBits_ > 0 && timestampValidBits_ <= 64;
     if (!gpuTimingSupported_) {
         LOG_WARNING("GPU timing unavailable: timestampPeriod=", timestampPeriodNs_,
-                    ", the graphics queue reports ", validBits,
-                    " valid timestamp bits - the per-pass GPU breakdown will be empty");
+                    ", validBits=", timestampValidBits_);
         return;
     }
 
@@ -1458,14 +1476,20 @@ void VkContext::createGpuQueryPools() {
     info.queryCount = kMaxGpuMarks;
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
         if (vkCreateQueryPool(device, &info, nullptr, &gpuQueryPools_[i]) != VK_SUCCESS) {
-            LOG_WARNING("Could not create the GPU timestamp pool; per-pass GPU "
-                        "timings will be empty");
+            // No commands reference these pools yet: release a partial setup.
+            for (auto& pool : gpuQueryPools_) {
+                if (pool) vkDestroyQueryPool(device, pool, nullptr);
+                pool = VK_NULL_HANDLE;
+            }
+            LOG_WARNING("GPU timestamp pool creation failed; no GPU ms available");
             gpuTimingSupported_ = false;
+            gpuTimingStatus_ = "query-error";
             return;
         }
     }
+    gpuTimingStatus_ = "no-sample";
     LOG_INFO("GPU timing enabled: ", timestampPeriodNs_, "ns per tick, ",
-             kMaxGpuMarks, " marks per frame");
+             timestampValidBits_, " valid bits, ", kMaxGpuMarks, " marks per frame");
 #endif
 }
 
@@ -1482,29 +1506,44 @@ void VkContext::gpuMark(VkCommandBuffer cmd, const char* label) {
 }
 
 void VkContext::readGpuTimings(uint32_t slot) {
+    if (!gpuTimingSupported_) return;
+    gpuTimings_.clear();
+    gpuTimingSampleValid_ = false;
+    gpuTimingStatus_ = "no-sample";
     const uint32_t n = gpuMarkCount_[slot];
-    if (!gpuTimingSupported_ || !gpuMarksPending_[slot] || n < 2) return;
+    const bool pending = gpuMarksPending_[slot];
+    gpuMarksPending_[slot] = false;
+    if (!pending || n < 2) return;
 
-    uint64_t stamps[kMaxGpuMarks]{};
-    // No WAIT bit: this slot's fence has already been waited on by the caller,
-    // so the results are there. Asking the driver to wait here would put a
-    // second block in the frame for something already finished.
+    struct Stamp { uint64_t ticks; uint64_t available; } stamps[kMaxGpuMarks]{};
+    // This slot's submission fence has completed. Read before its GPU reset,
+    // without WAIT: unavailable/failed reads must not add another CPU stall or
+    // preserve an old frame's apparently current timing.
     const VkResult r = vkGetQueryPoolResults(
         device, gpuQueryPools_[slot], 0, n, sizeof(stamps), stamps,
-        sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
-    if (r != VK_SUCCESS) return;   // VK_NOT_READY on a frame that never ran
-
-    gpuTimings_.clear();
+        sizeof(Stamp), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+    if (r != VK_SUCCESS) {
+        gpuTimingStatus_ = r == VK_NOT_READY ? "not-ready" : "query-error";
+        return;
+    }
+    for (uint32_t i = 0; i < n; ++i) {
+        if (stamps[i].available == 0) {
+            gpuTimingStatus_ = "not-ready";
+            return;
+        }
+    }
     for (uint32_t i = 1; i < n; ++i) {
-        // Unsigned subtraction, so a wrapped or out-of-order pair reads as an
-        // enormous positive number rather than a negative one. Drop those
-        // rather than reporting a pass that took four seconds.
-        if (stamps[i] < stamps[i - 1]) continue;
-        const double ms = static_cast<double>(stamps[i] - stamps[i - 1]) *
-                          static_cast<double>(timestampPeriodNs_) / 1.0e6;
-        if (ms > 1000.0) continue;
+        double ms = 0.0;
+        if (!gpuTimestampDeltaMs(stamps[i - 1].ticks, stamps[i].ticks,
+                                 timestampValidBits_, timestampPeriodNs_, ms)) {
+            gpuTimings_.clear();
+            gpuTimingStatus_ = "invalid-sample";
+            return;
+        }
         gpuTimings_.emplace_back(gpuMarkLabels_[slot][i], ms);
     }
+    gpuTimingSampleValid_ = true;
+    gpuTimingStatus_ = "available";
 }
 
 bool VkContext::createSyncObjects() {
@@ -2928,6 +2967,19 @@ VkCommandBuffer VkContext::beginFrame(uint32_t& imageIndex) {
     if (deviceLost_) return VK_NULL_HANDLE;
     if (swapchain == VK_NULL_HANDLE) return VK_NULL_HANDLE;  // Swapchain lost; recreate pending
 
+#ifdef WOWEE_PS4
+    // CPU wall time only: fence waiting and command preparation are distinct
+    // from GPU pass execution. No queries, extra waits, or per-frame logging.
+    std::array<uint64_t, 6> phaseUs{};
+    auto phaseStart = std::chrono::steady_clock::now();
+    const auto markPhase = [&](std::size_t phase) {
+        const auto now = std::chrono::steady_clock::now();
+        phaseUs[phase] = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(now - phaseStart).count());
+        phaseStart = now;
+    };
+#endif
+
     auto& frame = frames[currentFrame];
 
     // Wait for this frame's fence (with timeout to detect GPU hangs)
@@ -2966,12 +3018,21 @@ VkCommandBuffer VkContext::beginFrame(uint32_t& imageIndex) {
         return VK_NULL_HANDLE;
     }
 
+#ifdef WOWEE_PS4
+    markPhase(0);
+#endif
     // Any work queued for this frame slot is now guaranteed to be unused by the GPU.
     runDeferredCleanup(currentFrame);
+#ifdef WOWEE_PS4
+    markPhase(1);
+#endif
 
     // The wait above is what makes this slot's timestamps readable: the submit
     // that wrote them has completed. Read before the pool is reset below.
     readGpuTimings(currentFrame);
+#ifdef WOWEE_PS4
+    markPhase(2);
+#endif
 
     // Acquire next swapchain image using the free semaphore.
     // After acquiring we swap it into the per-image slot so the old per-image
@@ -3004,6 +3065,9 @@ VkCommandBuffer VkContext::beginFrame(uint32_t& imageIndex) {
         imageIndex = retainedFrameImageIndex_;
     }
 
+#ifdef WOWEE_PS4
+    markPhase(3);
+#endif
     // Leave the slot's completed fence signalled until there is an executable
     // command buffer to submit. A skipped recording otherwise deadlocks the
     // next frame waiting on a fence with no producer.
@@ -3034,6 +3098,9 @@ VkCommandBuffer VkContext::beginFrame(uint32_t& imageIndex) {
         gpuMark(frame.commandBuffer, "frame start");
     }
 
+#ifdef WOWEE_PS4
+    markPhase(4);
+#endif
     // Same-queue uploads are ordered by submission plus this GPU barrier, not
     // by a CPU wait every frame. Keep the wait for diagnostic transfer uploads.
     if (!inFlightBatches_.empty()) {
@@ -3056,6 +3123,23 @@ VkCommandBuffer VkContext::beginFrame(uint32_t& imageIndex) {
         cmdPipelineBarrier2(frame.commandBuffer, memDep);
     }
 
+#ifdef WOWEE_PS4
+    markPhase(5);
+    static CpuPhaseWindow<6> beginProfile;
+    if (beginProfile.add(phaseUs)) {
+        LOG_INFO("[VK_FRAME_BEGIN_CPU] samples=", beginProfile.samples,
+                 " fenceMeanUs=", beginProfile.meanUs(0),
+                 " cleanupMeanUs=", beginProfile.meanUs(1),
+                 " timestampsMeanUs=", beginProfile.meanUs(2),
+                 " acquireMeanUs=", beginProfile.meanUs(3),
+                 " commandPrepareMeanUs=", beginProfile.meanUs(4),
+                 " uploadDependencyMeanUs=", beginProfile.meanUs(5),
+                 " fenceMaxUs=", beginProfile.maxUs[0],
+                 " cleanupMaxUs=", beginProfile.maxUs[1],
+                 " acquireMaxUs=", beginProfile.maxUs[3]);
+        beginProfile.reset();
+    }
+#endif
     return frame.commandBuffer;
 }
 
@@ -3299,6 +3383,9 @@ void VkContext::discardUnsubmittedFrame(VkResult reason) {
     ++discardedFrameCount_;
     ++consecutiveRecordingFailures_;
     gpuMarksPending_[currentFrame] = false;
+    gpuTimings_.clear();
+    gpuTimingSampleValid_ = false;
+    if (gpuTimingSupported_) gpuTimingStatus_ = "no-sample";
     LOG_ERROR("Frame recording discarded before submit: result=", static_cast<int>(reason),
               " consecutive=", consecutiveRecordingFailures_, " image=", retainedFrameImageIndex_,
               " total=", discardedFrameCount_, "; swapchain and acquire ownership retained");
@@ -3326,6 +3413,14 @@ void VkContext::endFrame(VkCommandBuffer cmd, uint32_t imageIndex) {
     endFrameCounter++;
 
 #ifdef WOWEE_PS4
+    std::array<uint64_t, 4> phaseUs{};
+    auto phaseStart = std::chrono::steady_clock::now();
+    const auto markPhase = [&](std::size_t phase) {
+        const auto now = std::chrono::steady_clock::now();
+        phaseUs[phase] = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(now - phaseStart).count());
+        phaseStart = now;
+    };
     const bool bootTrace = endFrameCounter <= 3 || platform::ps4::frameTraceEnabled();
     if (bootTrace) platform::ps4::reportBootStage("gpu: frame command buffer end begin");
 #endif
@@ -3339,6 +3434,7 @@ void VkContext::endFrame(VkCommandBuffer cmd, uint32_t imageIndex) {
     }
 #ifdef WOWEE_PS4
     if (bootTrace) platform::ps4::reportBootStage("gpu: frame command buffer ended; submit begin");
+    markPhase(0);
 #endif
 
     auto& frame = frames[currentFrame];
@@ -3392,10 +3488,14 @@ void VkContext::endFrame(VkCommandBuffer cmd, uint32_t imageIndex) {
             return;
         }
     }
+#ifdef WOWEE_PS4
+    markPhase(1);
+#endif
     VkResult submitResult = vkQueueSubmit(graphicsQueue, 1, &submitInfo,
                                           frameTimeline_ != VK_NULL_HANDLE ? VK_NULL_HANDLE
                                                                            : frame.inFlightFence);
 #ifdef WOWEE_PS4
+    markPhase(2);
     if (bootTrace) platform::ps4::reportBootStage(submitResult == VK_SUCCESS
         ? "gpu: frame submit complete" : "gpu: frame submit failed");
 #endif
@@ -3467,6 +3567,21 @@ void VkContext::endFrame(VkCommandBuffer cmd, uint32_t imageIndex) {
 #endif
     VkResult result = vkQueuePresentKHR(presentQueue, &presentInfo);
 #ifdef WOWEE_PS4
+    markPhase(3);
+    if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
+        static CpuPhaseWindow<4> endProfile;
+        if (endProfile.add(phaseUs)) {
+            LOG_INFO("[VK_FRAME_END_CPU] samples=", endProfile.samples,
+                     " commandEndMeanUs=", endProfile.meanUs(0),
+                     " syncPrepareMeanUs=", endProfile.meanUs(1),
+                     " queueSubmitMeanUs=", endProfile.meanUs(2),
+                     " presentMeanUs=", endProfile.meanUs(3),
+                     " commandEndMaxUs=", endProfile.maxUs[0],
+                     " queueSubmitMaxUs=", endProfile.maxUs[2],
+                     " presentMaxUs=", endProfile.maxUs[3]);
+            endProfile.reset();
+        }
+    }
     if (bootTrace) platform::ps4::reportBootStage(result == VK_SUCCESS
         ? "gpu: present complete" : "gpu: present returned error");
 #endif
@@ -3641,6 +3756,12 @@ void VkContext::beginUploadBatch() {
             if (!waitAllUploads()) throw std::runtime_error("Upload backpressure wait failed");
         }
         if (deviceLost_) throw std::runtime_error("Upload attempted on stopped renderer");
+        // Admission above leaves at most 15 pending batches. Reserve all 16
+        // metadata slots before opening a new batch: the interrupted finish
+        // path may run because a later asset allocation exhausted the heap.
+        // It must be able to transfer staged ownership without allocating.
+        // A failed reserve leaves the new batch unopened and safe to retry.
+        if (inFlightBatches_.capacity() < 16) inFlightBatches_.reserve(16);
     }
 
     uploadBatchDepth_++;
@@ -3697,11 +3818,9 @@ void VkContext::finishUploadBatch(bool synchronous) {
     if (uploadBatchDepth_ <= 0) return;
     if (uploadBatchDepth_ > 1) { --uploadBatchDepth_; return; }
 
-    // Allocate bookkeeping BEFORE submission so an allocation failure can
-    // never lose ownership of an in-flight command buffer or its staging.
-    if (batchCmd_ != VK_NULL_HANDLE &&
-        inFlightBatches_.size() == inFlightBatches_.capacity())
-        inFlightBatches_.reserve(std::max<size_t>(8, inFlightBatches_.size() * 2));
+    // beginUploadBatch reserves the bounded ownership table before any
+    // staging is recorded. Moving a batch into its admitted slot cannot grow
+    // that table, including when finishing after an asset std::bad_alloc.
     uploadBatchDepth_ = 0;
     inUploadBatch_ = false;
     if (batchCmd_ == VK_NULL_HANDLE) return;

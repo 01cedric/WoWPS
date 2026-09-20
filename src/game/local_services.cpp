@@ -1,4 +1,5 @@
 #include "game/local_services.hpp"
+#include "game/local_mailbox_sites.hpp"
 #include "game/local_world_catalog.hpp"
 
 #include <algorithm>
@@ -243,7 +244,9 @@ const LocalProfessionRank* localNextProfessionRank(uint16_t cap) {
 }
 
 uint32_t localTrainerSpellCost(const LocalSpellDefinition& spell) {
-    const uint64_t level = std::max(1u, spell.baseLevel);
+    // The same unlock level the trainer list gates on, so a price can never be
+    // quoted for a level the gate does not use .
+    const uint64_t level = localSpellUnlockLevel(spell);
     return uint32_t(std::min(level * kLocalTrainerCostPerLevel, uint64_t(1000000000)));
 }
 
@@ -292,21 +295,11 @@ namespace wowee::game {
 const std::vector<LocalMailboxSite>& localMailboxSites(const LocalWorldContent& c,const LocalRealmPlayer& p) {
     if(!c.mailboxSitesReady || c.mailboxMap!=p.mapId || std::hypot(p.x-c.mailboxX,p.y-c.mailboxY)>32.f || std::abs(p.z-c.mailboxZ)>32.f){
         c.mailboxSites.clear();
-        // Local service placements near the two reported starting hubs.
-        // Shared by authority and renderer, so Square uses the visible object's position.
-        for(const auto& site:std::array<LocalMailboxSite,2>{{
-            {0x0A1C000000000001ULL,0,-8943.0f,-132.0f,83.6f,0.0f},
-            {0x0A1C00000000000AULL,530,10345.0f,-6362.0f,33.4f,0.0f}}})
-            if(site.mapId==p.mapId && std::hypot(site.x-p.x,site.y-p.y)<192.f)c.mailboxSites.push_back(site);
-        std::vector<LocalNpcSpawn> spawns;
-        if(c.catalog){std::string error;c.catalog->query3D(p.mapId,p.x,p.y,p.z,192.f,LocalWorldCatalog::MaxResults,spawns,error);}
-        spawns.insert(spawns.end(),c.spawns.begin(),c.spawns.end());
-        for(const auto& s:spawns)if(s.mapId==p.mapId && std::hypot(s.x-p.x,s.y-p.y)<192.f)
-            if(const auto* d=c.npc(s.entry);d && (localEffectiveNpcFlags(*d)&kLocalNpcFlagInnkeeper)){
-                const uint64_t guid=0x0A1B000000000000ULL|s.id;
-                if(std::none_of(c.mailboxSites.begin(),c.mailboxSites.end(),[&](const auto& m){return m.guid==guid;}))
-                    c.mailboxSites.push_back({guid,s.mapId,s.x+3.f*std::cos(s.orientation),s.y+3.f*std::sin(s.orientation),s.z,s.orientation});
-            }
+        // Authority and visible objects use exactly the same authored sites.
+        // Do not synthesize a mailbox at an innkeeper, banker or auctioneer.
+        for(const auto& site:kLocalMailboxSites)
+            if(site.mapId==p.mapId && std::hypot(site.x-p.x,site.y-p.y)<192.f)
+                c.mailboxSites.push_back(site);
         c.mailboxSitesReady=true;c.mailboxMap=p.mapId;c.mailboxX=p.x;c.mailboxY=p.y;c.mailboxZ=p.z;
     }
     return c.mailboxSites;

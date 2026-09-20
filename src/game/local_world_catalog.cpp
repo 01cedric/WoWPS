@@ -23,6 +23,13 @@ uint32_t number(const Json& j,const char* key,uint32_t fallback=0,uint32_t maxim
     if(!v.is_number_integer() || v.get<int64_t>()<0 || v.get<uint64_t>()>maximum)throw std::runtime_error(std::string("Catalog number: ")+key);
     return v.get<uint32_t>();
 }
+// A 64-bit unsigned field: creature_immunities.MechanicsMask is a bigint.
+uint64_t wide(const Json& j,const char* key,uint64_t fallback=0) {
+    if(!j.contains(key))return fallback;
+    const auto& v=j.at(key);
+    if(!v.is_number_integer() || (v.is_number_integer() && !v.is_number_unsigned() && v.get<int64_t>()<0))throw std::runtime_error(std::string("Catalog number: ")+key);
+    return v.get<uint64_t>();
+}
 float real(const Json& j,const char* key,float fallback=0,float maximum=200000) {
     if(!j.contains(key))return fallback;
     if(!j.at(key).is_number())throw std::runtime_error(std::string("Catalog float: ")+key);
@@ -227,6 +234,26 @@ bool LocalWorldCatalog::npc(uint32_t id,LocalNpcDefinition& result,std::string& 
         // that fills either in overrides that fallback for this creature.
         n.npcFlags=number(j,"npcFlags",0,UINT32_MAX);
         n.trainerSkill=uint16_t(number(j,"trainerSkill",0,65535));n.trainerClass=uint8_t(number(j,"trainerClass",0,11));
+        // P04 creature_immunities (SchoolMask, MechanicsMask) and
+        // creature_template_resistance, if this catalog carries them. A catalog
+        // built previously loads with no immunity and no resistance, which is
+        // the reference's own answer for a template without a set or a row.
+        n.immuneSchoolMask=uint8_t(number(j,"immuneSchoolMask",0,127));
+        n.immuneMechanicsMask=wide(j,"immuneMechanicsMask");
+        if(j.contains("resistances")){
+            const auto& r=array(j,"resistances",6);
+            if(r.size()!=6)throw std::runtime_error("Catalog resistances need six schools");
+            for(size_t i=0;i<6;++i){
+                if(!r[i].is_number_integer()||r[i].get<int64_t>()<0||r[i].get<uint64_t>()>65535)throw std::runtime_error("Invalid catalog resistance");
+                n.resistances[i]=uint16_t(r[i].get<uint32_t>());
+            }
+        }
+        // P05 combat reach and bounding radius, if this catalog carries them
+        // (Creature.cpp:3536-3550). A catalog built previously loads with
+        // zero, and localCreatureCombatReach() then answers with the
+        // reference's DEFAULT_WORLD_OBJECT_SIZE for every creature.
+        n.combatReach=float(real(j,"combatReach",0,1000));
+        n.boundingRadius=float(real(j,"boundingRadius",0,1000));
         if(j.contains("vendor")){
             for(const auto& id:array(j,"vendor",256)){
                 if(!id.is_number_integer()||id.get<int64_t>()<1||id.get<uint64_t>()>UINT32_MAX)throw std::runtime_error("Invalid catalog vendor item");

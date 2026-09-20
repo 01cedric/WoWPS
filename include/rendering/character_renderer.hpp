@@ -4,6 +4,8 @@
 #include "rendering/shadow_params.hpp"
 #include "rendering/shadow_texture_cache.hpp"
 #include "rendering/bone_hierarchy.hpp"
+#include "rendering/bone_upload_state.hpp"
+#include "rendering/character_placement_cache.hpp"
 
 #include "pipeline/m2_loader.hpp"
 #include "pipeline/blp_loader.hpp"
@@ -28,6 +30,7 @@ namespace rendering {
 
 // Forward declarations
 class Camera;
+class ShadowReceiverHull;
 class VkContext;
 class VkTexture;
 
@@ -99,6 +102,7 @@ public:
     /// How many draws the last render() call counted, and what the filtered
     /// one was (model, batch, indices), for the log line written before its submit.
     [[nodiscard]] uint32_t lastRenderDrawCount() const { return drawsCounted_; }
+    [[nodiscard]] uint32_t lastSubmittedDrawCount() const { return submittedDraws_; }
     [[nodiscard]] const std::string& lastFilteredDrawDescription() const { return lastDrawDescription_; }
 
     /// Console diagnostics (CharacterPreview::diagnoseFirstComposite): draws
@@ -123,7 +127,8 @@ public:
                                 wowee::rendering::VkShaderModule& charFrag);
     [[nodiscard]] bool initializeShadow(VkRenderPass shadowRenderPass);
     void renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMatrix,
-                      const glm::vec3& shadowCenter = glm::vec3(0), float shadowRadius = 1e9f);
+                      const glm::vec3& shadowCenter = glm::vec3(0), float shadowRadius = 1e9f,
+                      uint32_t shadowPassIndex = 0, const ShadowReceiverHull* receiverHull = nullptr);
 
     void setInstancePosition(uint32_t instanceId, const glm::vec3& position);
     void setInstanceRotation(uint32_t instanceId, const glm::vec3& rotation);
@@ -319,6 +324,7 @@ private:
         glm::vec3 position;
         glm::vec3 rotation;
         float scale;
+        mutable CharacterPlacementCache placementCache;
         bool visible = true;  // For first-person camera hiding
         float torsoYawOverrideRad = 0.0f;
 
@@ -384,6 +390,7 @@ private:
         const M2ModelGPU* cachedModel = nullptr;  // Avoid per-frame hash lookups
 
         // Per-instance bone SSBO (double-buffered per frame)
+        BoneUploadState boneUploadState;
         VkBuffer boneBuffer[2] = {};
         VmaAllocation boneAlloc[2] = {};
         void* boneMapped[2] = {};
@@ -472,6 +479,7 @@ private:
 
     // Descriptor pool
     uint32_t drawsCounted_ = 0;
+    uint32_t submittedDraws_ = 0;
     std::string lastDrawDescription_;
     DrawOverrides drawOverrides_;
     VkDescriptorPool materialDescPools_[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};

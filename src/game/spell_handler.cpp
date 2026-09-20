@@ -1467,8 +1467,8 @@ void SpellHandler::loadTalentDbc() {
         const uint32_t tRow = talL ? (*talL)["Row"] : 2;
         const uint32_t tCol = talL ? (*talL)["Column"] : 3;
         const uint32_t tRank0 = talL ? (*talL)["RankSpell0"] : 4;
-        const uint32_t tPrereq0 = talL ? (*talL)["PrereqTalent0"] : 9;
-        const uint32_t tPrereqR0 = talL ? (*talL)["PrereqRank0"] : 12;
+        const uint32_t tPrereq0 = talL ? (*talL)["PrereqTalent0"] : 13;
+        const uint32_t tPrereqR0 = talL ? (*talL)["PrereqRank0"] : 16;
 
         uint32_t count = talentDbc->getRecordCount();
         for (uint32_t i = 0; i < count; ++i) {

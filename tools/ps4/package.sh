@@ -88,7 +88,9 @@ SHIM_S
 fi
 
 TITLE="${WOWEE_PS4_TITLE:-WoWPS}"
-VERSION="${WOWEE_PS4_VERSION:-01.90}"
+VERSION="${WOWEE_PS4_VERSION:-$(<"$REPO_DIR/BUILD_VERSION")}"
+VERSION="${VERSION//$'\r'/}"
+[[ "$VERSION" =~ ^[0-9]{2}\.[0-9]{2}$ ]] || { echo "error: package version must be NN.NN" >&2; exit 1; }
 TITLE_ID="${WOWEE_PS4_TITLE_ID:-WOWE00001}"
 CONTENT_ID="${WOWEE_PS4_CONTENT_ID:-IV0000-${TITLE_ID}_00-WOWEEPS4CLIENT00}"
 
@@ -183,7 +185,7 @@ fi
 
 echo "==> pkg"
 ( cd "$OUT_DIR" && \
-  FILES="$(find . -type f ! -name '*.gp4' ! -name '*.pkg' | sed 's#^\./##' | tr '\n' ' ')" && \
+  FILES="$(find . -type f ! -name '*.gp4' ! -name '*.pkg' ! -name '*.oelf' ! -name '*.elf' | sed 's#^\./##' | tr '\n' ' ')" && \
   "$TOOLS/create-gp4" -out pkg.gp4 --content-id="$CONTENT_ID" --files "$FILES" && \
   python3 "$REPO_DIR/tools/ps4/gp4_rootdir.py" pkg.gp4 . && \
   "$TOOLS/PkgTool.Core" pkg_build pkg.gp4 . )

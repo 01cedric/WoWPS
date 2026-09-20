@@ -4,6 +4,8 @@
 #include "core/env_flag.hpp"
 #include "rendering/m2_renderer_internal.h"
 #include "rendering/m2_blend_mode.hpp"
+#include "rendering/m2_shadow.hpp"
+#include "rendering/m2_identity_uv.hpp"
 #include "rendering/m2_skin_lod.hpp"
 #include "pipeline/model_bounds.hpp"
 #include "rendering/render_constants.hpp"
@@ -53,6 +55,10 @@ void M2Instance::updateModelMatrix() {
 }
 
 void M2Instance::recomputeCachedCullFactors() {
+    cachedShadowNormSquared = 0.0f;
+    for (int c = 0; c < 3; ++c) for (int r = 0; r < 3; ++r)
+        cachedShadowNormSquared += modelMatrix[c][r] * modelMatrix[c][r];
+    cachedShadowNorm = std::sqrt(cachedShadowNormSquared);
     // Matrix instances (notably ADT tree doodads) can have an offset pivot and
     // arbitrary scale. A sphere centered at the placement origin with the M2
     // header radius can therefore exclude much of the visible canopy. Derive
@@ -116,7 +122,20 @@ uint32_t M2Renderer::gatherLocalLights(const glm::vec3& cameraPos,
     };
     std::vector<Candidate> candidates;
 
-    for (const auto& instance : instances) {
+    // Keep original instance order, including ties in partial_sort. Rebuild only
+    // after topology/model-reference changes; never cache animated light values.
+    if (localLightInstancesDirty_) {
+        localLightInstanceIndices_.clear();
+        for (size_t i = 0; i < instances.size(); ++i) {
+            const auto* model = instances[i].cachedModel;
+            if (model && (model->isLanternLike || model->isTorch ||
+                          model->isBrazierOrFire || model->isForge ||
+                          model->isLavaModel)) localLightInstanceIndices_.push_back(i);
+        }
+        localLightInstancesDirty_ = false;
+    }
+    for (size_t instanceIndex : localLightInstanceIndices_) {
+        const auto& instance = instances[instanceIndex];
         const M2ModelGPU* model = instance.cachedModel;
         if (!model || (!model->isLanternLike && !model->isTorch &&
                        !model->isBrazierOrFire && !model->isForge &&
@@ -1098,6 +1117,10 @@ void M2Renderer::shutdown() {
     if (!vkCtx_) return;
 
     if (!vkCtx_->waitIdleAndDrainCleanup("M2 shutdown")) return;
+    if (failedUploadModel_) {
+        destroyModelGPU(*failedUploadModel_);
+        failedUploadModel_.reset();
+    }
     VkDevice device = vkCtx_->getDevice();
     VmaAllocator alloc = vkCtx_->getAllocator();
 
@@ -1112,9 +1135,16 @@ void M2Renderer::shutdown() {
     for (auto& inst : instances) {
         destroyInstanceBones(inst);
     }
+    localLightInstancesDirty_ = true;
+    std::vector<size_t>{}.swap(localLightInstanceIndices_);
     shadowInstanceOrder_.release();
+    shadowSnapshot_.release();
+    visibilityClusters_.release();
+    shadowSnapshotDirty_ = true;
     std::vector<const M2Instance*>{}.swap(shadowCasters_);
     instances.clear();
+    ribbonInstanceIndices_.clear();
+    waterVegetationInstanceIndices_.clear();
     spatialGrid.clear();
     instanceIndexById.clear();
     instanceDedupMap_.clear();
@@ -1216,8 +1246,6 @@ void M2Renderer::shutdown() {
     destroyShadowInstancing();
     destroyPipeline(shadowPipeline_);
     destroy(device, shadowPipelineLayout_);
-    shadowTextureCache_.forgetPools();
-    for (auto& pool : shadowTexPool_) { if (pool) { vkDestroyDescriptorPool(device, pool, nullptr); pool = VK_NULL_HANDLE; } }
     destroyShadowParamsSet(device, alloc, shadowParams_);
     for (auto& foliage : shadowFoliageParams_) destroyShadowParamsSet(device, alloc, foliage);
 
@@ -1298,10 +1326,10 @@ void M2ModelGPU::CollisionMesh::build() {
     gridCellsX = std::max(1, std::min(32, static_cast<int>(std::ceil((bmax.x - bmin.x) / CELL_SIZE))));
     gridCellsY = std::max(1, std::min(32, static_cast<int>(std::ceil((bmax.y - bmin.y) / CELL_SIZE))));
 
-    cellFloorTris.resize(static_cast<size_t>(gridCellsX) * static_cast<size_t>(gridCellsY));
-    cellWallTris.resize(static_cast<size_t>(gridCellsX) * static_cast<size_t>(gridCellsY));
+    const size_t cellCount = static_cast<size_t>(gridCellsX) * static_cast<size_t>(gridCellsY);
     triBounds.resize(triCount);
 
+    const auto enumerate = [&](bool floors, auto&& emit) {
     for (uint32_t ti = 0; ti < triCount; ti++) {
         uint16_t i0 = indices[ti * 3];
         uint16_t i1 = indices[ti * 3 + 1];
@@ -1334,11 +1362,13 @@ void M2ModelGPU::CollisionMesh::build() {
         for (int cy = cyMin; cy <= cyMax; cy++) {
             for (int cx = cxMin; cx <= cxMax; cx++) {
                 int ci = cy * gridCellsX + cx;
-                if (isFloor) cellFloorTris[ci].push_back(ti);
-                if (isWall)  cellWallTris[ci].push_back(ti);
+                if (floors ? isFloor : isWall) emit(static_cast<size_t>(ci), ti);
             }
         }
     }
+    };
+    cellFloorTris.build(cellCount, [&](auto&& emit) { enumerate(true, emit); });
+    cellWallTris.build(cellCount, [&](auto&& emit) { enumerate(false, emit); });
 }
 
 /// The triangles of one cell array that a query box reaches, deduplicated.
@@ -1349,7 +1379,7 @@ void M2ModelGPU::CollisionMesh::build() {
 /// the same triangle twice counts two hits, and a raycast then reports an even
 /// number of crossings where there was one surface.
 void M2ModelGPU::CollisionMesh::gatherTrisInRange(
-        const std::vector<std::vector<uint32_t>>& cells,
+        const TriangleCellIndex& cells,
         float minX, float minY, float maxX, float maxY,
         std::vector<uint32_t>& out) const {
     out.clear();
@@ -1426,7 +1456,18 @@ void M2Renderer::markModelAsSpellEffect(uint32_t modelId) {
     }
 }
 
+void M2Renderer::retireFailedUploadModel() {
+    if (!failedUploadModel_) return;
+    // The outer application recovery submitted the interrupted upload batch.
+    // A retry may now reclaim its destinations, but only after completion.
+    if (!vkCtx_->waitAllUploads())
+        throw std::runtime_error("M2 interrupted upload completion unproven");
+    destroyModelGPU(*failedUploadModel_);
+    failedUploadModel_.reset();
+}
+
 bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
+    retireFailedUploadModel();
     if (models.find(modelId) != models.end()) {
         // Already loaded
         return true;
@@ -1450,6 +1491,9 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
     }
 
     M2ModelGPU gpuModel;
+    bool ownBatchOpen = false;
+    bool published = false;
+    try {
     gpuModel.name = model.name;
 
     // Use tight bounds from actual vertices for collision/camera occlusion.
@@ -1553,6 +1597,17 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
     gpuModel.boundMin = tightMin;
     gpuModel.boundMax = tightMax;
     gpuModel.boundRadius = model.boundRadius;
+    // Far-shadow LOD must not trust the authored header radius or collision
+    // bounds: include every drawable vertex, including decorative geometry.
+    gpuModel.shadowVertexRadius = model.vertices.empty() ? -1.0f : 0.0f;
+    for (const auto& vertex : model.vertices) {
+        const float radius = glm::length(vertex.position);
+        if (!std::isfinite(radius)) {
+            gpuModel.shadowVertexRadius = -1.0f;
+            break;
+        }
+        gpuModel.shadowVertexRadius = std::max(gpuModel.shadowVertexRadius, radius);
+    }
     // Fallback when the M2 header reports 0. Measured from the model origin,
     // like the header value it stands in for: the sphere this feeds is centred
     // there, not on the box. See pipeline/model_bounds.hpp.
@@ -1598,6 +1653,7 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
     // Batch all GPU uploads (VB, IB, textures) into a single command buffer
     // submission with one fence wait, instead of one fence wait per upload.
     vkCtx_->beginUploadBatch();
+    ownBatchOpen = true;
 
     if (hasGeometry) {
         // Create VBO with interleaved vertex data
@@ -1606,7 +1662,7 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
         // two vec4s on 16-byte boundaries with an 80-byte stride: the console's
         // vertex fetch reads a vec4 as one 128-bit load.
         const size_t floatsPerVertex = 20;
-        std::vector<float> vertexData;
+        platform::CpuGeometryVector<float> vertexData;
         vertexData.reserve(model.vertices.size() * floatsPerVertex);
 
         for (const auto& v : model.vertices) {
@@ -1854,6 +1910,11 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
             bgpu.textureAnimIndex = batch.textureAnimIndex;
             if (bgpu.textureAnimIndex != 0xFFFF) {
                 gpuModel.hasTextureAnimation = true;
+                if (bgpu.textureAnimIndex < gpuModel.textureTransformLookup.size()) {
+                    const auto transform = gpuModel.textureTransformLookup[bgpu.textureAnimIndex];
+                    bgpu.hasNonIdentityTextureTransform = transform < gpuModel.textureTransforms.size() &&
+                        !m2TextureTransformIsIdentity(gpuModel.textureTransforms[transform]);
+                }
             }
 
             // Store blend mode and flags from material
@@ -2142,6 +2203,7 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
     }
 
     vkCtx_->endUploadBatch();
+    ownBatchOpen = false;
 
     // Allocate Vulkan descriptor sets and UBOs for each batch
     for (auto& bgpu : gpuModel.batches) {
@@ -2155,12 +2217,16 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
             VmaAllocationCreateInfo aci{};
             aci.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
             aci.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
-            vmaCreateBuffer(vkCtx_->getAllocator(), &bci, &aci, &bgpu.materialUBO, &bgpu.materialUBOAlloc, &matAllocInfo);
+            if (vmaCreateBuffer(vkCtx_->getAllocator(), &bci, &aci, &bgpu.materialUBO,
+                                &bgpu.materialUBOAlloc, &matAllocInfo) != VK_SUCCESS ||
+                !matAllocInfo.pMappedData) throw std::bad_alloc();
 
             // Write initial material data (static per-batch - fadeAlpha/interiorDarken updated at draw time)
             M2MaterialUBO mat{};
             mat.hasTexture = (bgpu.texture != nullptr && bgpu.texture != whiteTexture_.get()) ? 1 : 0;
-            mat.alphaTest = m2BatchNeedsAlphaTest(bgpu.blendMode, bgpu.hasAlpha) ? 1 : 0;
+            mat.alphaTest = m2EncodeAlphaTest(
+                m2BatchNeedsAlphaTest(bgpu.blendMode, bgpu.hasAlpha) ? 1 : 0,
+                vkCtx_->getMsaaSamples() == VK_SAMPLE_COUNT_1_BIT);
             mat.colorKeyBlack =
                 m2BatchWantsColorKey(bgpu.blendMode, bgpu.colorKeyBlack) ? 1 : 0;
             mat.tintR = bgpu.tint.r;
@@ -2248,21 +2314,28 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
         if (b.submeshLevel < 8) gpuModel.availableLODs |= (1u << b.submeshLevel);
     }
 
-    // Material layers often draw the same triangles again. Shadow depth does
-    // not need those repeated layers; alpha textures still remain separate.
-    for (const auto& batch : gpuModel.batches) {
-        if (batch.submeshLevel > 0 || !batch.indexCount) continue;
-        auto* texture = gpuModel.shadowWindFoliage && batch.hasAlpha ? batch.texture : nullptr;
+    // Opaque layers can share merged depth ranges. Masked layers keep their
+    // own existing material descriptor and UV animation so holes remain holes.
+    for (uint32_t index = 0; index < gpuModel.batches.size(); ++index) {
+        const auto& batch = gpuModel.batches[index];
+        if (batch.submeshLevel > 0 || !batch.indexCount || !batch.materialSet) continue;
+        if (!m2ShadowBatchCasts(batch.blendMode, batch.batchOpacity,
+                               gpuModel.isSpellEffect, batch.forgeFireCard)) continue;
+        const uint32_t maskMode = m2ShadowMaskMode(batch.blendMode,
+            gpuModel.isFoliageLike, gpuModel.isGroundDetail, batch.colorKeyBlack);
         auto group = std::find_if(gpuModel.shadowBatches.begin(), gpuModel.shadowBatches.end(),
-            [texture](const auto& item) { return item.texture == texture; });
+            [maskMode](const auto& item) { return maskMode == 0 && item.maskMode == 0; });
         if (group == gpuModel.shadowBatches.end()) {
-            gpuModel.shadowBatches.push_back({texture,{}});
+            gpuModel.shadowBatches.push_back({index, maskMode, {}});
             group = std::prev(gpuModel.shadowBatches.end());
         }
         group->ranges.push_back({batch.indexStart, batch.indexCount});
     }
     for (auto& batch : gpuModel.shadowBatches) coalesceShadowRanges(batch.ranges);
     models[modelId] = std::move(gpuModel);
+    published = true;
+    shadowSnapshotDirty_ = true;
+    visibilityClusters_.invalidateAll();
     spatialIndexDirty_ = true;  // Map may have rehashed - refresh cachedModel pointers
 
     LOG_DEBUG("Loaded M2 model: ", model.name, " (", models[modelId].vertexCount, " vertices, ",
@@ -2270,6 +2343,15 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
 
 
     return true;
+    } catch (const std::bad_alloc&) {
+        static_assert(std::is_nothrow_move_constructible_v<M2ModelGPU>);
+        static_assert(std::is_nothrow_move_assignable_v<M2ModelGPU>);
+        if (!published) failedUploadModel_.emplace(std::move(gpuModel));
+        // Retain before submitting: even a failed submission must leave an
+        // owner for all destinations. The application closes any outer batch.
+        if (ownBatchOpen) vkCtx_->endUploadBatch();
+        throw;
+    }
 }
 
 } // namespace rendering

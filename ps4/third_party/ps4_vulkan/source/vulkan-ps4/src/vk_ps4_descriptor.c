@@ -836,7 +836,8 @@ static void bind_descriptor_stage_tables(
             cmd->recording_error = VK_ERROR_FEATURE_NOT_PRESENT;
             return;
         }
-        vk_ps4_cpu_store_fence();
+        /* Tables were published at update, or at EndCommandBuffer for
+         * command-owned dynamic snapshots. Pointer emission needs no fence. */
         /* RADV's AC_ARG_CONST_ADDR is one SGPR; address32_hi is compiled
          * into the shader. A GNM 64-bit pointer write overwrites the next
          * independent argument (B4 character VS: bones at s9 overwrote the
@@ -855,8 +856,8 @@ static void bind_descriptor_stage_tables(
     }
 }
 
-VKAPI_ATTR void VKAPI_CALL
-vk_ps4_CmdBindDescriptorSets(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint,
+static void
+vk_ps4_record_bind_descriptor_sets(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint,
                               VkPipelineLayout layout, uint32_t firstSet, uint32_t setCount,
                               const VkDescriptorSet *pDescriptorSets, uint32_t dynamicOffsetCount,
                               const uint32_t *pDynamicOffsets) {
@@ -867,6 +868,7 @@ vk_ps4_CmdBindDescriptorSets(VkCommandBuffer commandBuffer, VkPipelineBindPoint 
         setCount > new_layout->set_layout_count - firstSet)
         return;
     const bool compute = pipelineBindPoint == VK_PIPELINE_BIND_POINT_COMPUTE;
+    const VkPs4PipelineLayout *previous_layout = cmd->graphics_descriptor_layout;
     if (!compute)
         cmd->graphics_descriptor_layout = new_layout;
 
@@ -896,7 +898,7 @@ vk_ps4_CmdBindDescriptorSets(VkCommandBuffer commandBuffer, VkPipelineBindPoint 
     const bool tables_dirty =
         compute ? cmd->compute_tables_dirty : cmd->graphics_tables_dirty;
     if (setCount > 0 && !tables_dirty && dynamicOffsetCount == 0 &&
-        (compute || cmd->graphics_descriptor_layout == new_layout)) {
+        (compute || previous_layout == new_layout)) {
         bool identical = true;
         for (uint32_t si = 0; si < setCount && identical; ++si) {
             if (bound_sets[firstSet + si] !=
@@ -969,18 +971,19 @@ vk_ps4_CmdBindDescriptorSets(VkCommandBuffer commandBuffer, VkPipelineBindPoint 
     }
     GnmBuffer *dynamic_table = NULL;
     if (total_dynamic) {
-        if (total_dynamic > VK_PS4_MAX_DYNAMIC_DESCRIPTORS ||
-            cmd->dynamic_table_cursor >=
-                VK_PS4_MAX_DYNAMIC_TABLE_SNAPSHOTS ||
-            !cmd->dynamic_descriptor_tables) {
+        if (total_dynamic > VK_PS4_MAX_DYNAMIC_DESCRIPTORS) {
             cmd->dynamic_table_overflow = true;
             return;
         }
-        dynamic_table = cmd->dynamic_descriptor_tables +
-            (size_t)cmd->dynamic_table_cursor *
-            VK_PS4_MAX_DYNAMIC_DESCRIPTORS;
-        cmd->dynamic_table_cursor++;
-        memset(dynamic_table, 0, total_dynamic * sizeof(*dynamic_table));
+        /* Build in cached CPU memory first. Binding a static material set
+         * often leaves every dynamic buffer and offset unchanged. Reusing
+         * the previous immutable snapshot avoids another write-combined GPU
+         * allocation/store fence and preserves arena capacity for real changes.
+         * Compare the actual adjusted descriptor bytes, not just set handles:
+         * UpdateDescriptorSets may have changed a buffer between binds. */
+        GnmBuffer candidate[VK_PS4_MAX_DYNAMIC_DESCRIPTORS];
+        dynamic_table = candidate;
+        memset(candidate, 0, total_dynamic * sizeof(*candidate));
         uint32_t set_dynamic_start = 0;
         for (uint32_t set_number = 0;
              set_number < new_layout->set_layout_count; ++set_number) {
@@ -1014,11 +1017,56 @@ vk_ps4_CmdBindDescriptorSets(VkCommandBuffer commandBuffer, VkPipelineBindPoint 
             }
             set_dynamic_start += sl->dynamic_descriptor_count;
         }
-        /* The snapshot is read by the GPU through the pointer below. */
-        vk_ps4_cpu_store_fence();
+        GnmBuffer *previous = compute ? cmd->compute_dynamic_table
+                                     : cmd->graphics_dynamic_table;
+        GnmBuffer *shadow = compute ? cmd->compute_dynamic_shadow
+                                    : cmd->graphics_dynamic_shadow;
+        uint32_t *shadow_count = compute ? &cmd->compute_dynamic_shadow_count
+                                         : &cmd->graphics_dynamic_shadow_count;
+        const size_t table_bytes = total_dynamic * sizeof(*candidate);
+        if (previous && *shadow_count == total_dynamic &&
+            memcmp(shadow, candidate, table_bytes) == 0) {
+            dynamic_table = previous;
+        } else {
+            if (cmd->dynamic_table_cursor >= VK_PS4_MAX_DYNAMIC_TABLE_SNAPSHOTS ||
+                !cmd->dynamic_descriptor_tables) {
+                cmd->dynamic_table_overflow = true;
+                return;
+            }
+            dynamic_table = cmd->dynamic_descriptor_tables +
+                (size_t)cmd->dynamic_table_cursor * VK_PS4_MAX_DYNAMIC_DESCRIPTORS;
+            ++cmd->dynamic_table_cursor;
+            memcpy(dynamic_table, candidate, table_bytes);
+            memcpy(shadow, candidate, table_bytes);
+            *shadow_count = total_dynamic;
+            /* EndCommandBuffer publishes command-owned snapshots once on
+             * the recording thread, before another thread can submit them. */
+        }
     }
     if (compute) cmd->compute_dynamic_table = dynamic_table;
     else cmd->graphics_dynamic_table = dynamic_table;
+}
+
+/* Timer calls occur only for one in 64 binds, including redundant-bind
+ * fast paths. Together with sampled draw time this isolates ICD translation
+ * from application-side scene gathering, sorting and animation work. */
+VKAPI_ATTR void VKAPI_CALL
+vk_ps4_CmdBindDescriptorSets(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint,
+                              VkPipelineLayout layout, uint32_t firstSet, uint32_t setCount,
+                              const VkDescriptorSet *pDescriptorSets, uint32_t dynamicOffsetCount,
+                              const uint32_t *pDynamicOffsets) {
+    VkPs4CommandBuffer *cmd = (VkPs4CommandBuffer *)commandBuffer;
+    if (!cmd) return;
+    const bool sample = (++cmd->recording_perf.descriptor_calls & 63u) == 0;
+    const uint64_t start = sample ? vk_ps4_record_clock_us() : 0;
+    vk_ps4_record_bind_descriptor_sets(commandBuffer, pipelineBindPoint, layout, firstSet,
+                                     setCount, pDescriptorSets, dynamicOffsetCount, pDynamicOffsets);
+    if (sample) {
+        const uint64_t elapsed = vk_ps4_record_clock_us() - start;
+        ++cmd->recording_perf.descriptor_samples;
+        cmd->recording_perf.descriptor_us += elapsed;
+        if (elapsed > cmd->recording_perf.descriptor_max_us) cmd->recording_perf.descriptor_max_us = elapsed;
+    }
 }
 
 void vk_ps4_flush_descriptor_tables(VkPs4CommandBuffer *cmd, VkPipelineBindPoint bind_point) {

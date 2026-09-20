@@ -1,4 +1,5 @@
 #pragma once
+#include "platform/cpu_geometry.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -17,7 +18,7 @@ class TriangleCellIndex {
 public:
     template<class Enumerate>
     void build(size_t cells, Enumerate&& enumerate) {
-        std::vector<uint32_t> offsets(cells + 1, 0);
+        platform::CpuGeometryVector<uint32_t> offsets(cells + 1, 0);
         enumerate([&](size_t cell, uint32_t) {
             if (cell >= cells || offsets[cell + 1] == std::numeric_limits<uint32_t>::max())
                 throw std::length_error("collision cell index overflow");
@@ -30,7 +31,7 @@ public:
                 throw std::length_error("collision triangle index overflow");
             offsets[cell + 1] = static_cast<uint32_t>(total);
         }
-        std::vector<uint32_t> triangles(static_cast<size_t>(total));
+        platform::CpuGeometryVector<uint32_t> triangles(static_cast<size_t>(total));
         auto cursor = offsets;
         enumerate([&](size_t cell, uint32_t triangle) {
             if (cell >= cells || cursor[cell] >= offsets[cell + 1])
@@ -56,8 +57,8 @@ public:
     }
 
 private:
-    std::vector<uint32_t> offsets_;
-    std::vector<uint32_t> triangles_;
+    platform::CpuGeometryVector<uint32_t> offsets_;
+    platform::CpuGeometryVector<uint32_t> triangles_;
 };
 
 } // namespace wowee::rendering

@@ -1,0 +1,159 @@
+{
+  "schema": 1,
+  "checkpoint": "the implementation",
+  "package": "P03",
+  "status": "decoder_and_authority_scope_not_hardware_acceptance",
+  "serverCommit": "9c416aaacb5537636abb13c80f55a88947838e33",
+  "dbcCommit": "cefe45546e001f7745022479912dd140861a3647",
+  "sources": [
+    {
+      "file": "Spell.cpp",
+      "bytes": 395448,
+      "sha256": "b3c30ceefd033023f31c745f04dd63d634868d03cdc3d27bfab536ad1b492ddc"
+    },
+    {
+      "file": "SpellEffects.cpp",
+      "bytes": 254942,
+      "sha256": "613dbd61e2e064654896c20d0cda1bcdc23f7ccd01af89d35225155a1c10e3a8"
+    },
+    {
+      "file": "SpellInfo.cpp",
+      "bytes": 148030,
+      "sha256": "d27b6e769d61b5b603f58eb2c55fbfccaaf5cded20bb0bd8c866f74e5031d049"
+    },
+    {
+      "file": "SpellMgr.cpp",
+      "bytes": 138626,
+      "sha256": "91e691fa6b08eeeecb1cc41d8e546938d7ea7a060a2ce2dd38157b694048602d"
+    },
+    {
+      "file": "SpellAuras.cpp",
+      "bytes": 122622,
+      "sha256": "182bbe2dfc9bef89596a3d714a3f119884c747560e330a9dd10fc2b2d9b0571e"
+    },
+    {
+      "file": "Player.cpp",
+      "bytes": 616943,
+      "sha256": "41fa78255eb0b1427afc53313666b27a05653ab72f399b5869fbb9d12a8d8178"
+    },
+    {
+      "file": "Unit.cpp",
+      "bytes": 616819,
+      "sha256": "7f3f8f54446645e7065b49de7166560fbca3d32ff0a95c7e26b919bf7374011a"
+    },
+    {
+      "file": "mage.cpp",
+      "bytes": 58770,
+      "sha256": "b10bf5df93363a984121f25df2e78efc4e662c851456406b0412af64362fa472"
+    },
+    {
+      "file": "druid.cpp",
+      "bytes": 75717,
+      "sha256": "bc3e0116e21d3e77c3c2263845f78412fdb41c1a507f8bacbce85e74f7cf77c3"
+    },
+    {
+      "file": "spell_proc.sql",
+      "bytes": 40994,
+      "sha256": "a7d33a2ebcdec27218069274c16e41f653396936ec7164bb61594e03c7ef99f5"
+    },
+    {
+      "file": "spell_ranks.sql",
+      "bytes": 58147,
+      "sha256": "1b94535b3e05912b08b2dfc219ab047ef6698bc04c3b49241d95fab41050cd04"
+    },
+    {
+      "file": "spell_script_names.sql",
+      "bytes": 111869,
+      "sha256": "9cb7ccf86ae2542fb4dae77f49944dc47f2865080c9367a9f7402a04db4d4da1"
+    },
+    {
+      "file": "Spell.dbc",
+      "bytes": 48967121,
+      "sha256": "d5cce1a83550dcfa9eb2f0251dbb11fd24c272534b2b1a9b230924a44d817ab3"
+    },
+    {
+      "file": "SpellRange.dbc",
+      "bytes": 11480,
+      "sha256": "82d261be5e42d90f62a13642a3fd8f421fe1b0056ad8ed7dea73cdf4f8c8cb7f"
+    },
+    {
+      "file": "SpellCastTimes.dbc",
+      "bytes": 1141,
+      "sha256": "919ca9b65cb144a3a9cf0ce10d2a25fcc7cdccf33c752ed376e086ff62f8ccec"
+    },
+    {
+      "file": "SpellDuration.dbc",
+      "bytes": 2101,
+      "sha256": "caa2cbec7fa711bba180af10c253ab0d111609ec2bda1c354fef09e54bc279e4"
+    },
+    {
+      "file": "Talent.dbc",
+      "bytes": 82085,
+      "sha256": "23aefff3add151bf504c4d0bab247e2e622f9cf29a473d091cb9f11127d99d68"
+    },
+    {
+      "file": "TalentTab.dbc",
+      "bytes": 3972,
+      "sha256": "b9249642e06b2baa17793e50e6719f33b1f89729f6c31ea623d4a39e84660e31"
+    }
+  ],
+  "profiles": [
+    {
+      "name": "Arcane Concentration",
+      "talentId": 75,
+      "parentIds": [
+        11213,
+        12574,
+        12575,
+        12576,
+        12577
+      ],
+      "childId": 12536,
+      "chancePct": [
+        2,
+        4,
+        6,
+        8,
+        10
+      ],
+      "durationMs": 15000,
+      "charges": 1,
+      "chargedCostPct": -1000,
+      "chargedCostMask": [
+        549591799,
+        168000,
+        0
+      ],
+      "progression": "blocked_by_earlier_Arcane_points",
+      "parentFlags": 87376,
+      "parentSpellTypeMask": 1,
+      "parentSpellFamily": 3
+    },
+    {
+      "name": "Omen of Clarity",
+      "talentId": 827,
+      "parentIds": [
+        16864
+      ],
+      "childId": 16870,
+      "ppm": 3.5,
+      "durationMs": 15000,
+      "charges": 1,
+      "chargedCostPct": -100,
+      "chargedCostMask": [
+        14924799,
+        126879699,
+        263168
+      ],
+      "progression": "normal_ten_earlier_points_gate_retained",
+      "parentFlags": 81924,
+      "parentSpellTypeMask": 7,
+      "parentSpellFamily": 0
+    }
+  ],
+  "childSqlAttributesMask": 12,
+  "childPhaseMask": 1,
+  "internalHelpersAreAdmissions": false,
+  "sourceTest": "tools/tests/local_clearcasting_import_test.cpp",
+  "notes": "No original source DBC/SQL is redistributed. See docs/CURRENT_IMPLEMENTATION.md for timing, refresh, PPM, source-script exclusions and deferred dependencies."
+}

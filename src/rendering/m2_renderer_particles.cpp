@@ -73,7 +73,9 @@ glm::vec3 M2Renderer::interpFBlockVec3(const pipeline::M2FBlock& fb, float lifeR
 std::vector<glm::vec3> M2Renderer::getWaterVegetationPositions(const glm::vec3& camPos, float maxDist) const {
     std::vector<glm::vec3> result;
     float maxDistSq = maxDist * maxDist;
-    for (const auto& inst : instances) {
+    for (size_t index : waterVegetationInstanceIndices_) {
+        if (index >= instances.size()) continue;
+        const auto& inst = instances[index];
         if (!inst.cachedModel || !inst.cachedModel->isWaterVegetation) continue;
         glm::vec3 diff = inst.position - camPos;
         if (glm::dot(diff, diff) <= maxDistSq) {
@@ -455,7 +457,9 @@ void M2Renderer::renderM2Ribbons(VkCommandBuffer cmd, VkDescriptorSet perFrameSe
     ribbonDraws_.clear();
     auto& draws = ribbonDraws_;
 
-    for (const auto& inst : instances) {
+    for (size_t index : ribbonInstanceIndices_) {
+        if (index >= instances.size()) continue;
+        const auto& inst = instances[index];
         if (!inst.cachedModel) continue;
         const auto& gpu = *inst.cachedModel;
         if (gpu.ribbonEmitters.empty()) continue;
@@ -543,7 +547,9 @@ void M2Renderer::renderM2Ribbons(VkCommandBuffer cmd, VkDescriptorSet perFrameSe
         if (++ribbonDiagFrame_ % 300 == 1) {
             size_t spellRibbonDraws = 0;
             size_t spellRibbonVerts = 0;
-            for (const auto& inst : instances) {
+            for (size_t index : ribbonInstanceIndices_) {
+                if (index >= instances.size()) continue;
+                const auto& inst = instances[index];
                 if (!inst.cachedModel || !inst.cachedModel->isSpellEffect) continue;
                 for (const auto& ribbonEdge : inst.ribbonEdges) {
                     if (ribbonEdge.size() >= 2) {

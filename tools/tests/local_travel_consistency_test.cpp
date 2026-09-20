@@ -20,8 +20,13 @@ static void deliver(LocalRealm::Impl& guest,const std::vector<uint8_t>& bytes,ui
     const auto seq=r.u32();const auto token=r.u64();guest.handleClient(type,r,guest.host,wrongToken?wrongToken:token,seq);
 }
 
-static LocalRealmNpc scopedNpc(uint32_t id,uint32_t map,uint32_t instance) {
-    auto n=rewardNpc(0xf130000000000000ULL|(uint64_t(instance)<<32)|id);n.mapId=map;n.instanceId=instance;return n;
+// The guest realm below plays this character, and a world page carries the
+// recipient's own threat row: receiveWorld() drops every row whose viewerGuid
+// is not the receiving player's, so the fixture and the guest must agree.
+static constexpr uint64_t kPageViewerGuid=2;
+static LocalRealmNpc scopedNpc(uint32_t id,uint32_t map,uint32_t instance,uint64_t viewer=kPageViewerGuid) {
+    auto n=rewardNpc(0xf130000000000000ULL|(uint64_t(instance)<<32)|id);n.mapId=map;n.instanceId=instance;
+    n.playerThreat.viewerGuid=viewer;return n;
 }
 static Writer worldPage(uint32_t tick,const LocalRealmPlayer& p,uint8_t part,uint8_t parts,const std::vector<LocalRealmNpc>& npcs) {
     Writer w;w.u32(tick);w.u8(part);w.u8(parts);w.u8(uint8_t(npcs.size()));w.u32(p.mapId);w.u32(p.instanceId);w.u32(p.positionRevision);
@@ -44,7 +49,7 @@ int main(int argc,char** argv) {
     std::cout<<"PASS travel authority: taxi/transport entry rejected without allocations; cast/mount/fall cleanup; invalid return and exit arguments rejected\n";
     // Spatial revision and vitals use separate streams; they cannot split map and instance.
     LocalRealm guestRealm;auto& g=*guestRealm.impl_;g.state=LocalRealmState::Connected;g.gameplay.useContent(rewardContent());
-    g.self=rewardPlayer(2);g.self.mapId=189;g.self.instanceId=7;g.self.positionRevision=10;g.self.x=20;g.self.health=20;
+    g.self=rewardPlayer(kPageViewerGuid);g.self.mapId=189;g.self.instanceId=7;g.self.positionRevision=10;g.self.x=20;g.self.health=20;
     g.self.hasInstanceReturn=true;g.self.returnMapId=0;g.self.returnX=14;
     auto stale=g.self;stale.mapId=0;stale.instanceId=0;stale.positionRevision=9;stale.money=77;stale.returnX=999;stale.transportEntry=42;stale.castingSpellId=1;
     g.applyProgress(stale,100);assert(g.self.mapId==189 && g.self.instanceId==7 && g.self.x==20 && g.self.money==77 && g.self.returnX==14 && !g.self.transportEntry && !g.self.castingSpellId);
@@ -60,16 +65,34 @@ int main(int argc,char** argv) {
     auto future=g.self;future.positionRevision=13;feed(g,worldPage(51,future,0,1,{}));assert(g.worldSequence==1);
     feed(g,worldPage(52,g.self,0,1,{scopedNpc(2,189,8)}));assert(g.worldSequence==1);
     auto empty=worldPage(53,g.self,0,1,{});empty.bytes.pop_back();feed(g,empty);assert(g.worldSequence==1);
-    // Ten reordered pages must contain <=128 actors. A duplicate page cannot replace accepted data.
-    std::vector<LocalRealmNpc> all;for(uint32_t i=1;i<=128;++i)all.push_back(scopedNpc(i,189,7));
-    auto page=[&](uint32_t tick,size_t part){const auto begin=part*14,end=std::min(begin+14,all.size());return worldPage(tick,g.self,uint8_t(part),10,{all.begin()+begin,all.begin()+end});};
-    feed(g,page(60,0));auto duplicate=std::vector<LocalRealmNpc>(all.begin(),all.begin()+14);duplicate[0].health=1;
-    feed(g,worldPage(60,g.self,0,10,duplicate));
-    for(size_t i=9;i>0;--i)feed(g,page(60,i));assert(g.worldSequence==60 && g.gameplay.npcs().size()==128 && g.gameplay.npcs()[0].health==10);
-    for(size_t i=0;i<9;++i)feed(g,page(61,i));
-    feed(g,worldPage(61,g.self,9,10,duplicate));assert(g.worldSequence==60); // Would exceed 128.
-    feed(g,page(61,9));assert(g.worldSequence==61 && g.gameplay.npcs().size()==128);
-    auto shortPage=std::vector<LocalRealmNpc>(all.begin(),all.begin()+13);feed(g,worldPage(62,g.self,0,2,shortPage));assert(g.worldSequence==61);
+    // A full view arrives as reordered pages and must still fit MaxNpcs. The
+    // page size is a property of the wire record, which has grown since this
+    // case was written, so take the paging from the shipping constants rather
+    // than the 14-per-page/10-page split that fitted an older NPC layout.
+    constexpr size_t PerPage=NpcsPerPage,Actors=LocalGameplay::MaxNpcs;
+    constexpr uint8_t Pages=uint8_t((Actors+PerPage-1)/PerPage);
+    static_assert(Pages<=MaxNpcPages && PerPage>=2);
+    std::vector<LocalRealmNpc> all;for(uint32_t i=1;i<=Actors;++i)all.push_back(scopedNpc(i,189,7));
+    auto page=[&](uint32_t tick,size_t part){const auto begin=part*PerPage,end=std::min(begin+PerPage,all.size());return worldPage(tick,g.self,uint8_t(part),Pages,{all.begin()+begin,all.begin()+end});};
+    feed(g,page(60,0));auto duplicate=std::vector<LocalRealmNpc>(all.begin(),all.begin()+PerPage);duplicate[0].health=1;
+    feed(g,worldPage(60,g.self,0,Pages,duplicate));
+    for(size_t i=Pages-1;i>0;--i)feed(g,page(60,i));assert(g.worldSequence==60 && g.gameplay.npcs().size()==Actors && g.gameplay.npcs()[0].health==10);
+    for(size_t i=0;i+1<Pages;++i)feed(g,page(61,i));
+    // A final page that would push the assembled view past MaxNpcs is refused.
+    // How long such a page has to be is a property of the shipping constants
+    // rather than a constant of its own: the last page legitimately carries
+    // whatever the deck has left, so the probe is one record longer than that.
+    // While MaxNpcs did not divide by NpcsPerPage that was PerPage records; at
+    // LAN 83 the deck divides exactly, a full last page is legal, and the same
+    // intent needs Tail+1 - which the reader refuses on count rather than on
+    // the running total. Deriving it keeps this case alive across page-size
+    // changes instead of silently passing the next time the record grows.
+    constexpr size_t Tail=Actors-size_t(Pages-1)*PerPage;
+    static_assert(Tail>=1 && Tail<=PerPage);
+    auto overrun=std::vector<LocalRealmNpc>(all.begin(),all.begin()+(Tail+1));overrun[0].health=1;
+    feed(g,worldPage(61,g.self,uint8_t(Pages-1),Pages,overrun));assert(g.worldSequence==60);
+    feed(g,page(61,Pages-1));assert(g.worldSequence==61 && g.gameplay.npcs().size()==Actors);
+    auto shortPage=std::vector<LocalRealmNpc>(all.begin(),all.begin()+(PerPage-1));feed(g,worldPage(62,g.self,0,2,shortPage));assert(g.worldSequence==61);
     auto next=g.self;++next.positionRevision;g.applyProgress(next,203);assert(g.gameplay.npcs().empty());
     feed(g,worldPage(63,relocation,0,1,{}));assert(g.worldSequence==61);feed(g,worldPage(64,g.self,0,1,{n}));assert(g.worldSequence==64);
     std::cout<<"PASS travel replication: map/instance coherence across progress/vitals streams; obsolete return/transport/cast isolation; public relocation clears view; scoped old/future/empty/foreign/truncated rejection; reordered 128-actor assembly; duplicate/oversized/short-page guards\n";

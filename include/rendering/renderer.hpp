@@ -88,6 +88,7 @@ public:
      * Update renderer (camera, etc.)
      */
     void update(float deltaTime);
+    [[nodiscard]] const char* getLastUpdateStage() const noexcept { return lastUpdateStage_; }
 
     /**
      * Load test terrain for debugging
@@ -155,6 +156,9 @@ public:
     /// zone first - the world PvP flag is on the subzone. See ZoneManager.
     bool isOnOutdoorPvpObjective() const;
     bool isPlayerIndoors() const { return playerIndoors_; }
+    bool isCameraIndoors() const { return cameraIndoors_; }
+    uint32_t getResolvedWeatherType() const { return resolvedWeatherType_; }
+    float getResolvedWeatherIntensity() const { return resolvedWeatherIntensity_; }
     VkContext* getVkContext() const { return vkCtx; }
     VkDescriptorSetLayout getPerFrameSetLayout() const { return perFrameSetLayout; }
     VkRenderPass getShadowRenderPass() const { return shadowRenderPass; }
@@ -237,12 +241,13 @@ private:
     /// pass. Draw sites test this rather than waterDrawsInContinuePass() so a
     /// mid-run mode change cannot record a pipeline into an incompatible pass.
     bool swimEffectsDrawWithWater_ = false;
-    /// Whether the minimap follows water out of the scene pass, for the same
-    /// reason the spray does - see syncSwimEffectsTargetPass.
-    bool minimapDrawsWithWater_ = false;
+    // Valid only between renderWorld and this frame's final HUD overlay.
+    bool minimapOverlayPending_ = false;
+    game::GameHandler* minimapOverlayGameHandler_ = nullptr;
 
     void runDeferredWorldInitStep(float deltaTime);
 
+    const char* lastUpdateStage_ = "not started"; // static literals; safe at allocation failure
     core::Window* window = nullptr;
     std::unique_ptr<Camera> camera;
     std::unique_ptr<CameraController> cameraController;
@@ -319,12 +324,23 @@ private:
     VkRenderPass shadowRenderPass = VK_NULL_HANDLE;
     VkFramebuffer shadowFramebuffer[2] = {};
     VkImageLayout shadowDepthLayout_[2] = {};
+#ifdef WOWEE_PS4
+    // CPU inspection is allowed only after the slot's submitted frame retires.
+    bool shadowDepthReceiptReady_[2] = {};
+    bool shadowDepthRecorded_ = false;
+    uint32_t shadowDepthReceiptFrames_ = 0;
+    glm::vec2 shadowDepthExpectedPlayer_[2] = {};
+    int shadowDepthReceiptQuality_[2] = {};
+    bool shadowDepthReceiptCasters_[2] = {};
+#endif
     glm::mat4 lightSpaceMatrix = glm::mat4(1.0f);
+    glm::mat4 nearLightSpaceMatrix_ = glm::mat4(1.0f);
+    glm::vec3 nearShadowCenter_{0.0f};
+    float nearShadowHalfExtent_ = 1.0f;
+    static constexpr float kNearShadowDistance = 48.0f;
     glm::vec3 shadowCenter = glm::vec3(0.0f);
-    /// The ortho half-extent computeLightSpaceMatrix last fitted. What the
-    /// caster cull is measured against: casters are gathered around
-    /// shadowCenter, and since the fit is well inside shadowDistance_ the old
-    /// radius was submitting geometry whose shadow could not land in the map.
+    /// The receiver footprint's fitted ortho half-extent. Caster visibility
+    /// uses the complete light-space volume, including upstream occluders.
     float shadowHalfExtent_ = 0.0f;
     bool shadowCenterInitialized = false;
     bool shadowsEnabled = true;
@@ -420,6 +436,9 @@ private:
     // the one point in the frame where the scene depth is finished and no
     // render pass is active. Null when the effect could not be built.
 
+    bool cameraIndoors_ = false;
+    uint32_t resolvedWeatherType_ = 0;
+    float resolvedWeatherIntensity_ = 0.0f;
     bool playerIndoors_ = false;  // Cached WMO inside state for macro conditionals
     bool deferredWorldInitEnabled_ = true;
     bool deferredWorldInitPending_ = false;

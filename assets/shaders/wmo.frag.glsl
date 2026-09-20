@@ -16,6 +16,8 @@ layout(set = 0, binding = 0) uniform PerFrame {
     vec4 localLightPosRadius[64];
     vec4 localLightColorIntensity[64];
     ivec4 localLightMeta;
+    mat4 nearLightSpaceMatrix;
+    vec4 shadowAtlasParams; // near/far world texel, near distance, atlas enabled
 };
 
 layout(set = 1, binding = 0) uniform sampler2D uTexture;
@@ -38,7 +40,7 @@ layout(set = 1, binding = 1) uniform WMOMaterial {
     float wmoAmbientG;
     float wmoAmbientB;
     int emissive;
-    int padding0;
+    int unfogged;
     int padding1;
     int padding2;
 };
@@ -74,23 +76,107 @@ float shadowTexelSize() {
     return shadowParams.z > 0.0 ? shadowParams.z : (1.0 / 4096.0);
 }
 
-float sampleShadowPCF(sampler2DShadow smap, vec3 coords, float texel) {
-    float shadow = 0.0;
-    for (int x = -1; x <= 1; ++x) {
-        for (int y = -1; y <= 1; ++y) {
-            shadow += texture(smap, vec3(coords.xy + vec2(x, y) * texel, coords.z));
+// Atlas-local PCF coordinates are clamped before atlas conversion so a
+// filter footprint never reads the neighbouring cascade or unused atlas space.
+vec2 shadowAtlasUV(vec2 uv, float texel, bool nearCascade) {
+    uv = clamp(uv, vec2(0.5 * texel), vec2(1.0 - 0.5 * texel));
+    if (shadowAtlasParams.w < 0.5) return uv;
+    return nearCascade ? uv * vec2(0.5, 1.0)
+                       : vec2(0.5, 0.0) + uv * vec2(0.25, 0.5);
+}
+
+// Orthographic receiver-plane gradient in cascade-local UV coordinates.
+// Geometric normals keep normal-map detail out of shadow depth comparisons.
+vec2 shadowDepthGradient(mat4 lightMatrix, vec3 normal) {
+    vec3 rowX = vec3(lightMatrix[0][0], lightMatrix[1][0], lightMatrix[2][0]);
+    vec3 rowY = vec3(lightMatrix[0][1], lightMatrix[1][1], lightMatrix[2][1]);
+    vec3 rowZ = vec3(lightMatrix[0][2], lightMatrix[1][2], lightMatrix[2][2]);
+    float zScale = length(rowZ);
+    float facing = dot(normal, rowZ / max(zScale, 1e-8));
+    // Bound the correction on surfaces almost parallel to the light rays.
+    float denominator = (facing < 0.0 ? -1.0 : 1.0) * max(abs(facing), 0.1);
+    return -2.0 * zScale / denominator * vec2(
+        dot(normal, rowX) / max(dot(rowX, rowX), 1e-12),
+        dot(normal, rowY) / max(dot(rowY, rowY), 1e-12));
+}
+
+float sampleShadowPlane(sampler2DShadow smap, vec3 coords, vec2 tap,
+                        vec2 gradient, float texel, bool nearCascade) {
+    vec2 localUV = clamp(tap, vec2(0.5 * texel), vec2(1.0 - 0.5 * texel));
+    // Tap exactly at a texel centre: each comparison has its own receiver
+    // plane depth. No mixed-reference hardware PCF footprint bias is needed.
+    float depth = coords.z + dot(gradient, localUV - coords.xy);
+    return texture(smap, vec3(shadowAtlasUV(localUV, texel, nearCascade), depth));
+}
+
+float sampleShadowPCF(sampler2DShadow smap, vec3 coords, float texel, bool nearCascade, vec2 gradient) {
+    vec2 texelPos = coords.xy / texel - 0.5;
+    vec2 base = floor(texelPos);
+    vec2 f = texelPos - base;
+    vec2 posLo = (base + 0.5) * texel;
+    vec2 posHi = posLo + texel;
+    // Reconstruct a continuous 2x2 visibility filter with four individually
+    // plane-corrected comparisons; retain contact instead of widening bias.
+    float lo = mix(sampleShadowPlane(smap, coords, posLo, gradient, texel, nearCascade),
+                   sampleShadowPlane(smap, coords, vec2(posHi.x, posLo.y), gradient, texel, nearCascade), f.x);
+    float hi = mix(sampleShadowPlane(smap, coords, vec2(posLo.x, posHi.y), gradient, texel, nearCascade),
+                   sampleShadowPlane(smap, coords, posHi, gradient, texel, nearCascade), f.x);
+    return mix(lo, hi, f.y);
+}
+
+// Bias is specified in world units, not a fixed fraction of a potentially
+// 1950-yard depth range. The orthographic matrix's Z row converts it to depth.
+vec3 shadowReceiverCoords(mat4 lightMatrix, vec3 pos, vec3 normal, vec3 ldir, float worldTexel) {
+    float slope = 1.0 - abs(dot(normal, ldir));
+    float normalOffset = min(max(worldTexel, 0.0) * 0.15, 0.025) * slope;
+    vec4 lightPos = lightMatrix * vec4(pos + normal * normalOffset, 1.0);
+    vec3 projected = lightPos.xyz / lightPos.w;
+    projected.xy = projected.xy * 0.5 + 0.5;
+    float depthPerWorldUnit = length(vec3(lightMatrix[0][2], lightMatrix[1][2], lightMatrix[2][2]));
+    projected.z -= (0.005 + 0.035 * slope) * depthPerWorldUnit;
+    return projected;
+}
+
+bool insideShadow(vec3 p) {
+    return all(greaterThanEqual(p, vec3(0.0))) && all(lessThanEqual(p, vec3(1.0)));
+}
+
+float outdoorShadow(vec3 pos, vec3 normal, vec3 ldir) {
+    float texel = shadowTexelSize();
+    bool atlas = shadowAtlasParams.w > 0.5;
+    float nearWeight = 0.0;
+    float nearShadow = 1.0;
+    if (atlas) {
+        vec3 nearCoords = shadowReceiverCoords(nearLightSpaceMatrix, pos, normal, ldir, shadowAtlasParams.x);
+        if (insideShadow(nearCoords)) {
+            // Blend only at the near tile's outer edge, retaining full contact
+            // detail throughout its useful interior. Depth edges fade too.
+            vec3 edge = min(nearCoords, vec3(1.0) - nearCoords);
+            nearWeight = smoothstep(0.0, 0.08, min(edge.x, edge.y))
+                       * smoothstep(0.0, 0.02, edge.z);
+            nearShadow = sampleShadowPCF(uShadowMap, nearCoords, texel, true, shadowDepthGradient(nearLightSpaceMatrix, normal));
+            if (nearWeight >= 1.0) return mix(1.0, nearShadow, shadowParams.y);
         }
     }
-    return shadow / 9.0;
+    float farShadow = 1.0;
+    vec3 farCoords = shadowReceiverCoords(lightSpaceMatrix, pos, normal, ldir, shadowAtlasParams.y);
+    if (insideShadow(farCoords)) {
+        farShadow = sampleShadowPCF(uShadowMap, farCoords, atlas ? texel * 2.0 : texel, false, shadowDepthGradient(lightSpaceMatrix, normal));
+    }
+    return mix(1.0, mix(farShadow, nearShadow, nearWeight), shadowParams.y);
 }
+
 
 vec3 localLightContribution(vec3 pos, vec3 normal, vec3 albedo) {
     vec3 sum = vec3(0.0);
     for (int i = 0; i < min(localLightMeta.x, 64); ++i) {
         vec3 toLight = localLightPosRadius[i].xyz - pos;
-        float dist = length(toLight);
         float radius = localLightPosRadius[i].w;
-        if (dist >= radius || radius <= 0.0) continue;
+        // Most city lights are outside this fragment's radius. Reject them
+        // before sqrt; keep the authored attenuation for contributing lights.
+        float distSquared = dot(toLight, toLight);
+        if (radius <= 0.0 || distSquared >= radius * radius) continue;
+        float dist = sqrt(distSquared);
         vec3 lightVector = toLight / max(dist, 0.001);
         float attenuation = 1.0 - dist / radius;
         attenuation *= attenuation;
@@ -157,7 +243,35 @@ vec2 parallaxOcclusionMap(vec2 uv, vec3 viewDirTS, float lodFactor) {
     return mix(uv, result, fadeFactor);
 }
 
+// Same front-face/half-vector contract as M2 and character highlights.
+float directionalSpecular(vec3 normal, vec3 light, vec3 eye, float intensity, float exponent) {
+    if (dot(normal, light) <= 0.0 || dot(normal, eye) <= 0.0) return 0.0;
+    vec3 halfVector = light + eye;
+    float halfLength2 = dot(halfVector, halfVector);
+    if (halfLength2 <= 1e-8) return 0.0;
+    vec3 halfDir = halfVector * inversesqrt(halfLength2);
+    return pow(max(dot(normal, halfDir), 0.0), exponent) * intensity;
+}
+
+vec3 outdoorUnlitLighting(vec3 albedo, vec3 ambient) {
+    return albedo * ambient;
+}
+
+vec3 bakedInteriorLighting(vec3 vertexLight, vec3 rootAmbient) {
+    return max(vertexLight,max(rootAmbient,vec3(0.0)));
+}
+
+vec3 outdoorGlassReflection(vec3 worldAmbient, vec3 worldDirect) {
+    return worldAmbient + worldDirect * 0.25;
+}
+
 void main() {
+    // Evaluate derivatives before material discard/divergent lighting paths.
+    vec3 geometricNormal = cross(dFdx(FragPos), dFdy(FragPos));
+    float geometricLength2 = dot(geometricNormal, geometricNormal);
+    vec3 shadowNormal = geometricLength2 > 1e-12
+        ? geometricNormal * inversesqrt(geometricLength2) : normalize(Normal);
+    if (dot(shadowNormal, Normal) < 0.0) shadowNormal = -shadowNormal;
     float lodFactor = computeLodFactor();
 
     vec3 vertexNormal = normalize(Normal);
@@ -203,24 +317,13 @@ void main() {
 
     vec3 result;
 
-    // Sample shadow map for all groups.  Interior groups receive attenuated
-    // shadow (30%) so they get subtle light/shadow variation without the full
-    // outdoor darkening that makes them look wrong.
+    // Authored baked interior light and emissive lamp/lava do not depend on
+    // the outdoor shadow map. The backlit clock still has a lit surface.
     float shadow = 1.0;
-    if (shadowParams.x > 0.5) {
+    bool needsOutdoorShadow = emissive == 2 || (emissive == 0 && isLava == 0 && isInterior == 0);
+    if (shadowParams.x > 0.5 && needsOutdoorShadow) {
         vec3 ldir = normalize(-lightDir.xyz);
-        float normalOffset = shadowTexelSize() * 2.0 * (1.0 - abs(dot(norm, ldir)));
-        vec3 biasedPos = FragPos + norm * normalOffset;
-        vec4 lsPos = lightSpaceMatrix * vec4(biasedPos, 1.0);
-        vec3 proj = lsPos.xyz / lsPos.w;
-        proj.xy = proj.xy * 0.5 + 0.5;
-        if (proj.x >= 0.0 && proj.x <= 1.0 &&
-            proj.y >= 0.0 && proj.y <= 1.0 &&
-            proj.z >= 0.0 && proj.z <= 1.0) {
-            float bias = max(0.0005 * (1.0 - abs(dot(norm, ldir))), 0.00005);
-            shadow = sampleShadowPCF(uShadowMap, vec3(proj.xy, proj.z - bias), shadowTexelSize());
-        }
-        shadow = mix(1.0, shadow, shadowParams.y);
+        shadow = outdoorShadow(FragPos, shadowNormal, ldir);
     }
 
     if (emissive == 1) {
@@ -276,8 +379,7 @@ void main() {
         // in front of the face rather than paint on stone. Both are additive and
         // unaffected by the fire, since they live on the outer surface.
         vec3 viewDir = normalize(viewPos.xyz - FragPos);
-        vec3 halfDir = normalize(ldir + viewDir);
-        float gloss  = pow(max(dot(norm, halfDir), 0.0), 96.0);
+        float gloss = directionalSpecular(norm, ldir, viewDir, 1.0, 96.0);
         float fresnel = pow(1.0 - clamp(dot(norm, viewDir), 0.0, 1.0), 4.0);
         result += lightColor.rgb * (gloss * 0.55 * shadow)
                 + ambientColor.rgb * (fresnel * 0.35);
@@ -285,29 +387,28 @@ void main() {
         // Lava is self-luminous - bright emissive, no shadows
         result = texColor.rgb * 1.5;
     } else if (isInterior != 0) {
-        // WMO interior: vertex colors (MOCV) are pre-baked lighting from the artist.
-        // The MOHD ambient color floors the vertex colors so dark spots don't go
-        // completely black.  Full shadow strength is applied but clamped so
-        // interiors never go darker than a minimum brightness.
-        vec3 wmoAmbient = vec3(wmoAmbientR, wmoAmbientG, wmoAmbientB);
-        wmoAmbient = max(wmoAmbient, vec3(0.35));
-        vec3 mocv = max(VertColor.rgb, wmoAmbient);
-        float clampedShadow = max(shadow, 0.45);
-        result = texColor.rgb * mocv * clampedShadow;
+        // Only genuinely interior-lit groups with complete authored MOCV
+        // enter this path. Exterior-lit groups and missing colors use the same
+        // world light as terrain. Keep authored baked illumination, without
+        // inventing a 0.35 ambient floor or replacing it with night exposure.
+        vec3 mocv = bakedInteriorLighting(VertColor.rgb,vec3(wmoAmbientR,wmoAmbientG,wmoAmbientB));
+        result = texColor.rgb * mocv;
     } else if (unlit != 0) {
-        // Outdoor unlit surface - still receives directional shadows
-        result = texColor.rgb * shadow;
+        // MOMT unlit removes the directional term; it does not imply emission.
+        // Keep regional ambient; raw MOCV additive normalization is deferred.
+        result = outdoorUnlitLighting(texColor.rgb, ambientColor.rgb);
     } else {
         vec3 ldir = normalize(-lightDir.xyz);
         float diff = max(dot(norm, ldir), 0.0);
 
         vec3 viewDir = normalize(viewPos.xyz - FragPos);
-        vec3 halfDir = normalize(ldir + viewDir);
-        float spec = pow(max(dot(norm, halfDir), 0.0), 32.0) * specularIntensity;
+        float spec = directionalSpecular(norm, ldir, viewDir, specularIntensity, 32.0);
 
         result = ambientColor.rgb * texColor.rgb
                + shadow * (diff * lightColor.rgb * texColor.rgb + spec * lightColor.rgb);
 
+        // Compatibility fallback until raw MOCV receives its complete
+        // batch normalization and additive lighting contract.
         result *= max(VertColor.rgb, vec3(0.5));
     }
 
@@ -316,7 +417,6 @@ void main() {
 
     float dist = length(viewPos.xyz - FragPos);
     float fogFactor = clamp((fogParams.y - dist) / (fogParams.y - fogParams.x), 0.0, 1.0);
-    result = mix(fogColor.rgb, result, fogFactor);
 
     float alpha = texColor.a;
 
@@ -328,19 +428,21 @@ void main() {
 
         vec3 ldir = normalize(-lightDir.xyz);
         vec3 reflectDir = reflect(-viewDir, norm);
-        float sunGlint = pow(max(dot(reflectDir, ldir), 0.0), 32.0);
+        float sunGlint = dot(norm, ldir) > 0.0 ?
+            pow(max(dot(reflectDir, ldir), 0.0), 32.0) * shadow : 0.0;
 
         float baseBrightness = mix(0.3, 0.9, sunGlint);
         vec3 glass = result * baseBrightness;
 
-        vec3 reflectTint = mix(ambientColor.rgb * 1.2, vec3(0.6, 0.75, 1.0), 0.6);
+        // Reflection must follow the outdoor key light too. A fixed blue
+        // daylight term made non-emissive windows glow at midnight.
+        vec3 reflectTint = outdoorGlassReflection(ambientColor.rgb,lightColor.rgb);
         glass = mix(glass, reflectTint, fresnel * 0.8);
 
-        vec3 halfDir = normalize(ldir + viewDir);
-        float spec = pow(max(dot(norm, halfDir), 0.0), 256.0);
+        float spec = directionalSpecular(norm, ldir, viewDir, 1.0, 256.0) * shadow;
         glass += spec * lightColor.rgb * 0.8;
 
-        float specBroad = pow(max(dot(norm, halfDir), 0.0), 12.0);
+        float specBroad = directionalSpecular(norm, ldir, viewDir, 1.0, 12.0) * shadow;
         glass += specBroad * lightColor.rgb * 0.12;
 
         result = glass;
@@ -352,5 +454,9 @@ void main() {
         }
     }
 
+    // Fog attenuates the complete material, including reflected key light.
+    if (unfogged == 0) result = mix(fogColor.rgb, result, fogFactor);
+    if (shadowParams.w > 0.5) result = (shadowParams.x > 0.5 && needsOutdoorShadow)
+        ? vec3(shadow) : vec3(1.0, 0.0, 1.0);
     outColor = vec4(result, alpha);
 }

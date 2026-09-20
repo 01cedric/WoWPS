@@ -1,0 +1,20 @@
+{
+  "repository": "https://github.com/azerothcore/azerothcore-wotlk",
+  "sqlCommit": "4e80596cdaa21fa31830522f6f2d7ed8750bfffd",
+  "items": 30229,
+  "classLevelRecords": 746,
+  "raceRecords": 10,
+  "npcMetadataRecords": 29947,
+  "ratingRecords": 800,
+  "sourceHashes": {
+    "item_template.sql": "bd4859be01946ca1521f7896f558f665e1e1d98890757a3df30e717b62768cc6",
+    "creature_template.sql": "0066e4fd35b809986dd325487515087f5a95f4ffe50ea03846c8d8bf5196870a",
+    "player_class_stats.sql": "6fe49317843152c32e3dc4eb5782c03e8dda44b45b44e78700897a159d77944c",
+    "player_race_stats.sql": "605b9b05db514cfee0152f879b0fdae435df9f455d6997ee1e00797f56d54d9e",
+    "gtChanceToMeleeCrit.dbc": "2acb54ef9c47418bea48e557503b7e9a03cfd1365ee2b7be4bc8c5cee5de7f30",
+    "gtChanceToMeleeCritBase.dbc": "e2a82b78cb1ac14b697312b1dad6ca85dcd25fe993e56be9aca9326f52c35ddf",
+    "gtCombatRatings.dbc": "92f4ef0247f6a23c7911e1a51ae0e9648e5d1ed1b5cbc1b01e646ddcae13f280",
+    "gtOCTClassCombatRatingScalar.dbc": "7a4f0d2bdf163ab83f7e9260d6f4c577477053847e5df3fc14df9e4248b680fa"
+  },
+  "scope": "Source metadata, not gameplay acceptance"
+}

@@ -1,4 +1,5 @@
 #pragma once
+#include "platform/cpu_geometry.hpp"
 
 #include <vector>
 #include <string>
@@ -248,8 +249,8 @@ struct M2Model {
     float boundRadius;              // Bounding sphere
 
     // Geometry data
-    std::vector<M2Vertex> vertices;
-    std::vector<uint16_t> indices;
+    platform::CpuGeometryVector<M2Vertex> vertices;
+    platform::CpuGeometryVector<uint16_t> indices;
 
     // Skeletal animation
     std::vector<M2Bone> bones;
@@ -311,9 +312,9 @@ struct M2Model {
     std::vector<M2RibbonEmitter> ribbonEmitters;
 
     // Collision mesh (simplified geometry for physics)
-    std::vector<glm::vec3> collisionVertices;
-    std::vector<uint16_t> collisionIndices;      // 3 per triangle
-    std::vector<glm::vec4> collisionNormals;     // xyz=normal, w=distance; one per triangle
+    platform::CpuGeometryVector<glm::vec3> collisionVertices;
+    platform::CpuGeometryVector<uint16_t> collisionIndices;      // 3 per triangle
+    platform::CpuGeometryVector<glm::vec4> collisionNormals;     // xyz=normal, w=distance; one per triangle
 
     // Flags
     uint32_t globalFlags;

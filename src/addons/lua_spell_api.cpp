@@ -1,6 +1,9 @@
 // lua_spell_api.cpp - Spell info, casting, auras, and targeting Lua API bindings.
 // Extracted from lua_engine.cpp as part of §5.1 (Tame LuaEngine).
 #include "game/shapeshift_forms.hpp"
+#include "game/local_realm.hpp"
+#include "game/local_spell_range.hpp"
+#include <cstring>
 #include "addons/lua_api_helpers.hpp"
 #include "game/item_text.hpp"
 #include "addons/lua_engine.hpp"
@@ -122,11 +125,17 @@ static int lua_IsSpellInRange(lua_State* L) {
     auto* gh = getGameHandler(L);
     if (!gh) { return luaReturnNil(L); }
     const char* spellNameOrId = luaL_checkstring(L, 1);
-    const char* uid = luaL_optstring(L, 2, "target");
+    const char* second=lua_tostring(L,2);
+    const bool bookForm=lua_isnumber(L,1)&&second&&(!std::strcmp(second,"spell")||!std::strcmp(second,"pet"));
+    const char* uid = luaL_optstring(L, bookForm?3:2, "target");
 
     // Resolve spell ID
     uint32_t spellId = 0;
-    if (spellNameOrId[0] >= '0' && spellNameOrId[0] <= '9') {
+    if(bookForm) {
+        const auto slot=lua_tonumber(L,1);
+        if(!std::isfinite(slot)||slot<1||slot>65535||std::floor(slot)!=slot)return luaReturnNil(L);
+        spellId=spellIdForCall(L,gh);
+    } else if (spellNameOrId[0] >= '0' && spellNameOrId[0] <= '9') {
         spellId = static_cast<uint32_t>(strtoul(spellNameOrId, nullptr, 10));
     } else {
         // The rank that would actually be cast, not the first one found. A
@@ -147,6 +156,23 @@ static int lua_IsSpellInRange(lua_State* L) {
     toLowerInPlace(uidStr);
     uint64_t guid = resolveUnitGuid(gh, uidStr);
     if (guid == 0) { return luaReturnNil(L); }
+    if(auto* realm=gh->localServiceRealm()) {
+        const auto* self=realm->localPlayer();const auto* spell=realm->content().spell(spellId);
+        if(!self||!spell||!spell->unsupportedReason.empty())return luaReturnNil(L);
+        // The authority's own predicate, with the target's combat reach, so the
+        // bar's range indicator agrees with what a cast would be allowed to do
+        // (P05-5; Spell::CheckRange adds both reaches, Spell.cpp:7346-7358).
+        const auto answer=[&](const auto& target,float reach){
+            lua_pushnumber(L,game::localSpellTargetInRange(*self,realm->content(),*spell,target.mapId,target.instanceId,
+                target.x,target.y,target.z,reach)?1:0);
+            return 1;
+        };
+        if(guid==self->guid)return answer(*self,game::kLocalDefaultCombatReach);
+        for(const auto& npc:realm->npcs())if(npc.guid==guid)
+            return answer(npc,game::localCreatureCombatReach(realm->content().npc(npc.entry)));
+        for(const auto& player:realm->players())if(player.guid==guid)return answer(player,game::kLocalDefaultCombatReach);
+        return luaReturnNil(L);
+    }
     auto targetEnt = gh->getEntityManager().getEntity(guid);
     auto playerEnt = gh->getEntityManager().getEntity(gh->getPlayerGuid());
     if (!targetEnt || !playerEnt) { return luaReturnNil(L); }
@@ -155,7 +181,7 @@ static int lua_IsSpellInRange(lua_State* L) {
     float dy = playerEnt->getY() - targetEnt->getY();
     float dz = playerEnt->getZ() - targetEnt->getZ();
     float dist = std::sqrt(dx*dx + dy*dy + dz*dz);
-    lua_pushnumber(L, dist <= data.maxRange ? 1 : 0);
+    lua_pushnumber(L, std::isfinite(dist)&&dist>=data.minRange&&dist<=data.maxRange ? 1 : 0);
     return 1;
 }
 

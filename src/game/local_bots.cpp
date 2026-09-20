@@ -526,7 +526,7 @@ bool LocalBotDirector::buyout(uint32_t auctionId, LocalRealmPlayer& buyer,
     const size_t needed = 1 + size_t(proceeds) + size_t(refund);
     if (needed > MaxDeliveries - deliveries_.size()) { result = "Auction delivery queue is full"; return false; }
     deliveries_.reserve(deliveries_.size() + needed);
-    result = "Bought " + item->name + "; collect your mail at an innkeeper";
+    result = "Bought " + item->name + "; collect your mail at a mailbox";
     deliveries_.push_back({buyer.guid,it->itemId,0,it->count});
     if (proceeds) deliveries_.push_back({it->seller, 0, it->buyout, 0});
     if (refund)

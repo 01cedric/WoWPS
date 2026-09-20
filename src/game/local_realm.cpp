@@ -1,4 +1,10 @@
 #include "game/local_realm.hpp"
+#include "game/local_forms.hpp"
+#include "game/local_combo.hpp"
+#include "game/local_npc_auras.hpp"
+#include "game/local_threat_view.hpp"
+#include "game/local_combat_state.hpp"
+#include "game/local_cooldowns.hpp"
 #include "game/local_auction_catalog.hpp"
 #include "game/lan_discovery.hpp"
 #include "game/local_day_clock.hpp"
@@ -11,6 +17,7 @@
 #include "game/local_services.hpp"
 #include "game/local_talents.hpp"
 #include "game/local_stat_auras.hpp"
+#include "game/local_area_aura.hpp"
 #include "game/local_aura_presentation.hpp"
 #include "game/local_quest_dialogue.hpp"
 #include "game/local_scripted_portals.hpp"
@@ -33,22 +40,75 @@
 
 namespace wowee::game {
 namespace {
+double steadySeconds() {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+bool readLocalClockHours(float& hours) {
+#ifdef WOWEE_PS4
+    // Use console LOCAL RTC on every poll, including user timezone/DST edits.
+    // libc can expose an uptime/1970 epoch here. Preserve the previous clock
+    // on RTC failure rather than falling back to that unrelated time source.
+    // The SDK subsecond field is undersized: reserve trailing native storage.
+    struct alignas(8) ClockStorage { TimeTable value; uint8_t tail[32]; } rtc{};
+    if (sceRtcGetCurrentClockLocalTime(&rtc.value) != 0 ||
+        rtc.value.hour >= 24 || rtc.value.minute >= 60 || rtc.value.second >= 60) return false;
+    hours = float(rtc.value.hour) + float(rtc.value.minute)/60 + float(rtc.value.second)/3600;
+#else
+    const auto raw = std::time(nullptr);
+    if (raw == std::time_t(-1)) return false;
+    const auto local = core::localTime(raw);
+    hours = float(local.tm_hour) + float(local.tm_min)/60 + float(local.tm_sec)/3600;
+#endif
+    return std::isfinite(hours) && hours >= 0 && hours < 24;
+}
 constexpr uint32_t WireMagic = 0x57504c52; // WPLR
 constexpr uint32_t SaveMagic = 0x57505253; // WPRS
 constexpr uint32_t IdentityMagic = 0x57504944; // WPID
 constexpr uint8_t Version = lan::GameplayVersion; // Selected merchant stock and owner buyback.
-constexpr uint8_t SaveVersion = 19;  // Buff casters and shield capacity; reads save versions 1-18.
+constexpr uint8_t SaveVersion = 32;  // Ghost/corpse state; reads 1-31.
 constexpr size_t HeaderSize = 20, MaxPacket = 1400, MaxSavedPlayers = 128;
-constexpr size_t PublicPlayerBytes = 49 + 34 + 4 * kLocalEquipmentSlotCount + 6 + 4;
-constexpr size_t PlayersPerPage = 7;
-constexpr size_t NpcWireBytes = 91, NpcsPerPage = 14;
+constexpr size_t PublicPlayerBytes = 4 + 49 + 34 + 4 * kLocalEquipmentSlotCount + 6 + 4 + 30;
+constexpr size_t PlayersPerPage = 6;
+static_assert(LocalRealm::MaxPlayers<=kLocalMaxNpcThreat,"Threat capacity must cover all local players");
+// Worst case for one creature on the wire, term by term against writeNpc:
+// 114 fixed bytes plus one count byte for each of the four transient lists,
+// then each list at its own bound. The stormstrike block was missing from this
+// figure previously and the control block is new, so the budget understated a
+// full creature by 204 bytes and the page count derived from it was wrong. The
+// consequence was never fragmentation - send() refuses an oversized datagram -
+// but a silently dropped NPC page, which is worse.
+constexpr size_t NpcWireBytes = 114 + 4
+    + 16 * kLocalMaxNpcSnares + 21 * kLocalMaxNpcDamageAuras
+    + 17 * kLocalMaxNpcStormstrikeAuras + 17 * kLocalMaxNpcControls;
+constexpr size_t NpcsPerPage = 2;
 constexpr size_t MaxNpcPages = (LocalGameplay::MaxNpcs + NpcsPerPage - 1) / NpcsPerPage;
 static_assert(HeaderSize + 19 + NpcsPerPage * NpcWireBytes <= MaxPacket,
               "NPC deck offsets must not cause IP fragmentation");
+// Owned creatures travel and are saved through one codec: 112 fixed bytes, then
+// the summon's name as a counted string bounded by validLocalPet's own 96.
+constexpr size_t PetWireBytes = 112 + 1 + 96, PetsPerPage = 4;
+constexpr size_t MaxPetPages = (kLocalMaxPets + PetsPerPage - 1) / PetsPerPage;
+static_assert(HeaderSize + 19 + PetsPerPage * PetWireBytes <= MaxPacket,
+              "Pet deck offsets must not cause IP fragmentation");
 constexpr size_t MaxPlayerPages = (LocalRealm::MaxPlayers + PlayersPerPage - 1) / PlayersPerPage;
 static_assert(HeaderSize + 9 + PlayersPerPage * PublicPlayerBytes <= MaxPacket,
               "Player pages must fit one datagram without IP fragmentation");
-constexpr size_t CastWireBytes = 45;
+// Cast, combo points and bounded owner damage/healing presentation: 66 fixed
+// bytes, then four 39-byte views. LAN 84 appended `resisted` (4 bytes) to each
+// view after every LAN 83 field, so the 35-byte prefix keeps its offsets.
+constexpr size_t CastWireBytes = 62 + 4 * 39 + 4;
+// P03/D2 raid area auras. An emitter is 17 bytes - spell, map, instance,
+// amount and the effect mask - and deliberately carries no `generation`: that
+// is authority-only identity of one activation, exactly like
+// LocalStatAura::applicationGeneration, and is reissued when a save is read.
+// A derived application adds the source GUID and the two presentation flags,
+// and likewise omits `emitterGeneration`, which no client can act on.
+constexpr size_t AreaEmitterWireBytes = 4 + 4 + 4 + 4 + 1;
+constexpr size_t AreaAuraViewWireBytes = 4 + 4 + 4 + 8 + 4 + 1 + 1;
+constexpr size_t AreaAuraWireBytes = 1 + kLocalMaxAreaAuraEmitters * AreaEmitterWireBytes +
+                                     1 + kLocalMaxAreaAuraApplications * AreaAuraViewWireBytes;
+static_assert(HeaderSize + 10 + AreaAuraWireBytes <= MaxPacket,
+              "Area aura emitters and derived applications must fit one datagram without IP fragmentation");
 constexpr size_t WelcomeWireBytes = HeaderSize + 26 + PublicPlayerBytes + CastWireBytes + 1;
 static_assert(WelcomeWireBytes <= MaxPacket, "Welcome carries only the owner");
 // Cooldowns are counted at their own bound rather than the spellbook's. They
@@ -58,13 +118,16 @@ static_assert(WelcomeWireBytes <= MaxPacket, "Welcome carries only the owner");
 // assert below is what said so. A character may have many more abilities than
 // it can have on cooldown at once, and MaxCooldowns is the number the reader
 // already rejects a packet for exceeding.
-constexpr size_t MaxOwnerProgressBytes = HeaderSize + 16 + 20 + 34 + 4 * kLocalEquipmentSlotCount + 14 +
+constexpr size_t MaxOwnerProgressBytes = 21 + HeaderSize + 8 + 16 + 20 + 34 + 4 * kLocalEquipmentSlotCount + 14 +
     1 + LocalGameplay::MaxInventory * 7 + 1 + LocalGameplay::MaxQuests * 14 +
-    1 + LocalGameplay::MaxSpells * 4 + 1 + LocalGameplay::MaxCooldowns * 8 + 25 +
+    1 + LocalGameplay::MaxSpells * 4 + 1 + LocalGameplay::MaxCooldowns * 8 + 2 + kLocalMaxCategoryCooldowns * 12 + 25 +
     // Professions (count plus six bytes each), the recipes a profession taught
     // (count plus four bytes each) and the inn binding.
     1 + LocalGameplay::MaxProfessions * 6 + 1 + LocalGameplay::MaxRecipes * 4 +
-    1 + 4 + 16 + 4 + 25 + 17 + 20 + 12 + 4 + kLocalBankSlots * 6 + LocalGameplay::MaxProfessions * 2 + 2 + 2 + 512 * 4 + 45 + 1 + 71 * 5 + 1 + kLocalMaxStatAuras * 28 + 1 + kLocalMaxHealingAuraViews * 20;
+    1 + 4 + 16 + 4 + 25 + 17 + 20 + 12 + 4 + kLocalBankSlots * 6 + LocalGameplay::MaxProfessions * 2 + 2 + 2 + 512 * 4 + 53 + 1 + 71 * 5 + 1 + kLocalMaxStatAuras * 49 + 1 + kLocalMaxHealingAuraViews * 21 + 4 * 39 + 4 +
+    // Save29: the owner's saved emitters, plus the derived applications the
+    // owner-directed message carries for its own buff display only.
+    AreaAuraWireBytes + 30;
 constexpr size_t ProgressChunkBytes = 1200;
 constexpr size_t MaxProgressChunks = (MaxOwnerProgressBytes + ProgressChunkBytes - 1) / ProgressChunkBytes;
 static_assert(MaxOwnerProgressBytes <= 8192 && MaxProgressChunks <= 8);
@@ -74,13 +137,14 @@ constexpr size_t MaxHistoryPages = (LocalGameplay::MaxCompletedQuests + HistoryP
 // Every character may reach the documented history cap; never write a save
 // larger than the parser can subsequently read.
 constexpr size_t MaxSaveSize = MaxSavedPlayers * (LocalGameplay::MaxCompletedQuests * 4 + 8192) + 65536 +
-    2 + LocalVendorInventory::MaxDepletedOffers * 28 + LocalMailbox::MaxMessages * 512;
+    2 + LocalVendorInventory::MaxDepletedOffers * 28 + LocalMailbox::MaxMessages * 512 +
+    1 + kLocalMaxPets * PetWireBytes;
 constexpr double SendInterval = 0.1, HelloInterval = 0.5, JoinTimeout = 10.0;
 constexpr double PeerTimeout = 8.0, LoadingTimeout = 180.0, SaveInterval = 5.0;
 // A returning owner can replace its own silent session without waiting out a
 // long world-load lease. Active clients continue to refresh at 10 Hz.
 constexpr double ReconnectSilence = 2.0;
-enum class Message : uint8_t { Hello = 1, Welcome, Position, Snapshot, Leave, Reject, Command, ActionResult, Progress, Npcs, History, HistoryAck, Clock, CharacterRequest, CharacterReply, AbortJoin, Auctions, MerchantQuery, MerchantState, PartyState, ChatRequest, ChatResult, ChatDelivery, ChatAck, SocialState, MailQuery, MailState };
+enum class Message : uint8_t { Hello = 1, Welcome, Position, Snapshot, Leave, Reject, Command, ActionResult, Progress, Npcs, History, HistoryAck, Clock, CharacterRequest, CharacterReply, AbortJoin, Auctions, MerchantQuery, MerchantState, PartyState, ChatRequest, ChatResult, ChatDelivery, ChatAck, SocialState, MailQuery, MailState, Pets };
 static_assert(HeaderSize + 38 + LocalPartyDirector::MaxMembers * 66 <= MaxPacket,
               "A complete owner party snapshot must fit one datagram");
 constexpr size_t MerchantOffersPerPage = 128, MaxMerchantPages = 2;
@@ -213,10 +277,88 @@ void readVitals(Reader& r, LocalRealmPlayer& p, uint8_t version = SaveVersion) {
     if (dead > 1 || !p.maxHealth || p.maxHealth > 1000000 || p.maxMana > 1000000 ||
         p.health > p.maxHealth || p.mana > p.maxMana || p.dead != (p.health == 0)) r.valid = false;
 }
+void copyDeathState(LocalRealmPlayer& to,const LocalRealmPlayer& from) {
+    to.ghost=from.ghost;to.corpseValid=from.corpseValid;
+    to.corpseMapId=from.corpseMapId;to.corpseInstanceId=from.corpseInstanceId;to.corpseZoneId=from.corpseZoneId;
+    to.corpseX=from.corpseX;to.corpseY=from.corpseY;to.corpseZ=from.corpseZ;to.corpseOrientation=from.corpseOrientation;
+}
+void writeDeathState(Writer& w,const LocalRealmPlayer& p) {
+    w.u8(p.ghost);w.u8(p.corpseValid);w.u32(p.corpseMapId);w.u32(p.corpseInstanceId);w.u32(p.corpseZoneId);
+    w.f32(p.corpseX);w.f32(p.corpseY);w.f32(p.corpseZ);w.f32(p.corpseOrientation);
+}
+bool readDeathState(Reader& r,LocalRealmPlayer& p) {
+    const auto ghost=r.u8(),valid=r.u8();p.ghost=ghost!=0;p.corpseValid=valid!=0;
+    p.corpseMapId=r.u32();p.corpseInstanceId=r.u32();p.corpseZoneId=r.u32();
+    p.corpseX=r.f32();p.corpseY=r.f32();p.corpseZ=r.f32();p.corpseOrientation=r.f32();
+    if(ghost>1||valid>1 || (p.ghost&&(!p.dead||!p.corpseValid)) || (p.corpseValid&&(!p.dead||p.corpseInstanceId>65535||p.corpseZoneId>100000||
+        !validPosition(p.corpseMapId,p.corpseX,p.corpseY,p.corpseZ,p.corpseOrientation))))r.valid=false;
+    return r.valid;
+}
 // Active riding is session state, sent with wire 14 but never inserted into
 // the save payload. The learned spell already uses the durable knownSpells list.
-void writeNetworkVitals(Writer& w,const LocalRealmPlayer& p) {writeVitals(w,p);w.u32(p.mountSpellId);}
-void readNetworkVitals(Reader& r,LocalRealmPlayer& p) {readVitals(r,p);p.mountSpellId=r.u32();}
+void writeNetworkVitals(Writer& w,const LocalRealmPlayer& p) {writeVitals(w,p);w.u32(p.mountSpellId);w.u32(p.formSpellId);writeDeathState(w,p);}
+void readNetworkVitals(Reader& r,LocalRealmPlayer& p) {readVitals(r,p);p.mountSpellId=r.u32();p.formSpellId=r.u32();if(!validLocalFormState(p)||!readDeathState(r,p))r.valid=false;}
+// P03/D2: what an owner projects. Save29 state, written with the character in
+// exactly the same shape as its timed auras. `generation` is authority-only
+// identity of one activation and is never in the payload; a restored emitter is
+// handed a fresh one below, so a reloaded activation can never be mistaken for
+// a live one. The counter sits above the range LocalGameplay hands out at
+// runtime (it allocates from one upwards, per realm), which keeps a restored
+// identity distinct from every identity the authority issues afterwards.
+std::atomic<uint64_t> restoredAreaAuraGeneration{1ull << 48};
+uint64_t nextRestoredAreaAuraGeneration() {
+    const auto generation = restoredAreaAuraGeneration.fetch_add(1, std::memory_order_relaxed);
+    if (!generation) std::abort(); // Never reissue an identity already handed out.
+    return generation;
+}
+void writeAreaEmitters(Writer& w, const LocalRealmPlayer& p) {
+    w.u8(uint8_t(p.areaEmitters.size()));
+    for (const auto& e : p.areaEmitters) { w.u32(e.spellId); w.u32(e.mapId); w.u32(e.instanceId); w.u32(e.amount); w.u8(e.effectMask); }
+}
+bool readAreaEmitters(Reader& r, LocalRealmPlayer& p) {
+    const auto count = r.u8(); if (count > kLocalMaxAreaAuraEmitters) return false;
+    // Built aside and installed only once the whole list validates, so a
+    // malformed row leaves the previous emitters untouched rather than half
+    // replaced - the discipline restorePets already applies to the roster.
+    std::vector<LocalAreaAuraEmitter> incoming;
+    for (unsigned i = 0; i < count; ++i) {
+        LocalAreaAuraEmitter e;
+        e.spellId = r.u32(); e.mapId = r.u32(); e.instanceId = r.u32(); e.amount = r.u32(); e.effectMask = r.u8();
+        e.generation = nextRestoredAreaAuraGeneration();
+        incoming.push_back(e);
+    }
+    if (!r.valid || !validLocalAreaAuraEmitters(incoming)) return false;
+    p.areaEmitters = std::move(incoming); return true;
+}
+// What the owner currently receives. Derived authority state: rebuilt by
+// LocalGameplay every reconcile, never written to a save, and present here only
+// so the owner's own client can draw the buff. This pair is used by the
+// owner-directed progress message alone, which travels host to guest; the
+// guest's Position, Command and Hello payloads carry no aura state at all, so
+// an applied copy has no route back into the authority.
+void writeAreaAuraViews(Writer& w, const LocalRealmPlayer& p) {
+    w.u8(uint8_t(p.areaAuras.size()));
+    for (const auto& a : p.areaAuras) {
+        w.u32(a.spellId); w.u32(a.mapId); w.u32(a.instanceId); w.u64(a.emitterGuid);
+        w.u32(a.amount); w.u8(a.effectMask); w.u8(a.effective ? 1 : 0);
+    }
+}
+bool readAreaAuraViews(Reader& r, LocalRealmPlayer& p) {
+    const auto count = r.u8(); if (count > kLocalMaxAreaAuraApplications) return false;
+    std::vector<LocalAreaAuraApplication> incoming;
+    for (unsigned i = 0; i < count; ++i) {
+        LocalAreaAuraApplication a;
+        a.spellId = r.u32(); a.mapId = r.u32(); a.instanceId = r.u32(); a.emitterGuid = r.u64();
+        a.amount = r.u32(); a.effectMask = r.u8();
+        const auto effective = r.u8(); if (effective > 1) return false;
+        a.effective = effective != 0;
+        // emitterGeneration stays zero on a recipient's copy: it identifies an
+        // activation inside the authority session and means nothing off it.
+        incoming.push_back(a);
+    }
+    if (!r.valid || !validLocalAreaAuraApplications(incoming)) return false;
+    p.areaAuras = std::move(incoming); return true;
+}
 void writeProgress(Writer& w, const LocalRealmPlayer& p, uint8_t version = SaveVersion) {
     writeVitals(w, p); w.u32(p.xp); w.u32(p.xpToLevel); w.u32(p.money); w.u8(p.level);
     w.u8(p.gameplayInitialized ? 1 : 0);
@@ -256,8 +398,18 @@ void writeProgress(Writer& w, const LocalRealmPlayer& p, uint8_t version = SaveV
         if(p.flight.active){const auto& f=p.flight;w.u32(f.pathId);w.u32(f.destinationNode);w.f32(f.travelled);w.f32(f.totalLength);w.f32(f.speed);
             w.u32(f.originMap);w.f32(f.originX);w.f32(f.originY);w.f32(f.originZ);w.f32(f.originOrientation);}
     }
-    if(version>=18){w.u8(uint8_t(p.statAuras.size()));for(const auto& a:p.statAuras){w.u32(a.spellId);w.u32(a.remainingMs);w.u32(a.mapId);w.u32(a.instanceId);if(version>=19){w.u64(a.casterGuid);w.u32(a.absorbRemaining);}}}
+    if(version>=18){w.u8(uint8_t(p.statAuras.size()));for(const auto& a:p.statAuras){w.u32(a.spellId);w.u32(a.remainingMs);w.u32(a.mapId);w.u32(a.instanceId);if(version>=19){w.u64(a.casterGuid);w.u32(a.absorbRemaining);}if(version>=20)w.u8(a.stacks);if(version>=21){w.u8(a.procCharges);w.u32(a.procCooldownMs);w.u32(a.manaRegenRemainder);}if(version>=23){w.u8(a.hasProcAmountSnapshot?1:0);w.u32(a.procAmountSnapshot);}if(version>=26)w.u32(a.buffArmorSnapshot);if(version>=27)w.u16(a.reflectChanceBasisPointsSnapshot);}}
     if(version>=17){w.u8(uint8_t(p.talents.size()));for(auto [id,rank]:p.talents){w.u32(id);w.u8(rank);}}
+    if(version>=22){
+        w.u8(p.migrateLegacyCooldowns?1:0);w.u8(uint8_t(p.categoryCooldowns.size()));
+        for(const auto& a:p.categoryCooldowns){w.u32(a.category);w.u32(a.family);w.u32(a.remainingMs);}
+    }
+    if(version>=24){w.u32(p.manaRegenDelayMs);w.u32(p.resourceRegenRemainder);}
+    if(version>=25){w.u32(p.formSpellId);w.u32(p.druidMana);w.u32(p.druidManaRemainder);}
+    // Save29. Appended, so every offset a save 1-28 reader already knows is
+    // unchanged and such a file simply has no emitter block to read.
+    if(version>=29)writeAreaEmitters(w,p);
+    if(version>=32)writeDeathState(w,p);
 }
 // CharSections indices retain their full uint8 domain; only the model selector
 // is a boolean. Asset-specific option ranges are resolved by the character UI.
@@ -379,19 +531,36 @@ bool readProgress(Reader& r, LocalRealmPlayer& p, uint8_t version = SaveVersion)
     p.healingAuras.clear();
     p.statAuras.clear();
     if(version>=18){const auto count=r.u8();if(count>kLocalMaxStatAuras)return false;
-        for(unsigned i=0;i<count;++i){LocalStatAura a;a.spellId=r.u32();a.remainingMs=r.u32();a.mapId=r.u32();a.instanceId=r.u32();if(version>=19){a.casterGuid=r.u64();a.absorbRemaining=r.u32();}p.statAuras.push_back(a);}
+        for(unsigned i=0;i<count;++i){LocalStatAura a;a.spellId=r.u32();a.remainingMs=r.u32();a.mapId=r.u32();a.instanceId=r.u32();if(version>=19){a.casterGuid=r.u64();a.absorbRemaining=r.u32();}if(version>=20)a.stacks=r.u8();if(version>=21){a.procCharges=r.u8();a.procCooldownMs=r.u32();a.manaRegenRemainder=r.u32();}if(version>=23){const auto has=r.u8();if(has>1)return false;a.hasProcAmountSnapshot=has!=0;a.procAmountSnapshot=r.u32();}if(version>=26)a.buffArmorSnapshot=r.u32();if(version>=27)a.reflectChanceBasisPointsSnapshot=r.u16();p.statAuras.push_back(a);}
         if(!validLocalStatAuras(p))return false;
     }
     p.talents.clear();
     if(version>=17){const auto count=r.u8();if(count>71)return false;for(unsigned i=0;i<count;++i){const auto id=r.u32();const auto rank=r.u8();p.talents.emplace_back(id,rank);}if(!validLocalTalents(p))return false;}
+    p.categoryCooldowns.clear();p.migrateLegacyCooldowns=version<22;
+    if(version>=22){
+        const auto legacy=r.u8(),count=r.u8();if(legacy>1||count>kLocalMaxCategoryCooldowns)return false;
+        p.migrateLegacyCooldowns=legacy!=0;
+        for(unsigned i=0;i<count;++i){LocalCategoryCooldown a;a.category=r.u32();a.family=r.u32();a.remainingMs=r.u32();p.categoryCooldowns.push_back(a);}
+        if(!validLocalCategoryCooldowns(p))return false;
+    }
+    p.manaRegenDelayMs=0;p.resourceRegenRemainder=0;
+    if(version>=24){p.manaRegenDelayMs=r.u32();p.resourceRegenRemainder=r.u32();if(p.manaRegenDelayMs>5000||p.resourceRegenRemainder>=1000)return false;}
+    p.formSpellId=p.druidMana=p.druidManaRemainder=0;
+    if(version>=25){p.formSpellId=r.u32();p.druidMana=r.u32();p.druidManaRemainder=r.u32();if(!validLocalFormState(p))return false;}
+    // A save older than 29 projected no area aura and loads with none. A list
+    // this reader refuses fails the whole load, and fails it before touching
+    // what the character already had, rather than applying part of it.
+    if(version>=29){if(!readAreaEmitters(r,p))return false;}
+    else p.areaEmitters.clear();
+    if(version>=32){if(!readDeathState(r,p))return false;}else{p.ghost=false;p.corpseValid=false;}
     return r.valid;
 }
 void writeHealingViews(Writer& w,const LocalRealmPlayer& p){
-    w.u8(uint8_t(p.healingAuras.size()));for(const auto& a:p.healingAuras){w.u32(a.spellId);w.u64(a.casterGuid);w.u32(a.remainingMs);w.u32(a.durationMs);}
+    w.u8(uint8_t(p.healingAuras.size()));for(const auto& a:p.healingAuras){w.u32(a.spellId);w.u64(a.casterGuid);w.u32(a.remainingMs);w.u32(a.durationMs);w.u8(a.stacks);}
 }
 bool readHealingViews(Reader& r,LocalRealmPlayer& p){
     const auto count=r.u8();if(count>kLocalMaxHealingAuraViews)return false;
-    p.healingAuras.clear();for(unsigned i=0;i<count;++i){LocalHealingAuraView a;a.spellId=r.u32();a.casterGuid=r.u64();a.remainingMs=r.u32();a.durationMs=r.u32();p.healingAuras.push_back(a);}
+    p.healingAuras.clear();for(unsigned i=0;i<count;++i){LocalHealingAuraView a;a.spellId=r.u32();a.casterGuid=r.u64();a.remainingMs=r.u32();a.durationMs=r.u32();a.stacks=r.u8();p.healingAuras.push_back(a);}
     return r.valid&&validLocalHealingAuraViews(p);
 }
 bool validHistory(const std::vector<uint32_t>& ids) {
@@ -414,16 +583,47 @@ void writeCast(Writer& w, const LocalRealmPlayer& p) {
     w.u32(p.castingSpellId); w.u64(p.castTarget); w.u32(p.castRemainingMs);
     w.u32(p.castTotalMs); w.u32(p.globalCooldownMs); w.u8(uint8_t(p.castStatus));
     w.u32(p.castRevision); w.u32(p.lastCastSpellId); w.u64(p.lastCastTarget);w.u32(p.mountSpellId);
+    w.u32(p.castSequence);w.u32(p.castPushbackMs);
+    w.u64(p.comboTarget);w.u8(p.comboPoints);w.u32(p.druidManaCapacity);
+    for(const auto& stored:p.meleeViews){const auto v=p.meleeViewPositionRevision==p.positionRevision?stored:LocalMeleeView{};w.u32(v.serial);w.u32(v.spell);w.u32(v.amount);w.u32(v.blocked);
+        w.u64(v.source);w.u64(v.target);w.u8(uint8_t(v.outcome));w.u8(v.offHand?1:0);w.u8(v.healing?1:0);
+        w.u32(v.resisted);} // LAN 84: appended after every LAN 83 view field.
 }
 bool readCast(Reader& r, LocalRealmPlayer& p) {
     p.castingSpellId = r.u32(); p.castTarget = r.u64(); p.castRemainingMs = r.u32();
     p.castTotalMs = r.u32(); p.globalCooldownMs = r.u32(); const auto status = r.u8();
     p.castRevision = r.u32(); p.lastCastSpellId = r.u32(); p.lastCastTarget = r.u64();p.mountSpellId=r.u32();
+    p.castSequence=r.u32();p.castPushbackMs=r.u32();
+    p.comboTarget=r.u64();p.comboPoints=r.u8();p.druidManaCapacity=r.u32();
+    if(p.druidManaCapacity>1000000||(p.classId!=11&&p.druidManaCapacity))return false;
+    p.meleeSerial=0;p.meleeViewPositionRevision=p.positionRevision;
+    bool populated=false;
+    for(auto& v:p.meleeViews){v.serial=r.u32();v.spell=r.u32();v.amount=r.u32();v.blocked=r.u32();
+        v.source=r.u64();v.target=r.u64();const auto outcome=r.u8(),off=r.u8(),healing=r.u8();
+        v.resisted=r.u32();
+        if(!r.valid||outcome>uint8_t(LocalMeleeOutcome::Deflect)||off>1||healing>1||v.amount>1000000||v.blocked>1000000||v.resisted>1000000)return false;
+        v.outcome=LocalMeleeOutcome(outcome);v.offHand=off;v.healing=healing;
+        if(!v.serial){if(populated||v.spell||v.amount||v.blocked||v.resisted||v.source||v.target||outcome||off||healing)return false;}
+        else {if(!v.source||!v.target||(!healing&&v.source==v.target)||(v.source!=p.guid&&v.target!=p.guid)||
+                 (populated&&int32_t(v.serial-p.meleeSerial)<=0))return false;
+            // Every damage-nullifying outcome carries no amount and no block.
+            if(localOutcomeNullifiesDamage(LocalMeleeOutcome(outcome))&&(v.amount||v.blocked))return false;
+            if(healing&&(!v.spell||off||v.blocked||(outcome!=uint8_t(LocalMeleeOutcome::Hit)&&outcome!=uint8_t(LocalMeleeOutcome::Critical))))return false;
+            // A resisted amount rides a landed hit (HITINFO_PARTIAL_RESIST on
+            // Hit or Critical) or the full-resist outcome itself; a heal, a
+            // miss, an immune or a deflected cast never carries one.
+            if(v.resisted&&(healing||!v.spell||(outcome!=uint8_t(LocalMeleeOutcome::Hit)&&outcome!=uint8_t(LocalMeleeOutcome::Critical)&&
+                                                 outcome!=uint8_t(LocalMeleeOutcome::Resist))))return false;
+            p.meleeSerial=v.serial;populated=true;}
+    }
     p.castStatus = LocalCastStatus(status);
-    return r.valid && status <= uint8_t(LocalCastStatus::Failed) &&
+    return r.valid && validLocalComboView(p) && status <= uint8_t(LocalCastStatus::Failed) &&
            (p.castRevision ? p.lastCastSpellId != 0 : !p.lastCastSpellId && !p.lastCastTarget) &&
            p.castTotalMs <= 3600000 && p.castRemainingMs <= p.castTotalMs && p.globalCooldownMs <= 3600000 &&
-           (p.castStatus != LocalCastStatus::Casting || (p.castingSpellId && p.castRemainingMs));
+           p.castPushbackMs<=1000 &&
+           (p.castStatus == LocalCastStatus::Casting ?
+            (p.castingSpellId && p.castRemainingMs && p.castSequence) :
+            (!p.castingSpellId && !p.castTarget && !p.castRemainingMs && !p.castTotalMs && !p.castPushbackMs));
 }
 /// Bits of the NPC flags field, which is a u16 since wire version 10: the six
 /// original bits ran out when merchants, repair, training and innkeepers were
@@ -456,6 +656,19 @@ void writeNpc(Writer& w, const LocalRealmNpc& n) {
     w.u8(n.vendorCategories); w.u16(n.trainerSkill); w.u8(n.trainerClass);
     w.u32(n.transportEntry); w.f32(n.transportX); w.f32(n.transportY);
     w.f32(n.transportZ); w.f32(n.transportOrientation);
+    w.u8(uint8_t(n.snares.size()));
+    for(const auto& a:n.snares){w.u32(a.spellId);w.u32(a.remainingMs);w.u64(a.casterGuid);}
+    w.u64(n.playerThreat.viewerGuid);w.u64(n.playerThreat.amount);w.u32(n.playerThreat.rawBasisPoints);w.u16(n.playerThreat.scaledBasisPoints);
+    w.u8(n.playerThreat.present?uint8_t(0x80|n.playerThreat.status):0);
+    w.u8(uint8_t(n.damageAuras.size()));
+    for(const auto& a:n.damageAuras){w.u32(a.spellId);w.u32(a.remainingMs);w.u32(a.durationMs);w.u64(a.casterGuid);w.u8(a.stacks);}
+    w.u8(uint8_t(n.stormstrikeAuras.size()));
+    for(const auto& a:n.stormstrikeAuras){w.u32(a.spellId);w.u32(a.remainingMs);w.u64(a.casterGuid);w.u8(a.charges);}
+    // LAN 83. Appended after every existing NPC field, so an 82 reader would
+    // simply stop here; the protocol version is what keeps it from trying.
+    // casterRevision is authority-only and is deliberately not replicated.
+    w.u8(uint8_t(n.controls.size()));
+    for(const auto& a:n.controls){w.u32(a.spellId);w.u32(a.remainingMs);w.u64(a.casterGuid);w.u8(a.kind);}
 }
 LocalRealmNpc readNpc(Reader& r, const LocalWorldContent& c) {
     LocalRealmNpc n; n.guid = r.u64(); n.targetGuid = r.u64(); n.lootOwner = r.u64(); n.entry = r.u32(); n.mapId = r.u32();
@@ -472,6 +685,32 @@ LocalRealmNpc readNpc(Reader& r, const LocalWorldContent& c) {
     n.vendorCategories = r.u8(); n.trainerSkill = r.u16(); n.trainerClass = r.u8();
     n.transportEntry=r.u32();n.transportX=r.f32();n.transportY=r.f32();
     n.transportZ=r.f32();n.transportOrientation=r.f32();
+    const auto snareCount=r.u8();if(snareCount>kLocalMaxNpcSnares){r.valid=false;return n;}
+    for(unsigned i=0;i<snareCount;++i){
+        LocalNpcSnare a;a.spellId=r.u32();a.remainingMs=r.u32();a.casterGuid=r.u64();
+        if(const auto* d=c.spell(a.spellId))a.percent=d->snarePercent;
+        n.snares.push_back(a);
+    }
+    auto& threat=n.playerThreat;threat.viewerGuid=r.u64();threat.amount=r.u64();threat.rawBasisPoints=r.u32();threat.scaledBasisPoints=r.u16();
+    const auto threatFlags=r.u8();threat.present=(threatFlags&0x80)!=0;threat.status=threatFlags&3;
+    if(!threat.viewerGuid||(threatFlags&~0x83)||threat.amount>1000000000000ULL||threat.rawBasisPoints>1000000||threat.scaledBasisPoints>10000||
+       (threat.present?(!threat.amount||n.dead||!n.targetGuid||(threat.status>=2&&n.targetGuid!=threat.viewerGuid)):
+        (threat.amount||threat.rawBasisPoints||threat.scaledBasisPoints||threat.status)))r.valid=false;
+    const auto damageCount=r.u8();if(damageCount>kLocalMaxNpcDamageAuras){r.valid=false;return n;}
+    for(unsigned i=0;i<damageCount;++i){
+        LocalHealingAuraView a;a.spellId=r.u32();a.remainingMs=r.u32();a.durationMs=r.u32();a.casterGuid=r.u64();a.stacks=r.u8();n.damageAuras.push_back(a);
+    }
+    const auto stormstrikeCount=r.u8();if(stormstrikeCount>kLocalMaxNpcStormstrikeAuras){r.valid=false;return n;}
+    for(unsigned i=0;i<stormstrikeCount;++i){
+        LocalNpcStormstrikeAura a;a.spellId=r.u32();a.remainingMs=r.u32();a.casterGuid=r.u64();a.charges=r.u8();n.stormstrikeAuras.push_back(a);
+    }
+    const auto controlCount=r.u8();if(controlCount>kLocalMaxNpcControls){r.valid=false;return n;}
+    for(unsigned i=0;i<controlCount;++i){
+        LocalNpcControl a;a.spellId=r.u32();a.remainingMs=r.u32();a.casterGuid=r.u64();a.kind=r.u8();
+        n.controls.push_back(a);
+    }
+    if(!validLocalNpcSnares(n,c)||!validLocalNpcDamageAuras(n,c)||!validLocalNpcStormstrikeAuras(n,c)||
+       !validLocalNpcControls(n,c))r.valid=false;
     const auto* def = c.npc(n.entry);
     if (!def || (n.guid & 0xffff000000000000ULL) != 0xf130000000000000ULL || n.instanceId > 65535 || uint32_t((n.guid >> 32) & 0xffff) != n.instanceId ||
         !validPosition(n.mapId, n.x, n.y, n.z, n.orientation) || flags > NpcFlagMask || !n.level || n.level > 83 ||
@@ -493,6 +732,79 @@ LocalRealmNpc readNpc(Reader& r, const LocalWorldContent& c) {
         (!n.transportEntry && (n.transportX || n.transportY || n.transportZ || n.transportOrientation))) r.valid = false;
     if (def) { n.displayId = def->displayId; n.name = def->name; n.questGiver = def->questGiver; }
     return n;
+}
+/// One owned creature, in the single layout the save and the pet deck share.
+/// summonEpoch is deliberately absent: it identifies a live summon to the
+/// authority alone, and LocalGameplay::restorePets allocates a fresh one, so a
+/// restored pet can never answer a callback prepared for its predecessor.
+///
+/// P07  appends the command state, the react state, the attack order and
+/// the stay point. Because this is ONE layout for the save and the LAN pet
+/// deck, that costs both a Save and a LAN bump: a the implementation peer would read the
+/// three new bytes as the start of the name string.
+/// P03  adds one canonical 0/1 Firebolt autocast byte. Save30 and older
+/// migrate to disabled (Pet::addSpell's newly learned default); protocol 86
+/// keeps mixed-layout peers from interpreting
+/// that byte as the pet's name length.
+///
+/// One deviation, stated: the reference persists the react state and the action
+/// bar and NOT the command state, the attack order or the stay point, which
+/// live in CharmInfo and are session state (Pet::FillPetInfo, Pet.cpp:2466-2483,
+/// against PetStable::PetInfo, PetDefines.h:214-233). This build persists all
+/// of them because the save and the LAN pet deck are one layout and the deck
+/// genuinely needs them: a guest that did not receive the stay point would draw
+/// a pet walking back to its owner while the host holds it in place.
+void writePet(Writer& w, const LocalRealmPet& p) {
+    w.u64(p.guid); w.u64(p.ownerGuid); w.u64(p.targetGuid);
+    w.u32(p.entry); w.u32(p.displayId); w.u32(p.mapId); w.u32(p.instanceId); w.u32(p.summonSpellId);
+    w.u8(uint8_t(p.kind)); w.u8(p.level); w.u32(p.health); w.u32(p.maxHealth);
+    w.u8(p.resourceType); w.u32(p.power); w.u32(p.maxPower); w.u32(p.powerRegenElapsedMs);
+    w.u32(p.attackPeriodMs); w.u32(p.remainingMs);
+    w.f32(p.x); w.f32(p.y); w.f32(p.z); w.f32(p.orientation); w.f32(p.attackTimer);
+    w.u8(p.dead ? 1 : 0);
+    w.u8(uint8_t(p.command)); w.u8(uint8_t(p.react)); w.u8(p.commandAttack ? 1 : 0);
+    w.f32(p.stayX); w.f32(p.stayY); w.f32(p.stayZ);
+    w.u8(p.fireboltAutocast ? 1 : 0);
+    w.text(p.name);
+}
+/// `layoutVersion` is the save version the bytes were written with, so a
+/// Save28/29 file - which has no command, react or stay point - still loads.
+/// Those pets come back with the defaults, which is exactly the behaviour they
+/// had: REACT_AGGRESSIVE and following. The LAN deck always passes the current
+/// version, because a mismatched protocol is refused before any pet is read.
+LocalRealmPet readPet(Reader& r, unsigned layoutVersion = SaveVersion) {
+    LocalRealmPet p;
+    p.guid = r.u64(); p.ownerGuid = r.u64(); p.targetGuid = r.u64();
+    p.entry = r.u32(); p.displayId = r.u32(); p.mapId = r.u32(); p.instanceId = r.u32(); p.summonSpellId = r.u32();
+    p.kind = LocalPetKind(r.u8()); p.level = r.u8();
+    p.health = r.u32(); p.maxHealth = r.u32();
+    p.resourceType = r.u8(); p.power = r.u32(); p.maxPower = r.u32(); p.powerRegenElapsedMs = r.u32();
+    p.attackPeriodMs = r.u32(); p.remainingMs = r.u32();
+    p.x = r.f32(); p.y = r.f32(); p.z = r.f32(); p.orientation = r.f32(); p.attackTimer = r.f32();
+    const auto dead = r.u8(); p.dead = dead != 0;
+    uint8_t commandAttack = 0;
+    if (layoutVersion >= 30) {
+        p.command = LocalPetCommand(r.u8()); p.react = LocalPetReact(r.u8());
+        commandAttack = r.u8(); p.commandAttack = commandAttack != 0;
+        p.stayX = r.f32(); p.stayY = r.f32(); p.stayZ = r.f32();
+    }
+    uint8_t fireboltAutocast = 0;
+    if (layoutVersion >= 31) {
+        fireboltAutocast = r.u8();
+        p.fireboltAutocast = fireboltAutocast != 0;
+    }
+    p.name = r.text();
+    // validLocalPet owns the summon's own rules - including which command and
+    // react values exist and when a stay point may be present; the map, the
+    // instance and the death flag are this codec's, exactly as they are for a
+    // player or an NPC. A stay point has to be somewhere real, on the pet's own
+    // map, for the same reason the pet's position does.
+    if (dead > 1 || commandAttack > 1 || fireboltAutocast > 1 || p.instanceId > 65535 || p.dead != (p.health == 0) ||
+        !validPosition(p.mapId, p.x, p.y, p.z, p.orientation) ||
+        (p.command == LocalPetCommand::Stay &&
+         !validPosition(p.mapId, p.stayX, p.stayY, p.stayZ, 0.0f)) ||
+        !validLocalPet(p)) r.valid = false;
+    return p;
 }
 void writeAuction(Writer& w, const LocalAuction& a) {
     w.u32(a.id); w.u32(a.itemId); w.u16(a.count); w.u32(a.bid); w.u32(a.buyout);
@@ -705,6 +1017,9 @@ struct LocalRealm::Impl {
     bool requestedFemaleModel = false;
     std::vector<LocalInstanceState> restoredInstances;
     mutable std::vector<LocalRealmNpc> npcView;
+    // The authority's own summons on this character's map, beside the NPC view
+    // and rebuilt with it. A guest keeps the replicated roster in gameplay.
+    mutable std::vector<LocalRealmPet> petView;
     struct PendingCommand { uint32_t id; LocalRealmCommand command; double lastSent = -1; double enqueued = 0; };
     std::deque<PendingCommand> pendingCommands;
     uint32_t nextCommand = 0, progressSequence = 0, vitalsSequence = 0, worldSequence = 0, worldTick = 0, collectingWorld = 0;
@@ -720,6 +1035,13 @@ struct LocalRealm::Impl {
     uint8_t worldParts = 0;
     std::array<std::vector<LocalRealmNpc>, MaxNpcPages> worldChunks;
     std::array<bool, MaxNpcPages> worldReceived{};
+    // The pet deck, assembled exactly like the NPC one and committed only when
+    // every page of a tick has arrived: a half-received roster would make a
+    // summon flicker in and out beside its owner.
+    uint32_t petTick = 0, petSequence = 0, collectingPets = 0;
+    uint8_t petParts = 0;
+    std::array<std::vector<LocalRealmPet>, MaxPetPages> petChunks;
+    std::array<bool, MaxPetPages> petReceived{};
     // The auction board as a guest sees it. The host's own board lives in
     // botDirector; a guest has no director, so the replicated copy is what
     // auctions() returns there. Assembled page by page like the NPC list, and
@@ -786,8 +1108,10 @@ struct LocalRealm::Impl {
     void resetSavedSession(uint64_t guid) {
         if(auto* record=findSaved(guid)){
             auto& player=record->player;
-            player.attackTarget=0;player.attackTimer=0;
-            player.castingSpellId=player.castRemainingMs=player.castTotalMs=0;
+            player.attackTarget=0;player.attackTimer=player.offHandTimer=0;player.meleeViews={};player.meleeSerial=0;
+            clearLocalCombo(player);
+            player.castingSpellId=player.castRemainingMs=player.castTotalMs=0;clearLocalPreparedCost(player);
+            player.castPushbackMs=player.castPushbackCount=0;
             player.castTarget=0;player.castStatus=LocalCastStatus::None;
             dirty=true;
         }
@@ -817,23 +1141,13 @@ struct LocalRealm::Impl {
     double now = 0, lastSend = -1, lastHello = -1, lastSeen = 0, lastSave = 0;
     std::chrono::steady_clock::time_point lastPump = std::chrono::steady_clock::now();
     LocalDayClock dayClock;
+    LocalWallClockFollower wallClock;
+    bool wallClockReadFailed = false;
     uint32_t clockSequence = 0;
     double lastClockSend = -1;
     Impl() {
-        const auto local = core::localTime(std::time(nullptr));
-        float hour = float(local.tm_hour) + float(local.tm_min)/60 + float(local.tm_sec)/3600;
-#ifdef WOWEE_PS4
-        // Console libc time can report a 1970/uptime epoch. Seed from SceRtc.
-        // This SDK declares the subsecond field too narrowly: reserve aligned
-        // trailing storage for the native write; only the calendar fields up
-        // to second are consumed here.
-        struct alignas(8) ClockStorage { TimeTable value; uint8_t tail[32]; } rtc{};
-        if (sceRtcGetCurrentClockLocalTime(&rtc.value) == 0 &&
-            rtc.value.hour < 24 && rtc.value.minute < 60 && rtc.value.second < 60) {
-            hour = float(rtc.value.hour) + float(rtc.value.minute)/60 + float(rtc.value.second)/3600;
-        }
-#endif
-        dayClock.synchronize(hour, 0);
+        gameplay.setAuraOwnerProvider([this]{dirty=true;return allAuraOwners();});
+        wallClock.poll(true, steadySeconds(), 0, dayClock, readLocalClockHours);
     }
     bool dirty = false;
     bool authoritative() const {
@@ -843,7 +1157,7 @@ struct LocalRealm::Impl {
         sendDeparture();
         error = reason; status = reason; state = LocalRealmState::Error;
         clearSocial();clearChat();clearMail();pendingCommands.clear();pendingProgress.reset();lobbyPending=false;worldLoading=false;
-        players.clear();npcView.clear();
+        players.clear();npcView.clear();petView.clear();
         partyDirector=LocalPartyDirector{};commitParty({});
         gameplay.setPartyMembership({});
         LOG_ERROR("[local_realm] ", reason);
@@ -879,7 +1193,7 @@ struct LocalRealm::Impl {
     }
     bool tradeAvailable(const LocalRealmPlayer& p)const {
         if(!localTradeAvailable(p))return false;
-        for(const auto& npc:gameplay.npcs())if(npc.health && npc.targetGuid==p.guid)return false;
+        if(localCombatActive(p,gameplay.npcs()))return false;
         return true;
     }
     LocalTrade* activeTrade(uint64_t guid) {
@@ -1120,6 +1434,15 @@ struct LocalRealm::Impl {
             for(unsigned i=0;i<countMail;++i)loadedMail.messages.push_back(readMail(r));
             if(!loadedMail.valid())return false;
         }
+        // The realm's owned creatures, once for the whole save. A pre-28 file
+        // simply has none; an owner who is no longer saved leaves a summon the
+        // first authority tick retires, which is not this reader's decision.
+        std::vector<LocalRealmPet> loadedPets;
+        if(saveVersion>=28){
+            const auto countPets=r.u8();if(countPets>kLocalMaxPets)return false;
+            for(unsigned i=0;i<countPets;++i){auto summon=readPet(r,saveVersion);if(!r.valid)return false;loadedPets.push_back(std::move(summon));}
+            if(!validLocalPets(loadedPets))return false;
+        }
         uint32_t sum = r.u32();
         if (!r.done() || sum != checksum(bytes.data(), bytes.size() - 4)) return false;
         LocalBotDirector validated;
@@ -1127,6 +1450,9 @@ struct LocalRealm::Impl {
         if (!validated.restoreAuctions(loadedAuctions, validationError) ||
             !validated.restoreDeliveries(loadedDeliveries) ||
             (saveVersion >= 13 && !validated.restoreAuctionSequence(loadedAuctionSequence, validationError))) return false;
+        // Validates before it assigns, so a rejected roster leaves the realm on
+        // its previous one rather than half of a new one.
+        if (!gameplay.restorePets(std::move(loadedPets), validationError)) return false;
         if (!gameplay.restoreVendorStock(loadedVendorStock)) return false;
         gameplay.setTransportTime(loadedTransportTime);
         botDirector.restoreAuctions(loadedAuctions, validationError);
@@ -1172,10 +1498,18 @@ struct LocalRealm::Impl {
                 record.player.knownRecipes.size() > LocalGameplay::MaxRecipes || record.player.knownTaxiNodes.size()>512 ||
                 record.player.professions.size() > LocalGameplay::MaxProfessions ||
                 !validBuyback(record.player.buybackSerial, record.player.buyback) ||
-                !validLocalStatAuras(record.player) || !validLocalTalents(record.player) || !validHistory(record.player.completedQuestIds) || !validLocalRunes(record.player.runeCooldownMs)) {
+                !validLocalCategoryCooldowns(record.player) || !validLocalStatAuras(record.player) || !validLocalTalents(record.player) ||
+                // Never write an emitter list parseSave would refuse to read back.
+                !validLocalAreaAuraEmitters(record.player.areaEmitters) ||
+                !validHistory(record.player.completedQuestIds) || !validLocalRunes(record.player.runeCooldownMs)) {
                 if (error.empty()) error = "Cannot save invalid completed quest history";
                 LOG_ERROR("[local_realm] ", error); return false;
             }
+        }
+        // Never write an owned-creature roster the loader would refuse.
+        if (!validLocalPets(gameplay.pets())) {
+            if (error.empty()) error = "Cannot save invalid owned creature state";
+            LOG_ERROR("[local_realm] ", error); return false;
         }
         Writer w; w.u32(SaveMagic); w.u8(SaveVersion); w.u64(realmId); w.u16(uint16_t(saved.size()));
         for (const auto& record : saved) {
@@ -1204,6 +1538,8 @@ struct LocalRealm::Impl {
         w.u32(botDirector.nextAuctionId());
         w.u32(mailbox.nextId);w.u16(uint16_t(mailbox.messages.size()));
         for(const auto& mail:mailbox.messages)writeMail(w,mail);
+        w.u8(uint8_t(gameplay.pets().size()));
+        for(const auto& summon:gameplay.pets())writePet(w,summon);
         w.u32(checksum(w.bytes.data(), w.bytes.size()));
         if (w.bytes.size() > MaxSaveSize) {
             error = "Local realm snapshot exceeds save limit";
@@ -1228,7 +1564,8 @@ struct LocalRealm::Impl {
         error = "Local realm save failed; original save preserved";
         LOG_ERROR("[local_realm] ", error, ": ", exception.what()); return false;
     }
-    SavedPlayer* createPlayer(const Identity& id, const std::string& name, uint8_t race = 0, uint8_t cls = 0, uint8_t gender = 255) {
+    SavedPlayer* createPlayer(const Identity& id, const std::string& name, uint8_t race = 0, uint8_t cls = 0, uint8_t gender = 255,
+                              uint8_t forcedLevel = 0) {
         if (saved.size() >= MaxSavedPlayers) return nullptr;
         SavedPlayer record; record.identity = id; record.player.name = name;
         record.player.introSeen = false;
@@ -1241,9 +1578,18 @@ struct LocalRealm::Impl {
             record.player.skin = requestedSkin; record.player.face = requestedFace; record.player.hairStyle = requestedHairStyle;
             record.player.hairColor = requestedHairColor; record.player.facialHair = requestedFacialHair; record.player.useFemaleModel = requestedFemaleModel;
         }
-        gameplay.initializePlayer(record.player, true);
+        gameplay.initializePlayer(record.player, true, forcedLevel);
         saved.push_back(std::move(record)); dirty = true;
         return &saved.back();
+    }
+    std::vector<LocalRealmPlayer*> allAuraOwners() {
+        std::vector<LocalRealmPlayer*> result;result.reserve(saved.size()+botPlayers.size()+1);
+        if(self.guid)result.push_back(&self);
+        // Connected remote actors already live in saved. Skip the host's stale
+        // saved mirror; saveRealm copies the live self before serializing it.
+        for(auto& record:saved)if(record.player.guid!=self.guid)result.push_back(&record.player);
+        for(auto& bot:botPlayers)result.push_back(&bot);
+        return result;
     }
     const std::vector<LocalRealmPlayer*>& activePlayers() {
         activePlayerScratch.clear();
@@ -1445,6 +1791,7 @@ struct LocalRealm::Impl {
         std::string ignored;
         gameplay.setAreaTriggers(previous.gameplay.areaTriggers(), ignored);
         gameplay.setFactionTemplates(previous.gameplay.factionTemplates(), previous.gameplay.raceFactionTemplates(), ignored);
+        gameplay.setGraveyards(previous.gameplay.graveyards(), ignored);
         // Everything else the application reads out of the client's own DBCs
         // before a realm starts. Starting one replaces this Impl wholesale, so
         // anything not carried across here is silently lost - which is what had
@@ -1489,6 +1836,10 @@ struct LocalRealm::Impl {
         prepareHistory(peer, record->player);
         Writer w; w.u64(peer.guid); w.u32(peer.historyRevision); w.u32(peer.historyCount);
         writePosition(w, record->player); writeProgress(w, record->player); writeCast(w, record->player);writeHealingViews(w,record->player);
+        // The owner's own derived area aura applications, so its client can
+        // draw the buff. Authority state that is never saved and never read
+        // back off a guest; see writeAreaAuraViews.
+        writeAreaAuraViews(w,record->player);
         w.u8(record->player.introSeen ? 1 : 0);
         if (w.bytes.size() > MaxOwnerProgressBytes) { LOG_ERROR("[LOCAL_PROGRESS] snapshot exceeds bound"); return; }
         const auto parts = uint8_t((w.bytes.size() + ProgressChunkBytes - 1) / ProgressChunkBytes);
@@ -1505,7 +1856,9 @@ struct LocalRealm::Impl {
         if(next.mapId==self.mapId && next.instanceId==self.instanceId && next.positionRevision==self.positionRevision)return;
         gameplay.setRemoteNpcs({});collectingWorld=0;worldParts=0;worldReceived.fill(false);
         for(auto& page:worldChunks)page.clear();
-        LOG_INFO("[LOCAL_TRAVEL_SYNC] cleared NPC view map=",next.mapId," instance=",next.instanceId," revision=",next.positionRevision);
+        gameplay.setRemotePets({});collectingPets=0;petParts=0;petReceived.fill(false);
+        for(auto& page:petChunks)page.clear();
+        LOG_INFO("[LOCAL_TRAVEL_SYNC] cleared NPC and pet views map=",next.mapId," instance=",next.instanceId," revision=",next.positionRevision);
     }
     void applyProgress(LocalRealmPlayer updated, uint32_t seq) {
         if (!newer(seq, progressSequence)) return;
@@ -1515,12 +1868,13 @@ struct LocalRealm::Impl {
         // public snapshots and owner progress. Never restore an older copy.
         updated.completedQuestIds = self.completedQuestIds;
         if(newer(self.positionRevision,updated.positionRevision)) {
+            clearLocalCombo(updated);updated.meleeViews={};updated.meleeSerial=0;
             updated.hasInstanceReturn=self.hasInstanceReturn;updated.returnMapId=self.returnMapId;updated.returnInstanceId=self.returnInstanceId;
             updated.returnX=self.returnX;updated.returnY=self.returnY;updated.returnZ=self.returnZ;updated.returnOrientation=self.returnOrientation;
             updated.flight=self.flight;updated.transportEntry=self.transportEntry;
             updated.transportOffsetX=self.transportOffsetX;updated.transportOffsetY=self.transportOffsetY;updated.transportOffsetZ=self.transportOffsetZ;
             updated.transportLastYaw=self.transportLastYaw;
-            updated.castingSpellId=0;updated.castTarget=0;updated.castRemainingMs=updated.castTotalMs=0;updated.castStatus=LocalCastStatus::Interrupted;
+            clearLocalPreparedCost(updated);updated.castingSpellId=0;updated.castTarget=0;updated.castRemainingMs=updated.castTotalMs=0;updated.castStatus=LocalCastStatus::Interrupted;updated.castPushbackMs=updated.castPushbackCount=0;
         }
         if (updated.positionRevision == self.positionRevision || !newer(updated.positionRevision, self.positionRevision)) {
             updated.mapId = self.mapId; updated.x = self.x; updated.y = self.y; updated.z = self.z;
@@ -1533,12 +1887,13 @@ struct LocalRealm::Impl {
         }
         if (!newer(seq, vitalsSequence)) {
             updated.health = self.health; updated.maxHealth = self.maxHealth; updated.mana = self.mana;
-            updated.maxMana = self.maxMana; updated.dead = self.dead; updated.level = self.level;
+            updated.maxMana = self.maxMana; updated.dead = self.dead; copyDeathState(updated,self); updated.level = self.level;
             updated.equipment = self.equipment; updated.attackTarget = self.attackTarget;
             updated.resourceType = self.resourceType;
             updated.mountSpellId = self.mountSpellId;
             updated.xpToLevel = uint32_t(updated.level) * uint32_t(updated.level) * 100 + 300;
         } else vitalsSequence = seq;
+        if(updated.dead||!updated.health)clearLocalCombo(updated);
         clearWorldForTravel(updated);
         self = std::move(updated); progressSequence = seq; lastSeen = now;
         for (auto& p : players) if (p.guid == self.guid) p = self;
@@ -1600,6 +1955,7 @@ struct LocalRealm::Impl {
         const auto* player = findSaved(peer.guid); if (!player) return;
         for (const auto& npc : gameplay.npcs()) if (npc.mapId == player->player.mapId && npc.instanceId == player->player.instanceId) {
             auto copy = npc; copy.hostile = gameplay.canAttack(player->player, npc); copy.aggressive = gameplay.isAggressive(player->player, npc);
+            copy.playerThreat=localThreatView(npc,player->player);
             actors.push_back(std::move(copy));
         }
         const size_t parts = std::max(size_t(1), (actors.size() + NpcsPerPage - 1) / NpcsPerPage);
@@ -1610,6 +1966,26 @@ struct LocalRealm::Impl {
             w.u32(player->player.mapId);w.u32(player->player.instanceId);w.u32(player->player.positionRevision);
             for (size_t index = begin; index < end; ++index) writeNpc(w, actors[index]);
             send(Message::Npcs, peer.session, w, peer.address);
+        }
+    }
+    /// The owned creatures standing where this guest is, paged like the NPC
+    /// deck and sent from the same places at the same rate. Nothing here is a
+    /// command: a guest renders what the authority owns and never summons,
+    /// moves or retires one itself.
+    void petDeck(const Peer& peer, uint32_t tick) {
+        const auto* player = findSaved(peer.guid); if (!player) return;
+        std::vector<const LocalRealmPet*> summons;
+        for (const auto& summon : gameplay.pets())
+            if (summon.mapId == player->player.mapId && summon.instanceId == player->player.instanceId)
+                summons.push_back(&summon);
+        const size_t parts = std::max(size_t(1), (summons.size() + PetsPerPage - 1) / PetsPerPage);
+        for (size_t part = 0; part < parts; ++part) {
+            Writer w; w.u32(tick); w.u8(uint8_t(part)); w.u8(uint8_t(parts));
+            const size_t begin = part * PetsPerPage, end = std::min(begin + PetsPerPage, summons.size());
+            w.u8(uint8_t(end - begin));
+            w.u32(player->player.mapId);w.u32(player->player.instanceId);w.u32(player->player.positionRevision);
+            for (size_t index = begin; index < end; ++index) writePet(w, *summons[index]);
+            send(Message::Pets, peer.session, w, peer.address);
         }
     }
     void actionResult(const Peer& peer) {
@@ -1741,6 +2117,7 @@ struct LocalRealm::Impl {
         if(activeTrade(player.guid) && cmd.action!=LocalAction::StopAttack && cmd.action!=LocalAction::CancelCast){result="Finish or cancel the trade first";return false;}
         if(mailActionKind(cmd.action))return executeMail(player,cmd,result);
         const bool portal=(cmd.action==LocalAction::EnterPortal && !localScriptedPortal(cmd.id)) || cmd.action==LocalAction::LeaveInstance ||
+            cmd.action==LocalAction::Respawn || cmd.action==LocalAction::ReclaimCorpse ||
             cmd.action==LocalAction::ReturnHome || cmd.action==LocalAction::SetHome ||
             cmd.action==LocalAction::BoardTransport || cmd.action==LocalAction::LeaveTransport;
         const bool merchant=cmd.action==LocalAction::SellToVendor || cmd.action==LocalAction::BuyFromVendor || cmd.action==LocalAction::BuybackItem;
@@ -1748,7 +2125,9 @@ struct LocalRealm::Impl {
             cmd.action==LocalAction::BidAuction || cmd.action==LocalAction::BuyoutAuction;
         const auto* mountItem=cmd.action==LocalAction::UseItem?localAuctionMetadata(cmd.id):nullptr;
         const bool mountLearning=mountItem && mountItem->mountSpell;
-        const bool financial=cmd.action==LocalAction::LearnTalent || cmd.action==LocalAction::ResetTalents || cmd.action==LocalAction::TrainRiding || cmd.action==LocalAction::DiscoverTaxi || cmd.action==LocalAction::TakeFlight || cmd.action==LocalAction::BankDepositFromSlot || cmd.action==LocalAction::BackpackMove || cmd.action==LocalAction::BankWithdrawSlot || cmd.action==LocalAction::EquipItem || cmd.action==LocalAction::UnequipItem || mountLearning || cmd.action==LocalAction::Loot || cmd.action==LocalAction::TurnInQuest || merchant || auction || cmd.action==LocalAction::BankDeposit || cmd.action==LocalAction::BankWithdraw || cmd.action==LocalAction::BankMove || cmd.action==LocalAction::BankDepositSlot ||
+        const auto* formCast=cmd.action==LocalAction::CastSpell?gameplay.content().spell(cmd.id):nullptr;
+        const bool formAction=cmd.action==LocalAction::CancelForm||(formCast&&formCast->formId);
+        const bool financial=formAction||cmd.action==LocalAction::LearnTalent || cmd.action==LocalAction::ResetTalents || cmd.action==LocalAction::TrainRiding || cmd.action==LocalAction::DiscoverTaxi || cmd.action==LocalAction::TakeFlight || cmd.action==LocalAction::BankDepositFromSlot || cmd.action==LocalAction::BackpackMove || cmd.action==LocalAction::BankWithdrawSlot || cmd.action==LocalAction::EquipItem || cmd.action==LocalAction::UnequipItem || mountLearning || cmd.action==LocalAction::Loot || cmd.action==LocalAction::TurnInQuest || merchant || auction || cmd.action==LocalAction::BankDeposit || cmd.action==LocalAction::BankWithdraw || cmd.action==LocalAction::BankMove || cmd.action==LocalAction::BankDepositSlot ||
             cmd.action==LocalAction::CraftItem || cmd.action==LocalAction::UnlearnProfession ||
             cmd.action==LocalAction::LearnRecipe || cmd.action==LocalAction::LearnProfession ||
             cmd.action==LocalAction::TrainProfessionRank || cmd.action==LocalAction::LearnSpell;
@@ -1756,6 +2135,10 @@ struct LocalRealm::Impl {
         // Persist ownership, escrow and bags as one save before acknowledging a
         // successful transaction. Roll back RAM too when the atomic write fails.
         const auto priorPlayer=player;
+        // A talent reset can remove this caster's Earth Shield from an offline
+        // saved recipient too. Restore every touched aura list if saving fails.
+        std::vector<std::pair<LocalRealmPlayer*,std::vector<LocalStatAura>>> priorTalentAuras;
+        if(cmd.action==LocalAction::ResetTalents)for(auto* owner:allAuraOwners())priorTalentAuras.emplace_back(owner,owner->statAuras);
         std::optional<std::vector<LocalInstanceState>> priorInstances;
         if(portal)priorInstances.emplace(gameplay.instances());
         bool priorLootable=false;
@@ -1789,6 +2172,7 @@ struct LocalRealm::Impl {
             return true;
         }
         player=priorPlayer;
+        for(auto& [owner,auras]:priorTalentAuras)owner->statAuras=std::move(auras);
         if(priorInstances) {
             std::string restoreError;
             if(!gameplay.restoreInstances(*priorInstances,restoreError))LOG_ERROR("[LOCAL_PARTY_INSTANCE] rollback failed: ",restoreError);
@@ -1798,7 +2182,7 @@ struct LocalRealm::Impl {
         if(priorDirector)botDirector=std::move(*priorDirector);
         if(priorStock)gameplay.restoreVendorInventory(std::move(*priorStock));
         if(auto* restored=findSaved(self.guid))restored->player=priorSavedSelf;
-        result=portal ? "Travel was not saved; you remain at your previous location" : "Transaction was not saved; no items or money were changed";
+        result=formAction ? "Form change was not saved; the previous form and resources were restored" : portal ? "Travel was not saved; you remain at your previous location" : "Transaction was not saved; no items or money were changed";
         LOG_ERROR("[LOCAL_TRANSACTION] rolled back: ",error);
         return false;
     }
@@ -1861,6 +2245,9 @@ struct LocalRealm::Impl {
         actionResult(peer); progress(peer); merchantState(peer); refreshPlayers();maintainSocial();
         if(cmd.action>=LocalAction::ReadyStart && cmd.action<=LocalAction::TradeCancel)for(auto& recipient:peers)sendSocial(recipient);
         if(cmd.action>=LocalAction::PartyInvite && cmd.action<=LocalAction::PartyPromote)sendParty(peer);
+        // A retired summon must leave the owner's screen with the acknowledgement,
+        // not at whatever point the round-robin reaches this guest again.
+        if(cmd.action==LocalAction::DismissPet)petDeck(peer,++petTick);
     }
     void receiveWorld(Reader& r) {
         const auto tick = r.u32(); const auto part = r.u8(), parts = r.u8(), count = r.u8();
@@ -1870,7 +2257,7 @@ struct LocalRealm::Impl {
             (part+1<parts && count!=NpcsPerPage) || (parts>1 && !count) || size_t(part)*NpcsPerPage+count>LocalGameplay::MaxNpcs) return;
         std::vector<LocalRealmNpc> chunk;
         for (unsigned index = 0; index < count; ++index) {
-            auto n = readNpc(r, gameplay.content()); if (!r.valid || n.mapId!=map || n.instanceId!=instance) return; chunk.push_back(std::move(n));
+            auto n = readNpc(r, gameplay.content()); if (!r.valid || n.mapId!=map || n.instanceId!=instance || n.playerThreat.viewerGuid!=self.guid) return; chunk.push_back(std::move(n));
         }
         if (!r.done()) return;
         if (tick != collectingWorld) {
@@ -1889,6 +2276,33 @@ struct LocalRealm::Impl {
         }
         gameplay.setRemoteNpcs(std::move(all)); worldSequence = tick; lastSeen = now;
     }
+    void receivePets(Reader& r) {
+        const auto tick = r.u32(); const auto part = r.u8(), parts = r.u8(), count = r.u8();
+        const auto map=r.u32(),instance=r.u32(),revision=r.u32();
+        if (!r.valid || map!=self.mapId || instance!=self.instanceId || revision!=self.positionRevision ||
+            !tick || !parts || parts > MaxPetPages || part >= parts || count > PetsPerPage || !newer(tick, petSequence) ||
+            (part+1<parts && count!=PetsPerPage) || (parts>1 && !count) || size_t(part)*PetsPerPage+count>kLocalMaxPets) return;
+        std::vector<LocalRealmPet> chunk;
+        for (unsigned index = 0; index < count; ++index) {
+            auto summon = readPet(r); if (!r.valid || summon.mapId!=map || summon.instanceId!=instance) return; chunk.push_back(std::move(summon));
+        }
+        if (!r.done()) return;
+        if (tick != collectingPets) {
+            if (collectingPets && !newer(tick, collectingPets)) return;
+            collectingPets = tick; petParts = parts; petReceived.fill(false);
+            for (auto& entries : petChunks) entries.clear();
+        }
+        if (parts != petParts) return;
+        if (petReceived[part]) return;
+        petChunks[part] = std::move(chunk); petReceived[part] = true;
+        for (unsigned index = 0; index < parts; ++index) if (!petReceived[index]) return;
+        std::vector<LocalRealmPet> all;
+        for (unsigned index = 0; index < parts; ++index) for (auto& summon : petChunks[index]) all.push_back(std::move(summon));
+        // Duplicates and the per-owner caps are the roster's own rules; a deck
+        // that breaks them replaces nothing.
+        if (!validLocalPets(all)) return;
+        gameplay.setRemotePets(std::move(all)); petSequence = tick; lastSeen = now;
+    }
     void refreshPlayers() {
         // These are presentation copies, rebuilt several times per frame.
         // Reassign existing rows so their names, quest vectors and inventory
@@ -1899,10 +2313,17 @@ struct LocalRealm::Impl {
             if (npcCount == npcView.size()) npcView.emplace_back();
             auto& copy = npcView[npcCount++];
             copy = npc;
-            copy.hostile = gameplay.canAttack(self, npc);
-            copy.aggressive = gameplay.isAggressive(self, npc);
+            const auto disposition = gameplay.npcDisposition(self, npc);
+            copy.hostile = disposition.attackable;
+            copy.aggressive = disposition.aggressive;
         }
         npcView.resize(npcCount);
+        size_t petCount = 0;
+        for (const auto& summon : gameplay.pets()) if (summon.mapId == self.mapId && summon.instanceId == self.instanceId) {
+            if (petCount == petView.size()) petView.emplace_back();
+            petView[petCount++] = summon;
+        }
+        petView.resize(petCount);
         size_t playerCount = 0;
         const auto append = [&](const LocalRealmPlayer& player) {
             if (playerCount == players.size()) players.emplace_back();
@@ -2015,7 +2436,7 @@ struct LocalRealm::Impl {
         w.u8(1); writePlayer(w, record->player); writeNetworkVitals(w, record->player); writeAppearance(w, record->player);
         writeCast(w, record->player); w.u8(record->player.introSeen ? 1 : 0);
         send(Message::Welcome, peer.session, w, peer.address);
-        clock(peer); progress(peer); history(peer); world(peer, ++worldTick);
+        clock(peer); progress(peer); history(peer); world(peer, ++worldTick); petDeck(peer, ++petTick);
         auctionBoard(peer, ++auctionTick);
         // The complete roster follows through the budgeted snapshot path.
         peer.lastSnapshot = -1;
@@ -2172,8 +2593,11 @@ struct LocalRealm::Impl {
         // The host owns character state; HELLO never supplies position or level.
         // A new owner session starts without replayable casts from the previous
         // connection. Duplicate HELLOs above retain the existing live session.
-        record->player.castingSpellId = record->player.castRemainingMs = record->player.castTotalMs = 0;
+        record->player.castingSpellId = record->player.castRemainingMs = record->player.castTotalMs = 0;clearLocalPreparedCost(record->player);
         record->player.castTarget = 0; record->player.globalCooldownMs = 0;
+        clearLocalCombo(record->player);record->player.meleeViews={};record->player.meleeSerial=0;
+        record->player.attackTarget=0;record->player.attackTimer=record->player.offHandTimer=0;
+        record->player.castSequence=record->player.castPushbackMs=record->player.castPushbackCount=0;
         record->player.castStatus = LocalCastStatus::None;
         record->player.castRevision = record->player.lastCastSpellId = 0;
         record->player.lastCastTarget = 0;
@@ -2243,7 +2667,7 @@ struct LocalRealm::Impl {
             peer->loading = loading != 0;
             auto* record = findSaved(peer->guid);
             if (!record) return;
-            if (freshPosition && !loading && !record->player.dead && !record->player.flight.active && incoming.mapId==record->player.mapId &&
+            if (freshPosition && !loading && (!record->player.dead || record->player.ghost) && !record->player.flight.active && incoming.mapId==record->player.mapId &&
                 positionRevision == record->player.positionRevision && instanceId == record->player.instanceId) {
                 dirty = dirty || record->player.mapId != incoming.mapId || record->player.x != incoming.x ||
                         record->player.y != incoming.y || record->player.z != incoming.z || record->player.orientation != incoming.orientation;
@@ -2320,6 +2744,7 @@ struct LocalRealm::Impl {
                 // Only the server can relocate a character (revive). Ordinary
                 // snapshots keep local movement prediction, never old stats.
                 if (newer(p.positionRevision, self.positionRevision)) {
+                    clearLocalCombo(self);self.meleeViews={};self.meleeSerial=0;
                     clearWorldForTravel(p);
                     self.mapId = p.mapId; self.x = p.x; self.y = p.y; self.z = p.z;
                     self.orientation = p.orientation; self.positionRevision = p.positionRevision; self.instanceId = p.instanceId;
@@ -2327,7 +2752,8 @@ struct LocalRealm::Impl {
                 if (newer(seq, vitalsSequence)) {
                     vitalsSequence = seq;
                     self.health = p.health; self.maxHealth = p.maxHealth; self.mana = p.mana; self.maxMana = p.maxMana;
-                    self.mountSpellId=p.mountSpellId;self.dead = p.dead; self.level = p.level; self.equipment = p.equipment; self.attackTarget = p.attackTarget; self.resourceType = p.resourceType;
+                    self.mountSpellId=p.mountSpellId;self.dead = p.dead;copyDeathState(self,p); self.level = p.level; self.equipment = p.equipment; self.attackTarget = p.attackTarget; self.resourceType = p.resourceType;
+                    if(self.dead||!self.health)clearLocalCombo(self);
                 }
                 p = self;
             }
@@ -2376,6 +2802,7 @@ struct LocalRealm::Impl {
                 return;
             }
             if (type == Message::Npcs) { receiveWorld(r); return; }
+            if (type == Message::Pets) { receivePets(r); return; }
             if (type == Message::Auctions) { receiveAuctions(r); return; }
             if (type == Message::MerchantState) { receiveMerchantState(r); return; }
             if (type == Message::MailState) { receiveMailState(r);return; }
@@ -2405,6 +2832,7 @@ struct LocalRealm::Impl {
                 LocalRealmPlayer updated = self; readPosition(r, updated);
                 if (guid != self.guid || !revision || count > LocalGameplay::MaxCompletedQuests ||
                     !readProgress(r, updated) || !readCast(r, updated) || !readHealingViews(r,updated) ||
+                    !readAreaAuraViews(r,updated) ||
                     !validPosition(updated.mapId, updated.x, updated.y, updated.z, updated.orientation)) return;
                 const auto seen = r.u8(); if (seen > 1 || !r.done()) return;
                 updated.introSeen = seen != 0;
@@ -2522,6 +2950,55 @@ struct LocalRealm::Impl {
             }
         }
         return loadIdentity();
+    }
+    /// Create the ten level-80 test characters, one per slot, and save them.
+    ///
+    /// This is the ordinary creation path with a level handed to it: the same
+    /// prepare/loadRealm, the same per-slot identity file the character screen
+    /// scans, the same createPlayer and the same initializePlayer that a
+    /// character made on the create screen goes through, followed by the same
+    /// validatePlayer and saveRealm. Nothing here writes a player field by
+    /// hand, so the spellbook, the stats, the resource type and the start
+    /// position are whatever the shipped rules derive for level 80.
+    ///
+    /// A slot that already owns a character is left exactly as it is; this
+    /// never overwrites somebody's save.
+    size_t seedTestCharacters(const std::string& path, const std::vector<LocalTestCharacterSpec>& specs) try {
+        if (specs.empty() || specs.size() > LocalRealm::MaxCharacterSlots) { fail("Invalid test character request"); return 0; }
+        if (!prepare(path, specs.front().name) || !loadRealm()) return 0;
+        if (!gameplay.restoreInstances(restoredInstances, error)) { fail(error); return 0; }
+        size_t created = 0, occupied = 0;
+        for (const auto& spec : specs) {
+            if (spec.slot >= LocalRealm::MaxCharacterSlots || !spec.level ||
+                !LocalGameplay::validCharacterOptions(spec.race, spec.classId, spec.gender) || !validName(spec.name)) {
+                fail("Invalid test character profile"); return created;
+            }
+            characterSlot = spec.slot;
+            if (!loadIdentity()) return created;
+            if (findIdentity(identity)) { ++occupied; continue; }
+            if (!createPlayer(identity, spec.name, spec.race, spec.classId, spec.gender, spec.level)) {
+                fail("Local realm saved-character capacity reached"); return created;
+            }
+            ++created;
+            LOG_INFO("[LOCAL_SESSION] test character slot=", int(spec.slot), " name=", spec.name,
+                     " race=", int(spec.race), " class=", int(spec.classId), " level=", int(spec.level),
+                     " map=", saved.back().player.mapId, " spells=", saved.back().player.knownSpells.size(),
+                     " health=", saved.back().player.maxHealth, " mana=", saved.back().player.maxMana);
+        }
+        if (occupied) LOG_INFO("[LOCAL_SESSION] ", occupied, " character slot(s) already occupied and left untouched");
+        // The same acceptance the next start applies: a seeded character that
+        // would be refused on login is not written at all.
+        for (const auto& record : saved) if (!gameplay.validatePlayer(record.player, error)) { fail(error); return 0; }
+        if (!created) return 0;
+        // saveRealm writes only for an authority; this Impl never runs one.
+        state = LocalRealmState::SinglePlayer;
+        const bool ok = saveRealm();
+        state = LocalRealmState::Stopped;
+        if (!ok) return 0;
+        return created;
+    } catch (const std::exception& exception) {
+        fail(std::string("Test character seeding failed: ") + exception.what());
+        return 0;
     }
     bool startAuthority(const std::string& path, const std::string& name, bool networked, uint16_t requestedPort) try {
         if (!prepare(path, name) || !loadRealm()) return false;
@@ -2652,6 +3129,13 @@ bool LocalRealm::setRealmName(const std::string& name) {
     if (!lan::validName(name) || ready() || state()==LocalRealmState::Connecting) return false;
     impl_->realmName=name; return true;
 }
+size_t LocalRealm::seedTestCharacters(const std::string& dir, const std::vector<LocalTestCharacterSpec>& specs) {
+    if (ready() || state() == LocalRealmState::Connecting) { impl_->error = "Stop the realm before seeding characters"; return 0; }
+    // A fresh Impl carrying the configured content/catalog/spells, exactly as
+    // startSinglePlayer builds one, so seeding cannot inherit session state.
+    auto next = std::make_unique<Impl>(); next->retainConfiguration(*impl_); impl_ = std::move(next);
+    return impl_->seedTestCharacters(dir, specs);
+}
 bool LocalRealm::startSinglePlayer(const std::string& dir, const std::string& name) {
     stop(); auto next = std::make_unique<Impl>(); next->retainConfiguration(*impl_); impl_ = std::move(next); return impl_->startAuthority(dir, name, false, 0);
 }
@@ -2747,6 +3231,22 @@ void LocalRealm::update(float deltaTime) {
     // and expires dead peers while synthetic dt keeps loopback tests deterministic.
     const double clockStep=std::max(double(deltaTime),elapsed);
     p.now += clockStep;
+    const float previousDayHours = p.dayClock.hours(p.now);
+    const auto wallResult = p.wallClock.poll(p.authoritative(),
+        std::chrono::duration<double>(wallNow.time_since_epoch()).count(), p.now,
+        p.dayClock, readLocalClockHours);
+    if (wallResult == LocalWallClockFollower::Result::Synchronized) {
+        LOG_INFO("[LOCAL_CLOCK] resynchronized previousHours=", previousDayHours,
+                 " localHours=", p.dayClock.hours(p.now), " mode=",
+                 p.state == LocalRealmState::Hosting ? "host" : "offline",
+                 " source=local-system-clock gameplayTimersUnchanged=1");
+        // Publish a clock edit promptly; guests continue to follow host time.
+        if (p.state == LocalRealmState::Hosting) for (const auto& peer : p.peers) p.clock(peer);
+    }
+    if (wallResult == LocalWallClockFollower::Result::ReadFailed && !p.wallClockReadFailed)
+        LOG_WARNING("[LOCAL_CLOCK] local system clock read failed; retaining interpolated day/night time");
+    if (wallResult != LocalWallClockFollower::Result::Idle)
+        p.wallClockReadFailed = wallResult == LocalWallClockFollower::Result::ReadFailed;
     if(p.authoritative() || p.state==LocalRealmState::Connected) p.gameplay.advanceTransportTime(std::max(0.0,elapsed));
     p.expirePeers(); // Expired sessions cannot participate in queued commands either.
     if (p.socket != INVALID_SOCK) p.receive();
@@ -2833,9 +3333,12 @@ void LocalRealm::update(float deltaTime) {
         // in rather than to the previous frame's.
         p.dirty = p.botDirector.tick(step, p.gameplay.content(), p.botPlayers) || p.dirty;
         p.dirty = p.migrateAuctionMail() || p.dirty;
-        p.refreshPlayers();p.maintainSocial();
+        p.maintainSocial();
+        // Publish once after gameplay, bots, mail and social maintenance.
+        // Hosting previously copied the entire NPC/player roster twice here.
+        p.refreshPlayers();
         if (p.state == LocalRealmState::Hosting) {
-            p.refreshPlayers(); p.refreshStatus();
+            p.refreshStatus();
             // At most four recipients per frame. Each full roster is at most
             // 15 small packets, not a fragmented 16KB datagram. Small realms
             // retain 10Hz updates; large realms trade update rate for bounded work.
@@ -2848,7 +3351,7 @@ void LocalRealm::update(float deltaTime) {
                 if (pages.empty()) pages = p.snapshotPages();
                 for (const auto& page : pages) p.send(Message::Snapshot, peer.session, page, peer.address);
                 if (p.now - peer.lastClock >= 1.0) { p.clock(peer); peer.lastClock = p.now; }
-                p.progress(peer); p.history(peer); p.world(peer, ++p.worldTick);
+                p.progress(peer); p.history(peer); p.world(peer, ++p.worldTick); p.petDeck(peer, ++p.petTick);
                 p.auctionBoard(peer, ++p.auctionTick);
                 if(p.now-peer.lastMerchantSnapshot>=0.5)p.merchantState(peer);
                 if(p.now-peer.lastPartySnapshot>=0.5)p.sendParty(peer);
@@ -2874,7 +3377,7 @@ bool LocalRealm::setLocalTransportOffset(uint32_t entry,float x,float y,float z,
 
 bool LocalRealm::setLocalPosition(uint32_t map, float x, float y, float z, float o, uint8_t movement) {
     auto& p = *impl_;
-    if (!ready() || p.self.dead || (p.self.instanceId && map != p.self.mapId) || !validPosition(map, x, y, z, o)) return false;
+    if (!ready() || (p.self.dead && !p.self.ghost) || (p.self.ghost && map!=p.self.mapId) || (p.self.instanceId && map != p.self.mapId) || !validPosition(map, x, y, z, o)) return false;
     if (p.worldLoading || p.self.flight.active || (p.self.transportEntry && map != p.self.mapId)) return false;
     if (p.self.transportEntry) for (const auto& hull : p.gameplay.transports()) {
         if (hull.entry != p.self.transportEntry || hull.mapId != map) continue;
@@ -2983,6 +3486,18 @@ uint64_t LocalRealm::partyRosterRevision() const {return impl_->partyRosterRevis
 bool LocalRealm::attack(uint64_t guid) { return command({LocalAction::Attack, guid, 0}); }
 bool LocalRealm::stopAttack() { return command({LocalAction::StopAttack, 0, 0}); }
 bool LocalRealm::cancelStatAura(uint32_t spell) {return command({LocalAction::CancelStatAura,0,spell});}
+bool LocalRealm::cancelForm(uint32_t expectedSpell){return command({LocalAction::CancelForm,0,expectedSpell});}
+bool LocalRealm::dismissPet(uint64_t expectedPet){return command({LocalAction::DismissPet,expectedPet,0});}
+bool LocalRealm::sendPetAction(uint64_t expectedPet, uint32_t packedAction, uint64_t targetGuid) {
+    LocalRealmCommand cmd{LocalAction::PetAction, expectedPet, packedAction};
+    cmd.serviceNpcGuid = targetGuid;
+    return command(cmd);
+}
+bool LocalRealm::setPetSpellAutocast(uint64_t expectedPet, uint32_t spellId, bool enabled) {
+    LocalRealmCommand cmd{LocalAction::PetSpellAutocast, expectedPet, spellId};
+    cmd.bid = enabled ? 1u : 0u;
+    return command(cmd);
+}
 bool LocalRealm::castSpell(uint32_t spell, uint64_t guid) { return command({LocalAction::CastSpell, guid, spell}); }
 bool LocalRealm::acceptQuest(uint32_t quest, uint64_t guid) { return command({LocalAction::AcceptQuest, guid, quest}); }
 bool LocalRealm::turnInQuest(uint32_t quest, uint64_t guid,uint32_t rewardChoice) {
@@ -2997,6 +3512,10 @@ bool LocalRealm::completeIntro() { return command({LocalAction::CompleteIntro, 0
 bool LocalRealm::useItem(uint32_t item) { return command({LocalAction::UseItem, 0, item}); }
 bool LocalRealm::dismount() {return command({LocalAction::Dismount,0,0});}
 bool LocalRealm::respawn() { return command({LocalAction::Respawn, 0, 0}); }
+void LocalRealm::setLocalZone(uint32_t zoneId) { if(zoneId<=100000 && !impl_->self.dead)impl_->self.zoneId=zoneId; }
+bool LocalRealm::reclaimCorpse() { return command({LocalAction::ReclaimCorpse}); }
+bool LocalRealm::canReclaimCorpse()const { return ready() && localCanReclaimCorpse(impl_->self); }
+bool LocalRealm::setGraveyards(const std::vector<LocalGraveyardSite>& sites) { return impl_->gameplay.setGraveyards(sites,impl_->error); }
 bool LocalRealm::interact(uint64_t guid) { return command({LocalAction::Interact, guid, 0}); }
 bool LocalRealm::enterPortal(uint32_t id, bool privateInstance) { return command({LocalAction::EnterPortal, privateInstance ? 1ULL : 0ULL, id}); }
 bool LocalRealm::leaveInstance() { return command({LocalAction::LeaveInstance, 0, 0}); }
@@ -3292,6 +3811,9 @@ bool LocalRealm::leaveTransport() {
 const std::vector<LocalRealmNpc>& LocalRealm::npcs() const {
     return impl_->authoritative() ? impl_->npcView : impl_->gameplay.npcs();
 }
+const std::vector<LocalRealmPet>& LocalRealm::pets() const {
+    return impl_->authoritative() ? impl_->petView : impl_->gameplay.pets();
+}
 const LocalWorldContent& LocalRealm::content() const { return impl_->gameplay.content(); }
 const std::string& LocalRealm::actionStatus() const { return impl_->actionStatus; }
 uint64_t LocalRealm::actionStatusRevision() const { return impl_->actionStatusRevision; }
@@ -3306,7 +3828,11 @@ void LocalRealm::stop() {
     p.clearSocial();p.clearChat();p.clearMail();p.pendingCommands.clear();p.pendingProgress.reset();p.collectingProgress=0;p.progressReceived.fill(false);p.lobbyPending=false;p.worldLoading=false;
     p.remoteAuctions.clear();p.auctionSequence=0;p.collectingAuctions=0;p.auctionParts=0;
     p.auctionReceived.fill(false);for(auto& page:p.auctionChunks)page.clear();
+    p.petView.clear();p.petSequence=0;p.collectingPets=0;p.petParts=0;
+    p.petReceived.fill(false);for(auto& page:p.petChunks)page.clear();
     p.session=p.joinNonce=0;
+    clearLocalCombo(p.self);p.self.meleeViews={};p.self.meleeSerial=0;
+    for(auto& record:p.saved){clearLocalCombo(record.player);record.player.meleeViews={};record.player.meleeSerial=0;}
     p.state = LocalRealmState::Stopped; p.status = "Local realm stopped";
     p.players.clear(); p.peers.clear();
 }
@@ -3347,7 +3873,7 @@ bool LocalRealm::mailAccess(uint64_t service)const {
     if(impl_->state!=LocalRealmState::Connected)return impl_->mailReach(impl_->self,service);
     const auto& p=impl_->self;if(p.dead || p.flight.active || p.castingSpellId || p.transportEntry)return false;
     if(nearbyLocalMailbox(content(),p,service))return true;
-    for(const auto& n:npcs())if(n.guid==service && n.innkeeper && localNpcInTalkRange(p,n))return true;return false;
+    return false;
 }
 void LocalRealm::requestMail(uint64_t service){
     auto& p=*impl_;if(p.state!=LocalRealmState::Connected || !mailAccess(service) || (p.lastMailRequest>=0 && p.now-p.lastMailRequest<1))return;

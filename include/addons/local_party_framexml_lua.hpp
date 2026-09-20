@@ -87,10 +87,11 @@ for _,name in ipairs({'UnitName','UnitFullName','GetUnitName','UnitGUID','UnitEx
         if api=='UnitLevel' then return m.level end
         if api=='UnitClass' then return classNames[m.class],classes[m.class],m.class end
         if api=='UnitRace' then return raceNames[m.race],races[m.race],m.race end
-        if api=='UnitIsDead' or api=='UnitIsDeadOrGhost' then return m.dead end
+        if api=='UnitIsDead' then return m.dead and not m.ghost end
+        if api=='UnitIsDeadOrGhost' then return m.dead or m.ghost or false end
         if api=='UnitPowerType' then return m.powerType,({[0]='MANA',[1]='RAGE',[3]='ENERGY',[6]='RUNIC_POWER'})[m.powerType] end
         if api=='UnitIsVisible' then return m.sameInstance end
-        if api=='UnitIsGhost' then return false end
+        if api=='UnitIsGhost' then return m.ghost or false end
         if api=='UnitClassification' then return 'normal' end
         return true
     end)

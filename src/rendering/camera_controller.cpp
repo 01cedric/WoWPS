@@ -1218,6 +1218,7 @@ void CameraController::groundFollowedCharacter(float deltaTime, FrameInput& f,
                                                glm::vec3& targetPos,
                                                const glm::vec3& prevTargetPos) {
 
+    std::optional<float> confirmedFloor;
     // Ground the character to terrain or WMO floor
     // Skip entirely while swimming - the swim floor clamp handles vertical bounds.
     if (!swimming) {
@@ -1229,6 +1230,7 @@ void CameraController::groundFollowedCharacter(float deltaTime, FrameInput& f,
         // WMO tunnel/bridge ramps are often steeper than outdoor terrain ramps.
         // The floor directly under the feet, and the surfaces that answered.
         FloorSample sample = sampleFloorUnderFeet(targetPos, stepUpBudget);
+        confirmedFloor = sample.floor;
         // Seated in something: the chair itself is not a floor to stand on.
         //
         // A chair is an M2 with collision whose seat is about a metre off the
@@ -1350,33 +1352,9 @@ void CameraController::groundFollowedCharacter(float deltaTime, FrameInput& f,
             }
         }
 
-        // Void recovery: far beneath the terrain heightfield with no structure
-        // floor anywhere below usually means a seam heuristic already failed.
-        // Never use the heightfield as a rescue target while WMO containment says
-        // the player is inside, though: Ironforge's valid interior floor is over
-        // 200 units below the mountain terrain, and a transient floor-query miss
-        // must not teleport the player onto the mountain above the city.
-        if (!groundH && centerTerrainH && !cachedInsideWMO &&
-            targetPos.z < *centerTerrainH - 60.0f) {
-            LOG_WARNING("Void recovery: player at z=", targetPos.z,
-                        " with terrain at ", *centerTerrainH, " and no floor below");
-            targetPos.z = *centerTerrainH + 0.5f;
-            verticalVelocity = 0.0f;
-            groundH = centerTerrainH;
-        }
-
-        // WMO-only maps (Deeprun Tram, instances), and deep WMO interiors on
-        // terrain maps (Ironforge), must recover to the last structural floor
-        // rather than the unrelated outdoor heightfield above them.
-        if (!groundH && (!centerTerrainH || cachedInsideWMO) && hasLastGroundedPos_ &&
-            noGroundTimer_ > 2.5f && targetPos.z < lastGroundZ - 40.0f) {
-            LOG_WARNING("Void recovery (WMO/ no heightfield): player at z=", targetPos.z,
-                        " returning to last grounded pos (", lastGroundedPos_.x, ", ",
-                        lastGroundedPos_.y, ", ", lastGroundedPos_.z, ")");
-            targetPos = lastGroundedPos_ + glm::vec3(0.0f, 0.0f, 0.5f);
-            verticalVelocity = 0.0f;
-            groundH = lastGroundedPos_.z;
-        }
+        // Deep void recovery runs after real support is resolved below.
+        // It returns to a verified checkpoint, never the ADT surface above
+        // a cave/city or an arbitrary floor found while the player was falling.
 
         // 1b. Multi-sample WMO floors when in/near WMO space to avoid
         // falling through narrow board/plank gaps where center ray misses.
@@ -1525,10 +1503,10 @@ void CameraController::groundFollowedCharacter(float deltaTime, FrameInput& f,
             centerTerrainH && verticalVelocity <= 0.0f) {
             const float penetration = *centerTerrainH - targetPos.z;
             // Below the shallow bound is ordinary contact and sampling jitter;
-            // above the deep bound is somewhere this heuristic cannot vouch for,
-            // which the void recovery above already handles.
+            // above the shallow bound is somewhere this heuristic cannot
+            // vouch for; confirmed checkpoint recovery handles void falls.
             constexpr float kMinPenetration = 0.10f;
-            constexpr float kMaxPenetration = 12.0f;
+            constexpr float kMaxPenetration = 0.75f;
             if (penetration > kMinPenetration && penetration < kMaxPenetration) {
                 // Everywhere the player may legitimately stand below the
                 // heightfield - the Darkshire crypts, the tunnel under the hill
@@ -1642,8 +1620,6 @@ void CameraController::groundFollowedCharacter(float deltaTime, FrameInput& f,
         if (groundH) {
             hasRealGround_ = true;
             noGroundTimer_ = 0.0f;
-            lastGroundedPos_ = glm::vec3(targetPos.x, targetPos.y, *groundH);
-            hasLastGroundedPos_ = true;
             float feetZ = targetPos.z;
             float stepUp = stepUpBudget;
             stepUp += 0.05f;
@@ -1714,25 +1690,60 @@ void CameraController::groundFollowedCharacter(float deltaTime, FrameInput& f,
     // Update follow target position
     *followTarget = targetPos;
 
-    // --- Safe position caching + void fall detection ---
-    if (grounded && hasRealGround_ && !swimming && verticalVelocity >= 0.0f) {
-        // Player is safely on real geometry - save periodically
-        continuousFallTime_ = 0.0f;
-        autoUnstuckFired_ = false;
-        safePosSaveTimer_ += f.physicsDeltaTime;
-        if (safePosSaveTimer_ >= SAFE_POS_SAVE_INTERVAL) {
-            safePosSaveTimer_ = 0.0f;
-            lastSafePos_ = targetPos;
-            hasLastSafe_ = true;
-        }
-    } else if (!grounded && !swimming && !externalFollow_) {
-        // Falling (or standing on nothing past grace period) - accumulate fall time
-        continuousFallTime_ += f.physicsDeltaTime;
-        if (continuousFallTime_ >= AUTO_UNSTUCK_FALL_TIME && !autoUnstuckFired_) {
-            autoUnstuckFired_ = true;
-            if (autoUnstuckCallback_) {
-                autoUnstuckCallback_();
+    // Record only stable contact with the unmodified collision result. A
+    // synthetic seam floor or a lower floor seen during a jump is not safe.
+    const bool recoverySuppressed = swimming || flyingActive_ || hoverActive_ ||
+        externalFollow_ || scriptedView_ || knockbackActive_ || gravitySuspendTimer_ > 0.0f;
+    const bool confirmedSupport = grounded && confirmedFloor &&
+        std::isfinite(*confirmedFloor) && std::abs(targetPos.z-*confirmedFloor)<=0.15f;
+    if (!groundRecovery_.enabled() || !groundRecovery_.hasPosition() || recoverySuppressed)
+        pendingGroundCrossingRecovery_ = false;
+    if (!recoverySuppressed && groundRecovery_.enabled() && groundRecovery_.hasPosition())
+        pendingGroundCrossingRecovery_ = pendingGroundCrossingRecovery_ ||
+            crossedConfirmedSupport(prevTargetPos,targetPos);
+    if (pendingGroundCrossingRecovery_) {
+        // A proven crossed solid plane is stronger evidence than the absence
+        // of lower geometry. Do not overwrite its checkpoint with underlying
+        // terrain while an authoritative correction is temporarily declined.
+        if (getValidatedRecoveryPosition() && autoUnstuckCallback_) {
+            autoUnstuckFired_ = autoUnstuckCallback_();
+            if (autoUnstuckFired_) {
+                pendingGroundCrossingRecovery_ = false;
+                if (followTarget) targetPos = *followTarget;
+                LOG_WARNING("[GROUND_RECOVERY] crossed supported floor; restored confirmed position");
             }
+        }
+        return;
+    }
+    groundRecovery_.observe(targetPos,deltaTime,confirmedSupport,
+                            !grounded && verticalVelocity < -0.5f,recoverySuppressed);
+    continuousFallTime_ = groundRecovery_.fallingTime();
+    if (confirmedSupport) autoUnstuckFired_ = false;
+    if (!autoUnstuckFired_ && groundRecovery_.due(targetPos)) {
+        // A long drop is not evidence of a bug: retain any potential landing
+        // geometry below, including a different floor in a dungeon. Broad
+        // bounds deliberately fail safe here rather than inventing a floor.
+        bool landingBelow = false;
+        if (terrainManager) {
+            const auto terrain = terrainManager->getHeightAt(targetPos.x,targetPos.y);
+            landingBelow = terrain && !terrainManager->isHoleAt(targetPos.x,targetPos.y) &&
+                           *terrain <= targetPos.z+0.25f;
+        }
+        if (!landingBelow && wmoRenderer)
+            landingBelow = wmoRenderer->hasPotentialGroundBelow(targetPos);
+        if (!landingBelow && m2Renderer)
+            landingBelow = m2Renderer->hasPotentialGroundBelow(targetPos);
+        if (!landingBelow && waterRenderer)
+            landingBelow = waterRenderer->getNearestWaterHeightAt(targetPos.x,targetPos.y,targetPos.z).has_value();
+        if (!landingBelow && getValidatedRecoveryPosition() && autoUnstuckCallback_) {
+            // Failed/temporarily blocked authority updates remain retryable.
+            // The callback must acknowledge an actual successful restoration.
+            autoUnstuckFired_ = autoUnstuckCallback_();
+            if (autoUnstuckFired_)
+                LOG_WARNING("[GROUND_RECOVERY] unsupported void fall restored to confirmed support");
+            // The owner syncs authoritative movement and calls teleportTo.
+            // Keep this local target consistent with that callback's result.
+            if (followTarget) targetPos = *followTarget;
         }
     }
 }
@@ -3011,6 +3022,7 @@ void CameraController::resetAngles() {
 }
 
 void CameraController::reset() {
+    resetGroundRecovery();
     setScriptedView(false);
     cancelIntroPan();
     if (!camera) {
@@ -3249,7 +3261,70 @@ void CameraController::reset() {
     LOG_INFO("Camera reset to default position");
 }
 
+void CameraController::resetGroundRecovery() {
+    groundRecovery_.reset();
+    pendingGroundCrossingRecovery_ = false;
+    continuousFallTime_ = 0.0f;
+    autoUnstuckFired_ = false;
+    hasRealGround_ = false;
+    hasCachedFloor_ = false;
+    noGroundTimer_ = 0.0f;
+}
+
+bool CameraController::crossedConfirmedSupport(const glm::vec3& previous,
+                                                  const glm::vec3& current) const {
+    if (!groundRecovery_.hasPosition()) return false;
+    const auto& safe = groundRecovery_.position();
+    // Early exit avoids an extra geometry query during ordinary movement.
+    if (current.z>=previous.z-0.35f || glm::length(previous-safe)>0.5f) return false;
+    const auto crossed = [&](std::optional<float> floor) {
+        return floor && crossedConfirmedGroundPlane(previous,current,safe,*floor);
+    };
+    if (wmoRenderer) {
+        float normal=1.f;
+        const auto floor=wmoRenderer->getFloorHeight(current.x,current.y,safe.z+0.35f,
+            &normal,safe.z,MIN_WALKABLE_NORMAL_WMO);
+        if (normal>=MIN_WALKABLE_NORMAL_WMO && crossed(floor)) return true;
+    }
+    if (m2Renderer) {
+        float normal=1.f;
+        const auto floor=m2Renderer->getFloorHeight(current.x,current.y,safe.z+0.35f,&normal);
+        if (normal>=MIN_WALKABLE_NORMAL_M2 && crossed(floor)) return true;
+    }
+    return terrainManager && !terrainManager->isHoleAt(current.x,current.y) &&
+           crossed(terrainManager->getHeightAt(current.x,current.y));
+}
+
+std::optional<glm::vec3> CameraController::getValidatedRecoveryPosition() const {
+    if (!groundRecovery_.enabled() || !groundRecovery_.hasPosition()) return std::nullopt;
+    auto safe = groundRecovery_.position();
+    std::optional<float> support;
+    const auto consider = [&](std::optional<float> height) {
+        if (height && std::isfinite(*height) && std::abs(*height-safe.z)<=0.35f &&
+            (!support || std::abs(*height-safe.z)<std::abs(*support-safe.z))) support=height;
+    };
+    // Match the old level, not the highest surface overhead. This remains
+    // valid in underground cities and multi-storey WMO-only instances.
+    if (wmoRenderer) {
+        float normal=1.f;
+        const auto floor=wmoRenderer->getFloorHeight(safe.x,safe.y,safe.z+0.35f,
+                                                     &normal,safe.z,MIN_WALKABLE_NORMAL_WMO);
+        if (normal>=MIN_WALKABLE_NORMAL_WMO) consider(floor);
+    }
+    if (m2Renderer) {
+        float normal=1.f;
+        const auto floor=m2Renderer->getFloorHeight(safe.x,safe.y,safe.z+0.35f,&normal);
+        if (normal>=MIN_WALKABLE_NORMAL_M2) consider(floor);
+    }
+    if (terrainManager && !terrainManager->isHoleAt(safe.x,safe.y))
+        consider(terrainManager->getHeightAt(safe.x,safe.y));
+    if (!support) return std::nullopt;
+    safe.z=*support+0.08f;
+    return safe;
+}
+
 void CameraController::teleportTo(const glm::vec3& pos) {
+    resetGroundRecovery();
     setScriptedView(false);
     cancelIntroPan();
     if (!camera) return;

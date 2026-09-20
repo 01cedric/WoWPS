@@ -27,7 +27,17 @@ local rejectCommand=false
 function __WoWPSLocalCommand(name,id,count,...) commands[#commands+1]={name,id,count,...};return not rejectCommand end
 local cursorIcon
 function __WoWPSLocalBankCursorIcon(icon) cursorIcon=icon end
-local function last(name,id,count)local c=commands[#commands];assert(c[1]==name and c[2]==id and c[3]==count)end
+local function last(name,id,count,...)local c=commands[#commands];local extra={...}
+    local function saw() return c and (tostring(c[1])..'/'..tostring(c[2])..'/'..tostring(c[3])) or 'no command' end
+    assert(c and c[1]==name and c[2]==id and c[3]==count,
+        'expected '..tostring(name)..'/'..tostring(id)..'/'..tostring(count)..' but saw '..saw())
+    -- Slot-exact bank commands carry the snapshot the authority revalidates;
+    -- a caller that names those arguments has them checked too.
+    for k=1,select('#',...) do
+        assert(c[3+k]==extra[k],'argument '..(3+k)..' of '..tostring(name)..' is '..tostring(c[3+k])..
+            ', expected '..tostring(extra[k]))
+    end
+end
 __WoWPSLocal={bags={{id=117,count=6,name='Bread',icon='bread',equip=0}},bank={[2]={id=2392,count=3,name='Chest',icon='chest'}},bankOpen=true,banker=true,
     professions={{id=164,name='Blacksmithing',rank=23,max=75,primary=true},{id=129,name='First Aid',rank=4,max=75,primary=false}},
     trainer=true,trainerSkill=164,training={{id=164,name='Journeyman',action='train_rank',cost=500}},craftSkill=164,
@@ -36,15 +46,19 @@ assert(GetContainerNumSlots(-1)==28 and GetContainerNumFreeSlots(-1)==27 and Get
 assert(GetContainerItemID(-1,1)==nil and GetContainerItemID(-1,2)==2392)
 assert(GetInventoryItemTexture('player',41)=='chest' and GetInventoryItemCount('player',41)==3)
 assert(GetItemCount(2392)==0 and GetItemCount('item:2392',true)==3)
-assert(UseContainerItem(0,1));last('bank_deposit',117,6)
+-- Using a bag stack at an open bank deposits that exact cell, so the command
+-- names the bag slot and carries the item/count snapshot it was taken from.
+assert(UseContainerItem(0,1));last('bank_deposit_from_slot',1,6,117,6)
 local before=#commands
 assert(PickupContainerItem(-1,2) and CursorHasItem() and GetCursorInfo()=='item' and cursorIcon=='chest')
 assert(#commands==before) -- Pickup is not a transfer.
 assert(PickupContainerItem(-1,1));last('bank_move',2,3)
 local c=commands[#commands];assert(c[4]==1 and c[5]==2392 and c[6]==0 and c[7]==3 and c[8]==0)
 assert(not CursorHasItem() and cursorIcon=='')
-assert(SplitContainerItem(-1,2,1) and CursorHasItem());assert(PickupContainerItem(0,3));last('bank_withdraw',2,1)
-assert(commands[#commands][4]==2392 and commands[#commands][5]==3)
+-- Dropping a held bank stack on a chosen bag cell withdraws into that cell:
+-- source slot, amount, destination cell, then the item/count snapshot pair.
+assert(SplitContainerItem(-1,2,1) and CursorHasItem());assert(PickupContainerItem(0,3));last('bank_withdraw_slot',2,1,3,2392,0,3,0)
+assert(commands[#commands][5]==2392 and commands[#commands][7]==3)
 assert(PickupInventoryItem(41) and CursorHasItem());ClearCursor();assert(not CursorHasItem() and cursorIcon=='')
 assert(UseInventoryItem(41));last('bank_withdraw',2,3)
 assert(BankButtonIDToInvSlotID(2)==41 and BankButtonIDToInvSlotID(1,true)==68)
@@ -69,7 +83,9 @@ assert(PickupContainerItem(-1,2));__WoWPSLocal.bankNpc='different';assert(not Cu
 assert(__WoWPSLocal.bags[1].count==6 and __WoWPSLocal.bank[2].count==3) -- Await authority, no optimistic item mutation.
 BankFrameItem2={GetID=function()return 2 end};assert(WoWPS_LocalBankActivate('BankFrameItem2') and CursorHasItem())
 ContainerFrame1Item1={GetID=function()return 1 end,GetParent=function()return {GetID=function()return 0 end}end}
-assert(WoWPS_LocalBankActivate('ContainerFrame1Item1'));last('bank_withdraw',2,3)
+-- A held bank stack dropped on a bag cell withdraws into that exact cell and
+-- carries both sides of the snapshot the authority revalidates.
+assert(WoWPS_LocalBankActivate('ContainerFrame1Item1'));last('bank_withdraw_slot',2,3,1,2392,117,3,6)
 assert(WoWPS_LocalBankActivate('ContainerFrame1Item1') and CursorHasItem());assert(PickupContainerItem(-1,1));last('bank_deposit_slot',1,6)
 assert(GetNumBankSlots()==0 and GetBankSlotCost()==0)
 assert(PickupInventoryItem(41));CloseBankFrame();assert(not CursorHasItem());last('bank_close',0,0)

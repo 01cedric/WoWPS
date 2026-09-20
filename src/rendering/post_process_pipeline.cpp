@@ -1,3 +1,4 @@
+#include "rendering/volumetric_status.hpp"
 // PostProcessPipeline - FSR 1.0, FXAA, FSR 2.2/3 state and passes (§4.3)
 // Extracted from Renderer to isolate post-processing concerns.
 
@@ -13,6 +14,7 @@
 #include "rendering/ps4_scene_extent.hpp"
 #endif
 #include <cstdlib>
+#include <cstring>
 #include <algorithm>
 #include <glm/gtc/matrix_inverse.hpp>
 
@@ -64,7 +66,9 @@ bool PostProcessPipeline::needsFXAAPass() const {
         if (scene.width != output.width || scene.height != output.height) return true;
     }
 #endif
-    return fxaa_.enabled || intoxication_ > 0.001f;
+    return fxaa_.enabled || intoxication_ > 0.001f ||
+        (worldRendering_ && volumetric_.quality > 0 && !volumetric_.failed) ||
+        (worldRendering_ && bloom_.enabled && bloom_.intensity > 0.0f && !bloom_.failed);
 }
 
 void PostProcessPipeline::setWorldRendering(bool active) {
@@ -147,6 +151,29 @@ void PostProcessPipeline::manageResources() {
             LOG_WARNING("PS4 scene allocation failed: native rendering until next mode change; no per-frame retry");
 #endif
         }
+    }
+    const bool needVolume = worldRendering_ && volumetric_.quality > 0 &&
+        !volumetric_.failed && fxaa_.sceneFramebuffer && !fsr2_.enabled &&
+        vkCtx_->getMsaaSamples() == VK_SAMPLE_COUNT_1_BIT;
+    if ((!needVolume || volumetric_.needsRecreate) && volumetric_.renderPass &&
+        vkCtx_->waitIdleForResourceChange("volumetric resources"))
+        destroyVolumetricResources();
+    if (needVolume && !volumetric_.renderPass && !initVolumetricResources()) {
+        destroyVolumetricResources();
+        volumetric_.failed = true;
+        LOG_WARNING("Volumetric lighting unavailable; existing scene retained. Change quality to retry.");
+    }
+    const bool needBloom = worldRendering_ && bloom_.enabled && bloom_.intensity > 0.0f &&
+        !bloom_.failed && fxaa_.sceneFramebuffer && !fsr2_.enabled;
+    if (!needBloom && bloom_.renderPass) {
+        if (!vkCtx_->waitIdleForResourceChange("bloom resources")) return;
+        destroyBloomResources();
+    }
+    if (needBloom && !bloom_.renderPass && !initBloomResources()) {
+        destroyBloomResources(); // newly created resources have never been submitted
+        bloom_.failed = true;
+        bloom_.status = "allocation-or-pipeline-failed";
+        LOG_WARNING("Bloom unavailable; scene retained. Toggle Bloom to retry.");
     }
 }
 
@@ -260,6 +287,17 @@ bool PostProcessPipeline::executePostProcessing(VkCommandBuffer cmd, uint32_t im
     camera_ = camera;
     lastDeltaTime_ = deltaTime;
     bool inlineMode = false;
+    bloom_.rendered = false;
+    bloom_.status = !bloom_.enabled ? "disabled" : bloom_.intensity <= 0.0f ? "zero-intensity" :
+        !worldRendering_ ? "not-world" : fsr2_.enabled ? "unsupported-fsr2-route" :
+        bloom_.failed ? "allocation-or-pipeline-failed" : "no-scene-target";
+    volumetric_.rendered = false;
+    volumetric_.status = volumetricFrameStatus(volumetric_.quality, worldRendering_, camera_ != nullptr,
+        fsr2_.enabled, vkCtx_->getMsaaSamples() != VK_SAMPLE_COUNT_1_BIT,
+        volumetric_.allowed, volumetric_.blockedReason, volumetric_.failed,
+        volumetric_.pipeline != VK_NULL_HANDLE, fxaa_.sceneFramebuffer != VK_NULL_HANDLE,
+        glm::dot(volumetric_.lightColor, volumetric_.lightColor) > 1.0e-10f ||
+            (volumetric_.fogEnabled && volumetric_.fogIntensity > 0.0f));
 
     if (fsr2_.enabled && fsr2_.sceneFramebuffer) {
         // End the off-screen scene render pass
@@ -398,11 +436,18 @@ bool PostProcessPipeline::executePostProcessing(VkCommandBuffer cmd, uint32_t im
         // End the off-screen scene render pass
         vkCmdEndRenderPass(currentCmd_);
 
-        // Transition resolved scene color: PRESENT_SRC_KHR → SHADER_READ_ONLY
-        transitionImageLayout(currentCmd_, fxaa_.sceneColor.image,
-            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        renderVolumetricScattering();
+        if (volumetric_.rendered) {
+            // Composite at scene resolution, then upscale once with the scene.
+            compositeVolumetricScattering();
+        } else {
+            transitionImageLayout(currentCmd_, fxaa_.sceneColor.image,
+                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        }
+
+        renderBloom(); // separate threshold/blur sources, before upscale and UI
 
         // Begin swapchain render pass (1x - no MSAA on the output pass)
         VkRenderPassBeginInfo rpInfo{};
@@ -430,7 +475,7 @@ bool PostProcessPipeline::executePostProcessing(VkCommandBuffer cmd, uint32_t im
         sc.extent = ext;
         vkCmdSetScissor(currentCmd_, 0, 1, &sc);
 
-        // Draw FXAA pass
+        // Upscale the already-composited scene before the native-resolution UI.
         renderFXAAPass();
 
     } else if (fsr_.enabled && fsr_.sceneFramebuffer) {
@@ -1719,6 +1764,7 @@ bool PostProcessPipeline::initFXAAResources() {
     // sceneDepth: depth buffer at current MSAA sample count
     fxaa_.sceneDepth = createImage(device, alloc, ext.width, ext.height,
         depthFmt, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                | (useMsaa ? 0u : VK_IMAGE_USAGE_SAMPLED_BIT)
                 | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, msaa);
     if (!fxaa_.sceneDepth.image) {
         LOG_ERROR("FXAA: failed to create scene depth image");
@@ -1912,6 +1958,8 @@ bool PostProcessPipeline::destroyFXAAResources() {
         return false;
     }
 
+    destroyBloomResources(); // aliases scene color; retire before its image
+    destroyVolumetricResources();
     destroy(device, fxaa_.pipeline);
     destroy(device, fxaa_.pipelineLayout);
     if (fxaa_.descPool)       { vkDestroyDescriptorPool(device, fxaa_.descPool, nullptr);       fxaa_.descPool = VK_NULL_HANDLE; for (auto& s : fxaa_.descSet) s = VK_NULL_HANDLE; }
@@ -1959,6 +2007,9 @@ void PostProcessPipeline::renderFXAAPass() {
 
     vkCmdDraw(currentCmd_, 3, 1, 0, 0);  // fullscreen triangle
 }
+
+#include "post_process_volumetric.inc"
+#include "post_process_bloom.inc"
 
 } // namespace rendering
 } // namespace wowee

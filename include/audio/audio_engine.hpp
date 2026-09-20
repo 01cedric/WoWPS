@@ -1,6 +1,7 @@
 #pragma once
 
 #include <glm/glm.hpp>
+#include "platform/cpu_geometry.hpp"
 #include <memory>
 #include <string>
 #include <vector>
@@ -113,7 +114,7 @@ private:
     struct ActiveSound {
         ma_sound* sound;
         void* buffer;  // ma_audio_buffer* - Keep audio buffer alive
-        std::shared_ptr<const std::vector<uint8_t>> pcmDataRef;  // Keep decoded PCM alive
+        std::shared_ptr<const platform::CpuGeometryVector<uint8_t>> pcmDataRef;  // Keep decoded PCM alive
         uint32_t id = 0;  // 0 = anonymous (not stoppable)
     };
     std::vector<ActiveSound> activeSounds_;

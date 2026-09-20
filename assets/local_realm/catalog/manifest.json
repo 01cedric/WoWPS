@@ -4123,8 +4123,8 @@
       "sha256": "3ac7586f8c9c8d4141962af6379e85819b9f6bd4b3238c0f476981ec73f9bbf7"
     },
     "npcs.pack": {
-      "bytes": 4612671,
-      "sha256": "5e8cd2d8ddcacb4cc11d497f33b851b3b568b852a0900224a09836e2b055b1ca"
+      "bytes": 5286572,
+      "sha256": "2e664ec2be6b868d564841d3092508f21960b42d96d65cc85d0961cdbae753cd"
     },
     "quests.pack": {
       "bytes": 398723,
@@ -4135,5 +4135,5 @@
       "sha256": "48fcd57a6370a8b5717a2a6d8d5e279a9879ea4e853499fe5b8ed0f1d4cf3c98"
     }
   },
-  "fingerprint": 2494908404
+  "fingerprint": 1819708182
 }

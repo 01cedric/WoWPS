@@ -1,3 +1,8 @@
+#include "core/release_cache_storage.hpp"
+#include "game/local_regeneration_rates.hpp"
+#include "game/local_forms.hpp"
+#include "game/local_melee.hpp"
+#include "game/local_realm.hpp"
 #include "game/local_chat_client.hpp"
 #include "game/local_realm.hpp"
 #include "game/local_party_client.hpp"
@@ -217,21 +222,26 @@ void GameHandler::disconnect() {
 }
 
 void GameHandler::resetDbcCaches() {
+    // These live on GameHandler, which survives a renderer/session reset.
+    // clear() destroys elements but keeps bucket/vector storage indefinitely.
+    const size_t cachedEntries = spellNameCache_.size() + skillLineNames_.size() + skillLineCategories_.size() + spellToSkillLine_.size() + taxiNodes_.size() + taxiPathEdges_.size() + taxiPathNodes_.size() + areaTriggers_.size() + activeAreaTriggers_.size() + talentCache_.size() + talentTabCache_.size();
+    const size_t vectorCapacityBytes = taxiPathEdges_.capacity() * sizeof(TaxiPathEdge)
+        + areaTriggers_.capacity() * sizeof(AreaTriggerEntry);
     spellNameCacheLoaded_ = false;
-    spellNameCache_.clear();
+    core::releaseCacheStorage(spellNameCache_);
     skillLineDbcLoaded_ = false;
-    skillLineNames_.clear();
-    skillLineCategories_.clear();
+    core::releaseCacheStorage(skillLineNames_);
+    core::releaseCacheStorage(skillLineCategories_);
     skillLineAbilityLoaded_ = false;
-    spellToSkillLine_.clear();
-    taxiNodes_.clear();
-    taxiPathEdges_.clear();
-    taxiPathNodes_.clear();
+    core::releaseCacheStorage(spellToSkillLine_);
+    core::releaseCacheStorage(taxiNodes_);
+    core::releaseCacheStorage(taxiPathEdges_);
+    core::releaseCacheStorage(taxiPathNodes_);
     areaTriggerDbcLoaded_ = false;
-    areaTriggers_.clear();
-    activeAreaTriggers_.clear();
-    talentCache_.clear();
-    talentTabCache_.clear();
+    core::releaseCacheStorage(areaTriggers_);
+    core::releaseCacheStorage(activeAreaTriggers_);
+    core::releaseCacheStorage(talentCache_);
+    core::releaseCacheStorage(talentTabCache_);
     // The copies that are actually read live in the sub-handlers - the getters
     // beside these forward there. Clearing only the local ones left the
     // previous expansion's talents and flight points live after a switch.
@@ -247,7 +257,9 @@ void GameHandler::resetDbcCaches() {
     if (am) {
         am->clearDBCCache();
     }
-    LOG_INFO("GameHandler: DBC caches cleared for expansion switch");
+    LOG_INFO("[SESSION_MEMORY] reloadable DBC cache storage released: entries=", cachedEntries,
+             " directVectorCapacityBytes=", vectorCapacityBytes,
+             " (excludes map nodes, buckets and nested values)");
 }
 
 bool GameHandler::isConnected() const {
@@ -766,6 +778,16 @@ void GameHandler::update(float deltaTime) {
             cancelFollow();
         }
     }
+
+    // Local mode has no server UNIT_FIELD_FLAGS updates. Publish one edge
+    // from the same authority-derived combat state used by local services.
+    if(localExploration_) {
+        const bool combat=isInCombat();
+        if(!localCombatInitialized_||combat!=localCombatState_) {
+            if(addonEventCallback_&&(localCombatInitialized_||combat))addonEventCallback_(combat?"PLAYER_REGEN_DISABLED":"PLAYER_REGEN_ENABLED",{});
+            localCombatInitialized_=true;localCombatState_=combat;
+        }
+    } else localCombatInitialized_=false;
 
     // Entering and leaving combat is fired from the update block that carries
     // UNIT_FLAG_IN_COMBAT, in EntityController - not from here.
@@ -2245,6 +2267,7 @@ float GameHandler::getMeleeCritFromAgility() const {
 }
 
 float GameHandler::getSpellCritFromIntellect() const {
+    if(const auto* realm=localServiceRealm())if(const auto* p=realm->localPlayer())return localSpellCritFromIntellect(*p,realm->content());
     return critPercentFromGameTable(gtSpellCritBase_, gtSpellCrit_, gtSpellCritLoaded_,
                                     "gtChanceToSpellCritBase.dbc", "gtChanceToSpellCrit.dbc",
                                     3 /* STAT_INTELLECT */);
@@ -2259,6 +2282,7 @@ void loadFloatColumn(pipeline::AssetManager* am, const char* dbc, std::vector<fl
 }  // namespace
 
 float GameHandler::getHealthRegenFromSpirit() const {
+    if(const auto* realm=localServiceRealm())if(const auto* p=realm->localPlayer())return float(2*localRegenerationRates(*p,realm->content()).healthSpiritPerSecond);
     const uint8_t pclass = getPlayerClass();
     uint32_t level = getPlayerLevel();
     if (pclass == 0 || pclass > 11 || level == 0) return 0.0f;
@@ -2281,6 +2305,7 @@ float GameHandler::getHealthRegenFromSpirit() const {
 }
 
 float GameHandler::getManaRegenFromSpirit() const {
+    if(const auto* realm=localServiceRealm())if(const auto* p=realm->localPlayer())return float(localRegenerationRates(*p,realm->content()).manaSpiritCoefficient);
     const uint8_t pclass = getPlayerClass();
     uint32_t level = getPlayerLevel();
     if (pclass == 0 || pclass > 11 || level == 0) return 0.0f;
@@ -2294,6 +2319,7 @@ float GameHandler::getManaRegenFromSpirit() const {
 }
 
 float GameHandler::getCombatRatingBonus(int cr) const {
+    if(const auto* realm=localServiceRealm())if(const auto* p=realm->localPlayer())return localMeleeRatingBonus(*p,realm->content(),cr);
     const uint8_t pclass = getPlayerClass();
     uint32_t level = getPlayerLevel();
     constexpr uint32_t kGtMaxLevel = 100, kGtMaxRating = 32;
@@ -3272,6 +3298,7 @@ void GameHandler::rebuildCompanions() const {
 }
 
 uint32_t GameHandler::getBonusActionBarOffset() const {
+    if(auto* realm=localServiceRealm())if(const auto* player=realm->localPlayer())if(const auto* f=localActiveForm(*player))return f->bar;
     const uint8_t form = shapeshiftFormId_;
     if (form == 0) return 0;
 

@@ -143,4 +143,18 @@ int main() {
     }
     std::puts("PASS minimap opacity: finite values clamped to the display range");
 
+    // Actual production draw constants must be unchanged when tilting from
+    // ground to sky. Lighting has no binding in the display shader.
+    map=good; map.opacity_=1.f;
+    std::vector<unsigned char> baseline;
+    for(float pitch : {-1.55f,-.8f,0.f,.8f,1.55f}) {
+        camera.forward={0,std::cos(pitch),std::sin(pitch)};
+        recorded={};
+        map.render(VK_NULL_HANDLE,camera,{100,200,30},1920,1080,{1920,1080},.7f,true);
+        require(recorded.draws==1,"ground-to-sky tilt keeps minimap visible");
+        if(baseline.empty()) baseline=recorded.push;
+        require(recorded.push==baseline,"camera pitch leaves HUD display constants identical");
+    }
+    std::puts("PASS minimap camera pitch: actual render constants identical from ground to sky at fixed player position/yaw");
+
 }

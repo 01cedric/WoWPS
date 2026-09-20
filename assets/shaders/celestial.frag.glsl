@@ -37,7 +37,7 @@ void main() {
     if (!isMoon) {
         // ---------------- Sun ----------------
         // Hard disc with smooth edge
-        float disc = smoothstep(0.35, 0.28, dist);
+        float disc = (1.0 - smoothstep(0.28, 0.35, dist));
 
         // Soft glow confined within cutoff radius
         float glow = exp(-dist * dist * 40.0) * 0.5;
@@ -56,7 +56,7 @@ void main() {
     } else {
         // ---------------- Moon ----------------
         const float r = 0.30;              // moon disc radius in UV space
-        float disc = smoothstep(r, r - 0.02, dist);
+        float disc = (1.0 - smoothstep(r - 0.02, r, dist));
         float d = min(dist / r, 1.0);
 
         // Sphere normal for the disc point

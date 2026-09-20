@@ -13,6 +13,7 @@
 #include "core/coordinates.hpp"
 #include "core/logger.hpp"
 #include "rendering/renderer.hpp"
+#include "rendering/post_process_pipeline.hpp"
 #include "rendering/animation_controller.hpp"
 #include "rendering/vk_context.hpp"
 #include "rendering/camera.hpp"
@@ -1362,6 +1363,25 @@ void WorldLoader::loadOnlineWorldTerrain(uint32_t mapId, float x, float y, float
     }
 
     showProgress("Entering world...", 1.0f);
+
+#ifdef WOWEE_PS4
+    // The final loading frame has been presented. Prepare the world-sized
+    // scene, volumetric and bloom pipelines now, before narration/camera time
+    // starts. Lazy creation in the first world beginFrame cost ~402 ms in the
+    // supplied trace. No acquired frame is replaced: manageResources enforces
+    // that ownership guard and preserves the normal allocation-failure path.
+    if (renderer_) {
+        if (auto* postProcess = renderer_->getPostProcessPipeline()) {
+            const auto prepareStart = std::chrono::steady_clock::now();
+            postProcess->setWorldRendering(true);
+            postProcess->manageResources();
+            LOG_INFO("[WORLD_RENDER_PREWARM] postProcessMs=",
+                     std::chrono::duration<double, std::milli>(
+                         std::chrono::steady_clock::now() - prepareStart).count(),
+                     " phase=final-loading-frame");
+        }
+    }
+#endif
 
     // Ensure all GPU resources (textures, buffers, pipelines) created during
     // world load are fully flushed before the first render frame. Without this,

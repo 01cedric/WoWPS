@@ -1,5 +1,6 @@
 #pragma once
 #include "rendering/ps4_world_budget.hpp"
+#include "rendering/render_setting_bridge.hpp"
 
 /// The graphics defaults a fresh install starts at.
 ///
@@ -16,8 +17,12 @@ namespace wowee::ui {
 
 #ifdef WOWEE_PS4
 inline constexpr float kDefaultViewDistance = rendering::ps4budget::kDefaultViewDistance;
+// The console's 720p world target requires single sampling. MSAA selects the
+// native-resolution water continuation path, defeating the world pixel budget.
+inline constexpr int kDefaultAntiAliasing = 0;
 #else
 inline constexpr float kDefaultViewDistance = 1900.0f;
+inline constexpr int kDefaultAntiAliasing = 1;
 #endif
 inline constexpr int   kDefaultGroundClutter = 70;
 

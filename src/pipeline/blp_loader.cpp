@@ -51,13 +51,12 @@ bool BLPImage::hasTransparency() const {
 
     if (compression == BLPCompression::DXT5) {
         // Sixteen bytes per block: two alpha endpoints, then three bits per
-        // texel selecting one of eight. Every interpolant lies between the
-        // endpoints, so two opaque endpoints make the whole block opaque and
-        // the indices need not be read.
+        // texel selecting one of eight. When a0 <= a1 the last two entries
+        // are explicit 0/255, even when both endpoints are 255. Inspect the
+        // selectors in that case too: selector 6 still means transparent.
         for (size_t at = 0; at + 16 <= blocks.size(); at += 16) {
             const uint8_t a0 = blocks[at];
             const uint8_t a1 = blocks[at + 1];
-            if (a0 == 255 && a1 == 255) continue;
 
             uint8_t palette[8] = {a0, a1};
             if (a0 > a1) {

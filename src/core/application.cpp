@@ -1,4 +1,7 @@
+#include "game/local_talents.hpp"
+#include "game/local_spell_range.hpp"
 #include "core/application.hpp"
+#include "core/local_form_assets.hpp"
 #include "core/character_intro.hpp"
 #include "game/local_spell_import.hpp"
 #include "core/env_flag.hpp"
@@ -31,6 +34,7 @@
 #include <utility>
 #include "core/logger.hpp"
 #include "core/memory_monitor.hpp"
+#include "platform/cpu_geometry.hpp"
 #include "rendering/renderer.hpp"
 #include "rendering/vk_context.hpp"
 #include "audio/npc_voice_manager.hpp"
@@ -92,6 +96,7 @@
 #include "platform/ps4/ps4_platform.hpp"
 #include "platform/ps4/extract_ps4.hpp"
 #include "platform/ps4/cpu_memory.hpp"
+#include "platform/ps4/heap_growth.hpp"
 #include "rendering/frame_timing_window.hpp"
 #include "rendering/post_process_pipeline.hpp"
 #endif
@@ -1001,7 +1006,10 @@ bool Application::initialize() {
                             auto power=spell->resourceType;
                             if (power==255) { const auto* player=localRealm_->localPlayer();
                                 power=player ? static_cast<uint8_t>(player->resourceType) : 0; }
-                            return {spell->castTimeMs,spell->minRange,spell->range,spell->mana,power};
+                            const auto* player=localRealm_->localPlayer();
+                            return {player?game::localSpellCastTime(*player,localRealm_->content(),*spell):spell->castTimeMs,
+                                spell->minRange,player?game::localSpellMaximumRange(*player,localRealm_->content(),*spell):spell->range,
+                                player?game::localSpellResourceCost(*player,localRealm_->content(),*spell):spell->mana,power};
                         }
                         return {};
                     }
@@ -1553,7 +1561,8 @@ void Application::run() {
                                 engine->widgets().layout(static_cast<float>(newWidth),
                                                          static_cast<float>(newHeight));
                         }
-                        addonManager_->fireEvent("DISPLAY_SIZE_CHANGED");
+                        // The shared FrameXML layout stage publishes display
+                        // changes for both SDL and PS4/CVar transitions.
                     }
                 }
                 // Sound in Background. Off in the real client and off here:
@@ -1897,6 +1906,7 @@ void Application::run() {
                 ps4RenderEnd, std::chrono::steady_clock::now());
             if (ps4WorldTiming.ready()) {
                 const auto cpu = platform::ps4::queryAvailableCpuMemory();
+                const auto geometryMemory = platform::cpuGeometryStats();
                 const auto* terrain = renderer->getTerrainRenderer();
                 const auto* tm = renderer->getTerrainManager();
                 // The Lua engine owns the widget tree and the per-frame passes
@@ -1908,6 +1918,9 @@ void Application::run() {
                 const auto position = renderer->getCharacterPosition();
                 const auto camera = renderer->getCamera()
                     ? renderer->getCamera()->getPosition() : position;
+                const auto* post = renderer->getPostProcessPipeline();
+                const auto sceneExtent = post ? post->getSceneRenderExtent()
+                    : renderer->getVkContext()->getSwapchainExtent();
                 if (localRealm_ && localRealm_->ready()) {
                     size_t bots = 0;
                     for (const auto& peer : localRealm_->players())
@@ -1922,7 +1935,34 @@ void Application::run() {
                 LOG_INFO("[WORLD_PERF] loopFps=", ps4WorldTiming.fps(),
                     " frameMeanMs=", ps4WorldTiming.elapsed * 1000 / ps4WorldTiming.frames,
                     " frameMaxMs=", ps4WorldTiming.maxFrameMs,
+                    " frameP50Ms=", ps4WorldTiming.percentile(0.50),
+                    " frameP95Ms=", ps4WorldTiming.percentile(0.95),
+                    " frameP99Ms=", ps4WorldTiming.percentile(0.99),
+                    " percentileSamples=", ps4WorldTiming.sampleCount,
+                    " timingDomain=cpu-wall passSamples=last-frame",
+                    " gpuTimingStatus=", renderer->getVkContext()->getGpuTimingStatus(),
+                    " gpuTimingValid=", renderer->getVkContext()->hasValidGpuTimings() ? 1 : 0,
+                    " sceneWidth=", sceneExtent.width, " sceneHeight=", sceneExtent.height,
+                    " msaa=", static_cast<unsigned>(renderer->getVkContext()->getMsaaSamples()),
+                    " frameCap=", window ? window->frameCap() : 0,
+                    " vsync=", window && window->isVsyncEnabled() ? 1 : 0,
+                    " shadowQuality=", renderer->getShadowQuality(),
+                    " shadowDistance=", renderer->getShadowDistance(),
+                    " volumetricQuality=", post ? post->getVolumetricQuality() : 0,
+                    " volumetricRendered=", post && post->wasVolumetricRendered() ? 1 : 0,
+                    " volumetricStatus=", post ? post->getVolumetricStatus() : "no-post-process",
+                    " raysEnabled=", post && post->isVolumetricRaysEnabled() ? 1 : 0,
+                    " volumetricFogEnabled=", post && post->isVolumetricFogEnabled() ? 1 : 0,
+                    " volumetricFogIntensity=", post ? post->getVolumetricFogIntensity() : 0.0f,
+                    " bloomEnabled=", post && post->isBloomEnabled() ? 1 : 0,
+                    " bloomIntensity=", post ? post->getBloomIntensity() : 0.0f,
+                    " bloomRendered=", post && post->isBloomActive() ? 1 : 0,
+                    " bloomStatus=", post ? post->getBloomStatus() : "no-post-process",
                     " over40ms=", ps4WorldTiming.over40ms, "/", ps4WorldTiming.frames,
+                    " targetFps=40 frameBudgetMs=25 over25ms=", ps4WorldTiming.over25ms, "/", ps4WorldTiming.frames,
+                    " updateOver25ms=", ps4WorldTiming.updateOver25ms,
+                    " renderOver25ms=", ps4WorldTiming.renderOver25ms,
+                    " otherAndPacingMeanMs=", ps4WorldTiming.otherAndPacingMs / ps4WorldTiming.frames,
                     " updateMeanMs=", ps4WorldTiming.updateMs / ps4WorldTiming.frames,
                     " renderMeanMs=", ps4WorldTiming.renderMs / ps4WorldTiming.frames,
                     // B39: the render half of that mean, broken down. Without
@@ -1940,12 +1980,8 @@ void Application::run() {
                     " wmoMs=", renderer->getLastWMORenderMs(),
                     " m2Ms=", renderer->getLastM2RenderMs(),
                     " charsMs=", renderer->getLastCharacterRenderMs(),
-                    // Sunbeams. Beside postMs rather than folded into it: the
-                    // pass draws in the gap between the scene and the overlay
-                    // rather than in the post chain, and it is the one figure
-                    // here that is zero for most of a day - so a reading that
-                    // is not zero at night says the fade is wrong, which no
-                    // total containing it could ever show.
+                    // CPU recording time for post-processing, including the
+                    // optional volumetric passes; this is not a GPU timestamp.
                     " postMs=", renderer->getLastPostRenderMs(),
                     // The interface's own cost, which is what the world timers
                     // above were missing: they summed to under 5ms of a 67ms
@@ -1970,19 +2006,46 @@ void Application::run() {
                     " fxOnUpdateMs=", fx ? fx->lastOnUpdateMs() : 0.0,
                     " fxOnUpdateCalls=", fx ? fx->lastOnUpdateCalls() : size_t{0},
                     " flexibleFreeMiB=", cpu.bytes / (1024 * 1024), " measured=", cpu.measured,
+                    " geometryDirectMiB=", geometryMemory.mappedBytes / (1024 * 1024),
+                    " geometryPeakMiB=", geometryMemory.peakBytes / (1024 * 1024),
+                    " geometryAllocFailures=", geometryMemory.allocationFailures,
                     " tiles=", tm ? tm->getLoadedTileCount() : 0,
                     " pending=", tm ? tm->getRemainingTileCount() : 0,
                     " terrainDrawn=", terrain ? terrain->getRenderedChunkCount() : 0,
                     " terrainCulled=", terrain ? terrain->getCulledChunkCount() : 0,
                     " m2Instances=", m2 ? m2->getInstanceCount() : 0,
                     " m2Draws=", m2 ? m2->getDrawCallCount() : 0,
+                    " m2VisibilityTests=", m2 ? m2->getLastVisibilityTestCount() : 0,
+                    " m2ClusterSkipped=", m2 ? m2->getLastClusterSkippedCount() : 0,
                     " wmoDraws=", wmo ? wmo->getDrawCallCount() : 0,
                     " wmoFrustumSkipped=", wmo ? wmo->getLastFrustumCulledGroups() : 0,
-                    " characterDraws=", characters ? characters->lastRenderDrawCount() : 0,
+                    " characterDraws=", characters ? characters->lastSubmittedDrawCount() : 0,
                     " characterPos=", position.x, ",", position.y, ",", position.z,
                     " cameraPos=", camera.x, ",", camera.y, ",", camera.z,
                     " viewDistance=", renderer->getViewDistance(),
                     " discardedFrames=", renderer->getVkContext()->getDiscardedFrameCount());
+                const auto* lightManager = renderer->getLightingManager();
+                if (lightManager) {
+                    const auto& light = lightManager->getLightingParams();
+                    const auto forward = renderer->getCamera() ? renderer->getCamera()->getForward() : glm::vec3(0.0f);
+                    const auto output = renderer->getVkContext()->getSwapchainExtent();
+                    LOG_INFO("[WORLD_SCENE] zone=", renderer->getCurrentZoneId(),
+                        " map=", gameHandler ? gameHandler->getCurrentMapId() : 0,
+                        " hour=", lightManager->getVisualTimeOfDayHours(),
+                        " weather=", renderer->getResolvedWeatherType(),
+                        " weatherIntensity=", renderer->getResolvedWeatherIntensity(),
+                        " playerIndoors=", renderer->isPlayerIndoors() ? 1 : 0,
+                        " cameraIndoors=", renderer->isCameraIndoors() ? 1 : 0,
+                        " sky=", lightManager->getActiveSkyboxPath(),
+                        " ambient=", light.ambientColor.r, ",", light.ambientColor.g, ",", light.ambientColor.b,
+                        " diffuse=", light.diffuseColor.r, ",", light.diffuseColor.g, ",", light.diffuseColor.b,
+                        " solarTravel=", light.directionalDir.x, ",", light.directionalDir.y, ",", light.directionalDir.z,
+                        " cameraForward=", forward.x, ",", forward.y, ",", forward.z,
+                        " fogStart=", light.fogStart, " fogEnd=", light.fogEnd,
+                        " fogStrength=", lightManager->getFogStrength(),
+                        " brightness=", post ? post->getBrightness() : 1.0f,
+                        " outputWidth=", output.width, " outputHeight=", output.height);
+                }
                 ps4WorldTiming.reset();
             }
         } else ps4WorldTiming.reset();
@@ -2594,12 +2657,17 @@ bool Application::rebuildSessionRenderer() {
         VmaTotalStatistics stats{};
         vmaCalculateStatistics(ctx->getAllocator(), &stats);
         LOG_INFO("[SESSION_MEMORY] before renderer release VMA allocationBytes=",
-                 stats.total.statistics.allocationBytes, " allocations=", stats.total.statistics.allocationCount);
+                 stats.total.statistics.allocationBytes, " allocations=", stats.total.statistics.allocationCount,
+                     " blockBytes=", stats.total.statistics.blockBytes,
+                     " blocks=", stats.total.statistics.blockCount);
     }
     if (renderer) renderer->shutdown();
     renderer.reset();
     gameServices_.renderer = nullptr;
     world.reset();
+    // The disconnected handler outlives the old world. Drop its reloadable
+    // DBC copies before allocating the replacement renderer.
+    if (gameHandler) gameHandler->resetDbcCaches();
     if (assetManager) {
         assetManager->trimFileCache(0);
         assetManager->clearDBCCache();
@@ -2612,9 +2680,21 @@ bool Application::rebuildSessionRenderer() {
             VmaTotalStatistics stats{};
             vmaCalculateStatistics(ctx->getAllocator(), &stats);
             LOG_INFO("[SESSION_MEMORY] after renderer release VMA allocationBytes=",
-                     stats.total.statistics.allocationBytes, " allocations=", stats.total.statistics.allocationCount);
+                     stats.total.statistics.allocationBytes, " allocations=", stats.total.statistics.allocationCount,
+                     " blockBytes=", stats.total.statistics.blockBytes,
+                     " blocks=", stats.total.statistics.blockCount);
         }
     }
+#ifdef WOWEE_PS4
+    const auto resetHeap = platform::ps4::heapGrowthStats();
+    const auto resetMemory = platform::ps4::queryAvailableCpuMemory();
+    char resetCheckpoint[320];
+    std::snprintf(resetCheckpoint, sizeof(resetCheckpoint),
+        "session rebuild: renderer creation; flexibleBytes=%zu measured=%d arenaMappedCumulative=%zu extensions=%zu largestMapping=%zu mappingFailures=%zu",
+        resetMemory.bytes, int(resetMemory.measured), resetHeap.mappedBytes,
+        resetHeap.extensions, resetHeap.largestMapping, resetHeap.mappingFailures);
+    platform::ps4::reportBootStage(resetCheckpoint);
+#endif
     LOG_INFO("[SESSION_RESET] old world renderer, models, textures, effects and workers destroyed");
     renderer = std::make_unique<rendering::Renderer>();
     if (!renderer->initialize(window.get())) return false;
@@ -2654,6 +2734,7 @@ void Application::performLogoutToLogin() {
     characterIntro_.reset();
     introPositionRevision_ = 0;
     introReturning_ = introCompleteOnReturn_ = introBuffering_ = introSkipRequested_ = false;
+    introSceneVisible_ = false;
     introNarrationStarted_ = false;
     introNarrationShot_ = static_cast<size_t>(-1);
     introWaitSeconds_ = introPendingAdvanceSeconds_ = introUiElapsed_ = 0.0f;
@@ -3526,7 +3607,7 @@ void Application::syncRenderInstancesToEntities(float deltaTime) {
                 float dz = std::abs(renderPos.z - prevPos.z);
 
                 auto unitPtr = std::static_pointer_cast<game::Unit>(entity);
-                const bool deadOrCorpse = unitPtr->getHealth() == 0;
+                const bool deadOrCorpse = unitPtr->getHealth() == 0 && !gameHandler->isLocalGhostUnit(guid);
                 const bool largeCorrection = (planarDistSq > 36.0f) || (dz > 3.0f);
                 // Use isActivelyMoving() so Run/Walk animation stops when the
                 // creature reaches its destination. Don't use position-change
@@ -3719,7 +3800,7 @@ void Application::syncRenderInstancesToEntities(float deltaTime) {
                 float dz = std::abs(renderPos.z - prevPos.z);
 
                 auto unitPtr = std::static_pointer_cast<game::Unit>(entity);
-                const bool deadOrCorpse = unitPtr->getHealth() == 0;
+                const bool deadOrCorpse = unitPtr->getHealth() == 0 && !gameHandler->isLocalGhostUnit(guid);
                 const bool largeCorrection = (planarDistSq > 36.0f) || (dz > 3.0f);
                 const bool entityIsMoving = entity->isActivelyMoving();
                 constexpr float kMoveThreshSq2 = 0.03f * 0.03f;
@@ -4300,6 +4381,14 @@ void Application::update(float deltaTime) {
         auto rendererUpdateStart = std::chrono::steady_clock::now();
         bool rendererUpdateSucceeded = false;
         try {
+            if (auto* cc = renderer->getCameraController()) {
+                const auto* self = localRealm_ ? localRealm_->localPlayer() : nullptr;
+                const bool ghost = self && self->ghost;
+                const bool eligible = self && (!self->dead || ghost) && !self->flight.active &&
+                    !self->transportEntry && !characterIntroOwnsView();
+                cc->setGroundRecoveryContext(self ? self->mapId : UINT32_MAX, eligible, ghost);
+            }
+            if (localRealm_) localRealm_->setLocalZone(renderer->getCurrentZoneId());
             renderer->update(deltaTime);
             rendererUpdateSucceeded = true;
         } catch (const std::bad_alloc& e) {
@@ -4307,10 +4396,26 @@ void Application::update(float deltaTime) {
             // Persistent streaming work keeps owned partial state for retry;
             // it must not be submitted or retired a second time. Diagnostics
             // here must not allocate from the heap that just failed.
-            std::fprintf(stderr, "[RENDERER_MEMORY] renderer update allocation failure: %s\n", e.what());
+            // Persist the original stage before recovery does any work. stderr
+            // alone was absent from the supplied on-console crash files.
+            char failureStage[256];
+            const auto geometryMemory = platform::cpuGeometryStats();
+            std::snprintf(failureStage, sizeof(failureStage),
+                "[RENDERER_MEMORY] update stage=%s failure=%s geometryMiB=%zu failures=%zu attempt=%u",
+                renderer->getLastUpdateStage(), e.what(),
+                geometryMemory.mappedBytes / (1024 * 1024), geometryMemory.allocationFailures,
+                rendererUpdateOomFrames_ + 1);
+#ifdef WOWEE_PS4
+            platform::ps4::reportBootStage(failureStage);
+#else
+            std::fprintf(stderr, "%s\n", failureStage);
+#endif
+            updateCheckpoint = "renderer recovery: cache trim";
             if (assetManager) assetManager->trimFileCache();
+            updateCheckpoint = "renderer recovery: upload completion";
             if (renderer->getVkContext())
                 renderer->getVkContext()->finishInterruptedUploadBatch();
+            updateCheckpoint = "renderer recovery: retry limit";
             constexpr unsigned kGiveUpAfterConsecutiveOomFrames = 30;
             if (++rendererUpdateOomFrames_ >= kGiveUpAfterConsecutiveOomFrames) {
                 std::fprintf(stderr, "[RENDERER_MEMORY] giving up after %u consecutive allocation failures\n",
@@ -5073,6 +5178,17 @@ void Application::render() {
             // down first, so every player's name and health bar in the world
             // showed through the bags and the auction house.
             widgetRenderer_.layout(engine->widgets(), io.DisplaySize.x, io.DisplaySize.y);
+            const auto displayChanges = engine->widgets().consumeDisplayChanges();
+            if (displayChanges) {
+                LOG_INFO("[FRAMEXML_DISPLAY] pixels=",io.DisplaySize.x,"x",io.DisplaySize.y,
+                    " scale=",engine->widgets().uiScale()," inset=",engine->widgets().safeAreaInset(),
+                    " changes=",displayChanges);
+                if (displayChanges & 1) addonManager_->fireEvent("DISPLAY_SIZE_CHANGED");
+                if (displayChanges & 2) addonManager_->fireEvent("UI_SCALE_CHANGED");
+                // Event handlers can reposition bag columns and other panels;
+                // settle those anchors before this frame's hit testing.
+                widgetRenderer_.layout(engine->widgets(), io.DisplaySize.x, io.DisplaySize.y);
+            }
 
             // The client's own interface has first claim, but only over the
             // point the cursor is actually on.
@@ -5477,6 +5593,10 @@ void Application::spawnPlayerCharacter() {
     std::string m2Path =
         game::getPlayerModelPath(playerRace_, playerGender_, useFemaleModel);
 
+    uint32_t formDisplay=0;
+    if(gameHandler)if(auto* r=gameHandler->localServiceRealm())if(const auto* p=r->localPlayer())formDisplay=game::localFormDisplay(*p);
+    const auto formAsset=assetManager?localFormAsset(*assetManager,formDisplay):LocalFormAsset{};
+    if(formDisplay){if(formAsset.path.empty()){LOG_ERROR("[LOCAL_FORM_MODEL] Missing form asset ",formDisplay);return;}m2Path=formAsset.path;}
     // Try loading selected character model from MPQ
     if (assetManager && assetManager->isInitialized()) {
         auto m2Data = assetManager->readFile(m2Path);
@@ -5500,8 +5620,9 @@ void Application::spawnPlayerCharacter() {
 
                 // Resolve textures from CharSections.dbc via AppearanceComposer
                 PlayerTextureInfo texInfo;
-                bool useCharSections = true;
-                if (appearanceComposer_) {
+                bool useCharSections = !formDisplay;
+                if(formDisplay)applyLocalFormTextures(model,formAsset);
+                if (appearanceComposer_ && !formDisplay) {
                     uint32_t appearanceBytes = 0;
                     if (gameHandler) {
                         const game::Character* activeChar = gameHandler->getActiveCharacter();
@@ -5624,11 +5745,11 @@ void Application::spawnPlayerCharacter() {
 	        auto activeGeosets = appearanceComposer_
 	            ? appearanceComposer_->buildDefaultPlayerGeosets(raceId, sexId, hairStyleId, facialId)
 	            : std::unordered_set<uint16_t>{};
-	        charRenderer->setActiveGeosets(instanceId, activeGeosets);
+	        if(!formDisplay)charRenderer->setActiveGeosets(instanceId, activeGeosets);
 	        // The player's type 8 slot is filled from CharSections by
 	        // resolvePlayerTextures above, so the head-detail batch has art to
 	        // draw and is worth drawing. Nothing else is set up for it.
-	        charRenderer->setDrawSkinExtra(instanceId, true);
+	        charRenderer->setDrawSkinExtra(instanceId, !formDisplay);
 
         // Play idle animation
         charRenderer->playAnimation(instanceId, rendering::anim::STAND, true);
@@ -5636,7 +5757,7 @@ void Application::spawnPlayerCharacter() {
                 static_cast<int>(spawnPos.x), ", ",
                 static_cast<int>(spawnPos.y), ", ",
                 static_cast<int>(spawnPos.z), ")");
-        playerCharacterSpawned = true;
+        playerCharacterSpawned = true;spawnedFormDisplay_=formDisplay;
 
         // Set voice profile to match character race/gender
         if (auto* asm_ = audioCoordinator_ ? audioCoordinator_->getActivitySoundManager() : nullptr) {
@@ -5672,7 +5793,7 @@ void Application::spawnPlayerCharacter() {
         }
 
         // Load equipped weapons (sword + shield)
-        if (appearanceComposer_) appearanceComposer_->loadEquippedWeapons();
+        if (appearanceComposer_ && !formDisplay) appearanceComposer_->loadEquippedWeapons();
     }
 }
 
@@ -5683,7 +5804,8 @@ void Application::refreshPlayerCharacterModel() {
     // Only rebuild when the visible appearance actually changed. PLAYER_BYTES_2
     // also carries rest state, so the appearance hook fires on entering/leaving
     // inns and cities - a full respawn on those would be needless and jarring.
-    if (ch->appearanceBytes == spawnedAppearanceBytes_ &&
+    uint32_t formDisplay=0;if(auto* r=gameHandler->localServiceRealm())if(const auto* p=r->localPlayer())formDisplay=game::localFormDisplay(*p);
+    if (formDisplay==spawnedFormDisplay_ && ch->appearanceBytes == spawnedAppearanceBytes_ &&
         ch->facialFeatures == spawnedFacialFeatures_) {
         return;
     }

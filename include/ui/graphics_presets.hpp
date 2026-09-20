@@ -65,10 +65,20 @@ struct GraphicsPresetValues {
 // on the way past. Low leans on its short shadow distance instead, which is
 // where the cost actually is.
 constexpr GraphicsPresetValues kGraphicsPresets[] = {
+#ifdef WOWEE_PS4
+    // Preserve the selected 720p/1080p scene path and usable shafts at every
+    // preset. The desktop MSAA levels force a native-size console path and
+    // can multiply pixel work by eight. Saved manual choices remain valid.
+    /* Low    */ {400.0f, true, 100.0f, 0, false, false, 0.6f, false, 0, 25},
+    /* Medium */ {500.0f, true, 160.0f, 0, true,  true,  0.6f, false, 0, 60},
+    /* High   */ {rendering::ps4budget::kMaxViewDistance, true, 240.0f, 0, true, true, 0.8f, true, 0, 100},
+    /* Ultra  */ {rendering::ps4budget::kMaxViewDistance, true, 300.0f, 0, true, true, 1.2f, true, 1, 150},
+#else
     /* Low    */ { .viewDistance = 600.0f, .shadows = true,  .shadowDistance = 100.0f, .antiAliasing = 0, .fxaa = false, .normalMapping = false, .normalMapStrength = 0.6f, .parallax = false, .parallaxQuality = 0,  .groundClutter = 25},
     /* Medium */ {.viewDistance = 1000.0f, .shadows = true,  .shadowDistance = 200.0f, .antiAliasing = 1, .fxaa = false, .normalMapping = true,  .normalMapStrength = 0.6f, .parallax = true,  .parallaxQuality = 0,  .groundClutter = 60},
     /* High   */ {.viewDistance = 1600.0f, .shadows = true,  .shadowDistance = 350.0f, .antiAliasing = 2, .fxaa = false, .normalMapping = true,  .normalMapStrength = 0.8f, .parallax = true,  .parallaxQuality = 1, .groundClutter = 100},
     /* Ultra  */ {.viewDistance = 2400.0f, .shadows = true,  .shadowDistance = 500.0f, .antiAliasing = 3, .fxaa = true,  .normalMapping = true,  .normalMapStrength = 1.2f, .parallax = true,  .parallaxQuality = 2, .groundClutter = 150},
+#endif
 };
 
 /// The number of presets, not counting Custom - which is not a set of values

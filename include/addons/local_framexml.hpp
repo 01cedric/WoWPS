@@ -262,7 +262,6 @@ private:
     /// so the synthetic mouse must not also hold a button down at the same
     /// control - that pairing is the accidental drag this contract replaces.
     bool padCrossHandled_=false;
-    bool targetShouldersReleased_=false;
     bool enabled_=false, installed_=false, closing_=false;
     double snapshotTime_=0;
     uint32_t focus_=0;

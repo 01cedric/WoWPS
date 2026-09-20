@@ -1,3 +1,4 @@
+#include "rendering/stream_load_timing.hpp"
 #include "rendering/terrain_vertex.hpp"
 #include "rendering/shadow_params.hpp"
 #include "rendering/terrain_renderer.hpp"
@@ -318,6 +319,8 @@ void TerrainRenderer::shutdown() {
     for (auto& [path, entry] : textureCache) {
         if (entry.texture) entry.texture->destroy(device, allocator);
     }
+    alphaReuseCache_.clear();
+    alphaLookupCount_ = alphaOpaqueHits_ = 0;
     textureCache.clear();
     textureCacheBytes_ = 0;
     textureCacheCounter_ = 0;
@@ -430,6 +433,7 @@ bool TerrainRenderer::loadTerrainIncremental(const pipeline::TerrainMesh& mesh,
 
         calculateBoundingSphere(gpuChunk, chunk);
 
+        StreamLoadStageScope materialTiming(activeStreamLoadTiming, StreamLoadStage::Materials);
         bindChunkTextures(gpuChunk, chunk, texturePaths, tileX, tileY, cx, cy);
 
         gpuChunk.tileX = tileX;
@@ -470,7 +474,10 @@ bool TerrainRenderer::loadTerrainIncremental(const pipeline::TerrainMesh& mesh,
         uploaded++;
     }
 
-    vkCtx->endUploadBatch();
+    {
+        StreamLoadStageScope submitTiming(activeStreamLoadTiming, StreamLoadStage::UploadSubmit);
+        vkCtx->endUploadBatch();
+    }
 
     return chunkIndex >= 256;
 }
@@ -551,6 +558,7 @@ bool TerrainRenderer::createChunkParamsUBO(TerrainChunkGPU& gpuChunk) {
 }
 
 TerrainChunkGPU TerrainRenderer::uploadChunk(const pipeline::ChunkMesh& chunk) {
+    StreamLoadStageScope geometryTiming(activeStreamLoadTiming, StreamLoadStage::Geometry);
     TerrainChunkGPU gpuChunk;
 
     gpuChunk.worldX = chunk.worldX;
@@ -594,6 +602,7 @@ TerrainChunkGPU TerrainRenderer::uploadChunk(const pipeline::ChunkMesh& chunk) {
 }
 
 VkTexture* TerrainRenderer::loadTexture(const std::string& path) {
+    StreamLoadStageScope lookupTiming(activeStreamLoadTiming, StreamLoadStage::TextureLookup);
     auto normalizeKey = [](std::string key) {
         std::replace(key.begin(), key.end(), '/', '\\');
         std::transform(key.begin(), key.end(), key.begin(),
@@ -605,11 +614,17 @@ VkTexture* TerrainRenderer::loadTexture(const std::string& path) {
     auto it = textureCache.find(key);
     if (it != textureCache.end()) {
         it->second.lastUse = ++textureCacheCounter_;
+        if (activeStreamLoadTiming) ++activeStreamLoadTiming->textureHits;
         return it->second.texture.get();
     }
     // Terrain tileset textures are sampled and never read back, so they go
     // up as blocks with the file's own mip levels.
-    pipeline::BLPImage blp = assetManager->loadTexture(key, true);
+    pipeline::BLPImage blp;
+    {
+        StreamLoadStageScope readTiming(activeStreamLoadTiming, StreamLoadStage::TextureRead);
+        if (activeStreamLoadTiming) ++activeStreamLoadTiming->syncTextures;
+        blp = assetManager->loadTexture(key, true);
+    }
     if (!blp.isValid()) {
         // Return white fallback but don't cache the failure - allow retry
         // on next tile load in case the asset becomes available.
@@ -631,7 +646,12 @@ VkTexture* TerrainRenderer::loadTexture(const std::string& path) {
     }
 
     auto tex = std::make_unique<VkTexture>();
-    if (!tex->uploadBLP(*vkCtx, blp)) {
+    bool uploaded;
+    {
+        StreamLoadStageScope uploadTiming(activeStreamLoadTiming, StreamLoadStage::DiffuseUpload);
+        uploaded = tex->uploadBLP(*vkCtx, blp);
+    }
+    if (!uploaded) {
         LOG_WARNING("Failed to upload texture to GPU: ", path);
         return whiteTexture.get();
     }
@@ -662,11 +682,20 @@ void TerrainRenderer::uploadPreloadedTextures(
 
     for (const auto& [path, blp] : textures) {
         std::string key = normalizeKey(path);
-        if (textureCache.find(key) != textureCache.end()) continue;
+        if (textureCache.find(key) != textureCache.end()) {
+            if (activeStreamLoadTiming) ++activeStreamLoadTiming->textureHits;
+            continue;
+        }
         if (!blp.isValid()) continue;
 
         auto tex = std::make_unique<VkTexture>();
-        if (!tex->uploadBLP(*vkCtx, blp)) continue;
+        bool uploaded;
+        {
+            StreamLoadStageScope uploadTiming(activeStreamLoadTiming, StreamLoadStage::DiffuseUpload);
+            if (activeStreamLoadTiming) ++activeStreamLoadTiming->preparedTextures;
+            uploaded = tex->uploadBLP(*vkCtx, blp);
+        }
+        if (!uploaded) continue;
         tex->createSampler(vkCtx->getDevice(), VK_FILTER_LINEAR, VK_FILTER_LINEAR,
                             VK_SAMPLER_ADDRESS_MODE_REPEAT);
 
@@ -678,19 +707,31 @@ void TerrainRenderer::uploadPreloadedTextures(
         textureCache[key] = std::move(e);
     }
 
-    vkCtx->endUploadBatch();
+    {
+        StreamLoadStageScope submitTiming(activeStreamLoadTiming, StreamLoadStage::UploadSubmit);
+        vkCtx->endUploadBatch();
+    }
 }
 
 VkTexture* TerrainRenderer::createAlphaTexture(const std::vector<uint8_t>& alphaData) {
     if (alphaData.empty()) return opaqueAlphaTexture.get();
 
-    std::vector<uint8_t> expanded;
-    const uint8_t* src = alphaData.data();
-    if (alphaData.size() < 4096) {
-        expanded.assign(4096, 255);
-        std::copy(alphaData.begin(), alphaData.end(), expanded.begin());
-        src = expanded.data();
+    const auto mask = TerrainAlphaCache<VkTexture>::normalize(alphaData);
+    ++alphaLookupCount_;
+    const bool opaque = TerrainAlphaCache<VkTexture>::opaque(mask);
+    VkTexture* reused = nullptr;
+    if (opaque) { ++alphaOpaqueHits_; reused = opaqueAlphaTexture.get(); }
+    else reused = alphaReuseCache_.find(mask);
+    // Bounded receipts expose whether this cache actually helps console data.
+    if (alphaLookupCount_ <= 4 || alphaLookupCount_ % 256 == 0) {
+        LOG_INFO("[TERRAIN_ALPHA_REUSE] requests=", alphaLookupCount_,
+                 " exactHits=", alphaReuseCache_.hits, " opaqueHits=", alphaOpaqueHits_,
+                 " misses=", alphaReuseCache_.misses, " replacements=", alphaReuseCache_.replacements,
+                 " lookupBytes=", alphaReuseCache_.allocatedBytes(),
+                 " avoidedImageUploads=", alphaReuseCache_.hits + alphaOpaqueHits_);
     }
+    if (reused) return reused;
+    const uint8_t* src = mask.data();
 
     auto tex = std::make_unique<VkTexture>();
     if (!tex->upload(*vkCtx, src, 64, 64, VK_FORMAT_R8_UNORM, false)) {
@@ -708,6 +749,7 @@ VkTexture* TerrainRenderer::createAlphaTexture(const std::vector<uint8_t>& alpha
     e.lastUse = ++textureCacheCounter_;
     textureCacheBytes_ += e.approxBytes;
     textureCache[key] = std::move(e);
+    alphaReuseCache_.remember(mask, raw);
 
     return raw;
 }
@@ -973,9 +1015,16 @@ bool TerrainRenderer::initializeShadow(VkRenderPass shadowRenderPass) {
 }
 
 void TerrainRenderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMatrix,
-                                    const glm::vec3& shadowCenter, float shadowRadius) {
+                                    const glm::vec3& /*shadowCenter*/, float /*shadowRadius*/,
+                                    const ShadowReceiverHull* receiverHull) {
     if (!shadowPipeline_ || !shadowParams_.set) return;
     if (chunks.empty()) return;
+
+    // The receiver footprint is not the caster volume: an upstream hillside
+    // can project into it at low sun even outside the old center/radius test.
+    // Use the same finite light volume that clips the actual shadow draw.
+    Frustum lightFrustum;
+    lightFrustum.extractFromMatrix(lightSpaceMatrix);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout_,
@@ -1000,11 +1049,10 @@ void TerrainRenderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSp
     for (const auto& chunk : chunks) {
         if (!chunk.isValid()) continue;
 
-        // Sphere-cull chunk against shadow region
-        glm::vec3 diff = chunk.boundingSphereCenter - shadowCenter;
-        float distSq = glm::dot(diff, diff);
-        float combinedRadius = shadowRadius + chunk.boundingSphereRadius;
-        if (distSq > combinedRadius * combinedRadius) continue;
+        if (!lightFrustum.intersectsSphere(chunk.boundingSphereCenter,
+                                           chunk.boundingSphereRadius)) continue;
+        if (receiverHull && !receiverHull->intersects(chunk.boundingSphereCenter,
+                                                     chunk.boundingSphereRadius)) continue;
 
         if (useMegaShadow && chunk.megaBaseVertex >= 0) {
             // Rebound after a fallback chunk, for the reason given in the main
@@ -1039,9 +1087,58 @@ void TerrainRenderer::removeTile(int tileX, int tileY) {
             ++it;
         }
     }
+    // Also collect masks from failed partial uploads with no published chunk.
+    cleanupUnusedAlphaTextures();
     if (removed > 0) {
         LOG_DEBUG("Removed ", removed, " terrain chunks for tile [", tileX, ",", tileY, "]");
     }
+}
+
+void TerrainRenderer::cleanupUnusedAlphaTextures() {
+    if (!vkCtx || textureCache.empty()) return;
+    // Existing frame fences can predate a just-submitted upload. Prove its
+    // completion independently before relying on frame fences for readers.
+    // Never block travel: periodic cache cleanup retries after streaming.
+    vkCtx->pollUploadBatches();
+    if (!vkCtx->uploadsIdle()) return;
+    // Alpha masks are created synchronously while binding a chunk; unlike
+    // preloaded diffuse textures, no worker/finalizer owns an unbound alpha
+    // image. All published references are in chunks, including partial tiles.
+    // Keep shared masks until the final resident chunk releases its pointer.
+    std::unordered_set<VkTexture*> referenced;
+    for (const auto& chunk : chunks) {
+        referenced.insert(chunk.baseTexture);
+        for (auto* texture : chunk.layerTextures) referenced.insert(texture);
+        for (auto* texture : chunk.alphaTextures) referenced.insert(texture);
+    }
+    const auto orphanAlpha = [&](const auto& item) {
+        return item.first.compare(0, 8, "__alpha_") == 0 &&
+               !referenced.count(item.second.texture.get());
+    };
+    const size_t orphanCount = std::count_if(textureCache.begin(),textureCache.end(),orphanAlpha);
+    if (!orphanCount) return;
+    auto retired = std::make_shared<std::vector<TextureCacheEntry>>();
+    retired->reserve(orphanCount);
+    const auto device = vkCtx->getDevice();
+    const auto allocator = vkCtx->getAllocator();
+    // Queue successfully before transferring ownership. Old chunk
+    // descriptors may still be referenced by submitted graphics frames.
+    // No wait-idle or per-texture fence is introduced by this reclamation.
+    vkCtx->deferAfterAllFrameFences([retired,device,allocator]() {
+        for (auto& entry : *retired)
+            if (entry.texture) entry.texture->destroy(device,allocator);
+    });
+    alphaReuseCache_.forgetIf([&](VkTexture* texture) { return !referenced.count(texture); });
+    size_t released = 0;
+    for (auto it = textureCache.begin(); it != textureCache.end();) {
+        if (!orphanAlpha(*it)) { ++it; continue; }
+        released += it->second.approxBytes;
+        retired->push_back(std::move(it->second));
+        it = textureCache.erase(it);
+    }
+    textureCacheBytes_ -= std::min(textureCacheBytes_,released);
+    LOG_INFO("[STREAM_RECLAIM] terrain orphan alpha images=",orphanCount,
+             " bytes=",released," residentTextureBytes=",textureCacheBytes_);
 }
 
 void TerrainRenderer::clear() {
@@ -1068,6 +1165,8 @@ void TerrainRenderer::clear() {
                 }
             });
     }
+    alphaReuseCache_.clear();
+    alphaLookupCount_ = alphaOpaqueHits_ = 0;
     textureCache.clear();
     textureCacheBytes_ = 0;
     textureCacheCounter_ = 0;

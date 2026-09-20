@@ -1,0 +1,650 @@
+[
+  {
+    "section": "Engine and platform",
+    "status": "✅",
+    "feature": "Native PS4 application and installable `.pkg`",
+    "scope": "Built with the OpenOrbis toolchain for installation on a jailbroken PS4.",
+    "evidence": "README.md:107",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Engine and platform",
+    "status": "✅",
+    "feature": "Vulkan 1.0 ICD over GNM/VideoOut",
+    "scope": "Native console rendering and presentation.",
+    "evidence": "README.md:108",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Engine and platform",
+    "status": "✅",
+    "feature": "Terrain, WMO buildings, M2 objects and animated characters",
+    "scope": "Game objects check live renderer instances and retry failed uploads after a delay. Core world rendering is available. This is not a guarantee that every asset or location is free of errors.",
+    "evidence": "README.md:109",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Engine and platform",
+    "status": "✅",
+    "feature": "Zone and time-of-day lighting",
+    "scope": "Uses `Light.dbc` and its colour bands.",
+    "evidence": "README.md:110",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Engine and platform",
+    "status": "✅",
+    "feature": "Terrain, building, object and character shadows",
+    "scope": "Shadow rendering includes same-model M2 caster instancing and an individual-draw fallback. Grouping order is cached until membership changes; transforms and visibility are checked each frame.",
+    "evidence": "README.md:111",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Engine and platform",
+    "status": "✅",
+    "feature": "1080p / 720p render-resolution selection",
+    "scope": "Changing render resolution is separate from correct automatic UI scaling.",
+    "evidence": "README.md:112",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Engine and platform",
+    "status": "⚠️",
+    "feature": "Original FrameXML loading from MPQs",
+    "scope": "Original UI scripts load from client data. NPC controller navigation starts on available quest actions or conversation options, checking visibility and enabled state. Complete interface coverage and console behaviour remain unverified. Native fallback is disabled.",
+    "evidence": "README.md:113",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Engine and platform",
+    "status": "⚠️",
+    "feature": "Water reflections, lens flare and portal effects",
+    "scope": "Rendering paths exist. Complete visual parity for every effect is not verified; reflections are off by default on PS4. The former separate sun-ray pass/switch is retired.",
+    "evidence": "README.md:114",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Engine and platform",
+    "status": "⚠️",
+    "feature": "World streaming and memory management",
+    "scope": "Compact WMO grids, progressive source release, retained snapshots and allocation-failure recovery reduce memory pressure. Memory exhaustion and extended travel stability remain unresolved risks on the console.",
+    "evidence": "README.md:115",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Engine and platform",
+    "status": "⚠️",
+    "feature": "Performance",
+    "scope": "Pipelined submission, shadow batching/instancing, cached caster order and retained presentation buffers are present. Frame rate varies; sustained performance is not guaranteed.",
+    "evidence": "README.md:116",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Engine and platform",
+    "status": "⚠️",
+    "feature": "Overall stability",
+    "scope": "The game reaches gameplay, but extended travel, character/portrait changes and shutdown are not reliably crash-free.",
+    "evidence": "README.md:117",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Engine and platform",
+    "status": "❌",
+    "feature": "Expansions after WotLK in this PS4 release",
+    "scope": "Not supported as a completed console gameplay target.",
+    "evidence": "README.md:118",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Original interface, menus and controller",
+    "status": "✅",
+    "feature": "Original menu, loading-screen and in-game assets",
+    "scope": "Read from the supplied client archives rather than replaced with unrelated artwork.",
+    "evidence": "README.md:128",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Original interface, menus and controller",
+    "status": "✅",
+    "feature": "Controller input, cursor mode and on-screen keyboard",
+    "scope": "Movement, camera, action layers and text input are implemented.",
+    "evidence": "README.md:129",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Original interface, menus and controller",
+    "status": "⚠️",
+    "feature": "Complete controller navigation of the original UI",
+    "scope": "Navigation includes adjacent panels, clipped hit targets, panel scrolling and modal/keyboard guards. Not every original panel has been confirmed working on PS4.",
+    "evidence": "README.md:130",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Original interface, menus and controller",
+    "status": "⚠️",
+    "feature": "Original 1:1 GUI",
+    "scope": "FrameXML runs with controller targeting, but layout, layering and class-specific behaviour remain incomplete.",
+    "evidence": "README.md:131",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Original interface, menus and controller",
+    "status": "⚠️",
+    "feature": "24-slot backpack",
+    "scope": "Physical cells are saved, with moves, splits, merges and whole-stack swaps. Free-cell counting handles gaps. Console confirmation and additional bags remain open.",
+    "evidence": "README.md:132",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Original interface, menus and controller",
+    "status": "⚠️",
+    "feature": "Automatic UI layout at different resolutions",
+    "scope": "Forward anchors resolve in one pass and root dimensions update before resize events. The old automatic 4% inset migrates to zero once. Final console placement remains to be checked.",
+    "evidence": "README.md:133",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Original interface, menus and controller",
+    "status": "⚠️",
+    "feature": "Quest watch / Objectives",
+    "scope": "Tracking and progress hooks are implemented and host-tested against the original scripts; console layout is not certified pixel-perfect.",
+    "evidence": "README.md:134",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Original interface, menus and controller",
+    "status": "⚠️",
+    "feature": "Character and target portraits",
+    "scope": "Authored cameras, field of view and bounds are checked, with lower-memory loading and cleanup after failed model loads. Portrait preparation can still fail under memory pressure; console presentation remains unverified.",
+    "evidence": "README.md:135",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Original interface, menus and controller",
+    "status": "⚠️",
+    "feature": "Death Knight resource UI",
+    "scope": "Runic Power events and six base-rune timers exist. Connected-server rune snapshots are checked before updating slots or callbacks. Complete appearance and interaction still need console confirmation.",
+    "evidence": "README.md:136",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Original interface, menus and controller",
+    "status": "⚠️",
+    "feature": "Minimap placement, including the reported Death Knight defect",
+    "scope": "Viewport/scissor follow the active framebuffer. Invalid rectangles and nonfinite display inputs are rejected before GPU recording. Console visual confirmation remains pending.",
+    "evidence": "README.md:137",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Original interface, menus and controller",
+    "status": "⚠️",
+    "feature": "Race intros, camera and audio presentation",
+    "scope": "Intro paths, loading and narration are present; complete race-by-race fidelity and smooth playback remain unverified.",
+    "evidence": "README.md:138",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — world, quests, combat and characters",
+    "status": "✅",
+    "feature": "Local world without an external server",
+    "scope": "Explore, fight NPCs, loot, gain experience and level within the local ruleset.",
+    "evidence": "README.md:158",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — world, quests, combat and characters",
+    "status": "⚠️",
+    "feature": "Local character data and saves",
+    "scope": "Characters and progress are stored with the realm. The realm writes save format 25 and reads formats 1–24; timed self buffs, talents, larger spellbooks, riding ranks, taxi discovery and active flights join the atomic realm snapshot. Save25 retains active form and hidden druid mana; combo points, swing timers and combat presentation are session-only and never saved. Functional persistence acceptance is deferred to P35.",
+    "evidence": "README.md:159",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — world, quests, combat and characters",
+    "status": "✅",
+    "feature": "Basic quest lifecycle",
+    "scope": "Accept, track, complete, turn in and abandon supported catalog quests. Rewards above the money cap are refused; turn-in saves before acknowledgement and rolls back on failure.",
+    "evidence": "README.md:160",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — world, quests, combat and characters",
+    "status": "⚠️",
+    "feature": "All original quests",
+    "scope": "The catalog contains 919 adapted quests, including 139 with item choices and 18 with multiple fixed rewards. Supported objective rules do not reproduce every quest chain, condition or scripted sequence.",
+    "evidence": "README.md:161",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — world, quests, combat and characters",
+    "status": "✅",
+    "feature": "Basic NPC combat and supported spells",
+    "scope": "Melee attacks plus the implemented direct-damage, healing and periodic-damage spell subset.",
+    "evidence": "README.md:162",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — world, quests, combat and characters",
+    "status": "⚠️",
+    "feature": "Healing-over-time spells",
+    "scope": "Supported single-target periodic healing uses imported amounts, durations, intervals and rank relationships, with cast/target checks. Owner icons, timers, stack counts and recipient cancellation are present. Periodic stacks are tracked independently for each caster; unsupported secondary effects still reject the entire spell. Full aura interactions and spell coverage remain incomplete.",
+    "evidence": "README.md:163",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — world, quests, combat and characters",
+    "status": "⚠️",
+    "feature": "Cast times, interruption and cooldowns",
+    "scope": "Authority-owned casts use imported movement/damage interruption flags. Damaging NPC melee pushes eligible casts back by up to 500 ms on each of the first two hits; fully absorbed hits only trigger explicit damage-abort flags. Cast sequence and delay synchronize to owner UI. Resources and effects commit on completion. Supported cast-time and mana-cost talents use the same rank-aware calculations in authority and UI. Five passive talent families reduce pushback for matching spell families and masks. Channels and remaining modifiers are incomplete; functional acceptance is deferred.",
+    "evidence": "README.md:164",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — world, quests, combat and characters",
+    "status": "✅",
+    "feature": "Death and revival",
+    "scope": "Present in the local gameplay ruleset.",
+    "evidence": "README.md:165",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — world, quests, combat and characters",
+    "status": "⚠️",
+    "feature": "Complete classes and combat",
+    "scope": "Supported mechanics include selected-player healing, friendly periodic healing, timed fixed health/armor buffs and fixed shields against NPC melee. Supported stat buffs, shields and periodic effects use bounded stack counts from client data, with rank replacement and owner UI counts. Reactive shields, reviewed chain spells and Arcane Explosion, shared physical armor, equipment checks, NPC threat and regeneration rules are implemented. Other procs, channeling, remaining form/stance mechanics, pets, many aura types, totem/reagent requirements and other area/scripted targeting remain incomplete. Unsupported abilities are rejected.",
+    "evidence": "README.md:166",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — world, quests, combat and characters",
+    "status": "⚠️",
+    "feature": "Death Knight gameplay",
+    "scope": "Runic Power, imported rune costs, six independent base-rune cooldowns and persistence are implemented. Full weapon/disease effects, talents and Death-rune conversion are unfinished.",
+    "evidence": "README.md:167",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — world, quests, combat and characters",
+    "status": "✅",
+    "feature": "Inventory, equipment and item stats",
+    "scope": "Local 24-slot inventory and all 19 worn slots. Equipment checks available level/class/race metadata and saves changes before confirmation, with rollback. Full proficiencies, item instances, bags and durability remain incomplete.",
+    "evidence": "README.md:168",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — world, quests, combat and characters",
+    "status": "✅",
+    "feature": "Local progress persistence",
+    "scope": "Equipment, supported quest/spell/profession progress, learned mounts and rune cooldowns are included in the saved state. Each console retains its local action-bar setup.",
+    "evidence": "README.md:169",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — world, quests, combat and characters",
+    "status": "⚠️",
+    "feature": "Complete original character progression",
+    "scope": "Limited spell/recipe books and missing talent, reputation and advanced class systems prevent complete retail progression.",
+    "evidence": "README.md:170",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — world, quests, combat and characters",
+    "status": "⚠️",
+    "feature": "Talent trees and talent-point spending",
+    "scope": "The original talent UI uses saved, host-checked ranks, level points, tiers and prerequisites, with free local test resets at class trainers. Supported direct/periodic abilities and reviewed health/armor, pushback, cast/cost/cooldown/range/amount and threat talent modifiers can be learned. Unsupported effects do not spend points. Full trees, pets, forms, procs, other auras, glyphs and dual specialization remain incomplete.",
+    "evidence": "README.md:171",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — world, quests, combat and characters",
+    "status": "❌",
+    "feature": "Reputation progression and reputation-gated services",
+    "scope": "No working standalone reputation system; unsupported gated vendor offers are excluded.",
+    "evidence": "README.md:172",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — world, quests, combat and characters",
+    "status": "⚠️",
+    "feature": "Ground forms and warrior stances",
+    "scope": "Battle, Defensive and Berserker stances; Cat, Bear, Dire Bear, Travel and Aquatic forms have transitions, resources, source masks, original bars and model paths. Saved state and LAN replication are implemented. These are bounded local profiles: exact original form passives, talents, outdoor detection, model colour variants and console acceptance remain incomplete.",
+    "evidence": "README.md:173",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — world, quests, combat and characters",
+    "status": "⚠️",
+    "feature": "Character health and mana",
+    "scope": "Source class/level base pools, Stamina/Intellect conversion, valid equipped attributes and direct pool bonuses, percentage-of-base-mana spell costs, safe pool clamping and separate Druid caster capacity are implemented. Source Spirit/Intellect regeneration and direct equipped regeneration stats are included. Conditional form/attribute/regen passives and functional acceptance remain open.",
+    "evidence": "README.md:174",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — world, quests, combat and characters",
+    "status": "⚠️",
+    "feature": "Weapon and melee rules",
+    "scope": "Source weapon spans/delay, primary attributes, class/race AP, rating conversion, separate hand timers, off-hand penalty, hit/critical/dodge/parry/block/glancing/crushing and owner combat/paperdoll display are implemented for local melee. Proficiency progression, conditional modifiers, active-ability blocking, conditional resource modifiers, scaling items and full spell/PvP rules remain open.",
+    "evidence": "README.md:175",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — world, quests, combat and characters",
+    "status": "⚠️",
+    "feature": "Rogue and Cat combo combat",
+    "scope": "Eight reviewed ability families and 77 ranks provide target-bound builders, Eviscerate/Rip/Ferocious Bite finishers, facing/rear checks, resource consumption and original owner display. Damage uses source weapons, class/race attack power and bounded melee hit/critical/avoidance rules. Avoided attacks retain points and use reduced energy. Stealth/poisons, remaining finishers, conditional modifiers and functional acceptance remain open.",
+    "evidence": "README.md:176",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — world, quests, combat and characters",
+    "status": "❌",
+    "feature": "Pets and stables",
+    "scope": "No working standalone pet acquisition, pet progression or stable service.",
+    "evidence": "README.md:177",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — travel, instances and scripted content",
+    "status": "✅",
+    "feature": "Flight masters and taxi-route data",
+    "scope": "Saved discovery, atomic direct-flight purchases and in-flight save/resume are implemented, with return to departure if route geometry changes. Gossip offers destinations. Graphical taxi-map integration and connecting hops remain open.",
+    "evidence": "README.md:183",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — travel, instances and scripted content",
+    "status": "⚠️",
+    "feature": "Ships and zeppelins",
+    "scope": "Configured hulls, authored routes, boarding, continent transfers and static crews exist. Boarding/disembarkation saves before acknowledgement; transient state resets at seams or lost routes. Coverage and repeated-travel stability remain incomplete.",
+    "evidence": "README.md:184",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — travel, instances and scripted content",
+    "status": "⚠️",
+    "feature": "Innkeepers and return-home travel",
+    "scope": "Bind to the selected innkeeper and return on a cooldown. Both actions save before acknowledgement, with position/cooldown rollback on failure. Binding during taxi/transport travel is blocked; world-floor rescue clears transient travel state. Hardware confirmation remains pending.",
+    "evidence": "README.md:185",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — travel, instances and scripted content",
+    "status": "⚠️",
+    "feature": "Dungeon and raid access",
+    "scope": "Supported entrances, instance maps and catalog population exist. Parties receive isolated bindings; entry/exit saves atomically. Travel guards and relocation checks reject stale world data. Revival refreshes the entrance region. Encounter scripts, difficulty, lockouts and resets remain incomplete.",
+    "evidence": "README.md:186",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — travel, instances and scripted content",
+    "status": "✅",
+    "feature": "Acherus floor-transfer pads",
+    "scope": "The paired lower/upper-floor transport logic is implemented; effect appearance depends on available models.",
+    "evidence": "README.md:187",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — travel, instances and scripted content",
+    "status": "⚠️",
+    "feature": "Scripted world events",
+    "scope": "Specific Acherus transfers exist, but the local catalog does not execute imported server scripts. General original quest/world events and phasing remain incomplete.",
+    "evidence": "README.md:188",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — travel, instances and scripted content",
+    "status": "❌",
+    "feature": "Complete dungeon and raid boss encounter scripts",
+    "scope": "Loading boss models or NPC records does not implement encounter phases, mechanics or scripted progression.",
+    "evidence": "README.md:189",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — travel, instances and scripted content",
+    "status": "❌",
+    "feature": "Full server script execution in standalone mode",
+    "scope": "The local catalog does not execute the AzerothCore/TrinityCore encounter and quest-script libraries.",
+    "evidence": "README.md:190",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — travel, instances and scripted content",
+    "status": "⚠️",
+    "feature": "Ground mounts",
+    "scope": "Supported mount items can be learned, saved, summoned, replicated and dismounted. Learning saves atomically; summon completion checks level and riding rank. Two ground-riding ranks are supported. Flying, discounts and class-specific training remain open.",
+    "evidence": "README.md:191",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — travel, instances and scripted content",
+    "status": "❌",
+    "feature": "Flying mounts, vehicles and unsupported scripted mount effects",
+    "scope": "Not functional in the local ruleset; unsupported mount purchases are blocked.",
+    "evidence": "README.md:192",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — travel, instances and scripted content",
+    "status": "⚠️",
+    "feature": "Complete riding profession and trainer progression",
+    "scope": "Apprentice/journeyman ground riding is available at 15 named catalog trainers, with local prices, saved ranks, prerequisites and original trainer/skill UI. Flying ranks, reputation discounts and class-specific quests remain open.",
+    "evidence": "README.md:193",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — professions, merchants and auction house",
+    "status": "⚠️",
+    "feature": "Professions",
+    "scope": "Learning, rank training, 96 learned recipes, unlearning and batches of 1–20 crafts are supported, including saved fractional skill gains. Tools remain in inventory; duplicate reagents are combined and race/class restrictions checked. Unsupported extra effects are blocked. Gathering, specialist requirements and non-item effects remain incomplete.",
+    "evidence": "README.md:199",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — professions, merchants and auction house",
+    "status": "⚠️",
+    "feature": "Class and profession trainers",
+    "scope": "Original Trainer/TradeSkill addons expose supported local training and crafting. Training checks the selected trainer and prerequisites, replaces lower ranks and carries cooldowns forward. Combat/casting/travel blocks training. Specialist services and full ability coverage remain incomplete.",
+    "evidence": "README.md:200",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — professions, merchants and auction house",
+    "status": "✅",
+    "feature": "Basic merchant buying and selling",
+    "scope": "Per-NPC catalog stock, copper prices, purchase bundles, quantity checks and bag-capacity checks.",
+    "evidence": "README.md:201",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — professions, merchants and auction house",
+    "status": "⚠️",
+    "feature": "Original MerchantFrame",
+    "scope": "Retail panel initialization and callbacks are host-tested; complete console UI/controller behaviour remains to be validated.",
+    "evidence": "README.md:202",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — professions, merchants and auction house",
+    "status": "⚠️",
+    "feature": "Limited merchant stock",
+    "scope": "The host enforces shared stock and saves depletion and partial restock intervals. Timers advance only during active simulation. Console confirmation remains pending.",
+    "evidence": "README.md:203",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — professions, merchants and auction house",
+    "status": "⚠️",
+    "feature": "LAN merchant state",
+    "scope": "Guests receive selected-vendor stock and private buyback pages. The host checks faction, identity, map, instance, range and life state. Further two-console testing remains necessary.",
+    "evidence": "README.md:204",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — professions, merchants and auction house",
+    "status": "⚠️",
+    "feature": "Merchant buyback",
+    "scope": "A saved 12-entry ledger connects to the original MerchantFrame and LAN commands, with save-before-acknowledgement rollback. Sales exceeding the wallet cap are refused before changing items or history. Console interaction and full retail equivalence remain unconfirmed.",
+    "evidence": "README.md:205",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — professions, merchants and auction house",
+    "status": "❌",
+    "feature": "Equipment durability, wear and real repairs",
+    "scope": "Durability is not tracked. The repair interaction is a no-op and does not charge gold; it must not be described as working repairs.",
+    "evidence": "README.md:206",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — professions, merchants and auction house",
+    "status": "❌",
+    "feature": "Extended-currency, reputation-gated and script-conditioned vendor offers",
+    "scope": "Excluded until their conditions can be enforced.",
+    "evidence": "README.md:207",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — professions, merchants and auction house",
+    "status": "⚠️",
+    "feature": "Playerbots",
+    "scope": "Optional wandering/fighting/gathering actors pause incompatible actions while dead, casting, flying or in instances. Dungeon spawning and combat-time listings are blocked. Simulated sellers share a 224-listing cap. Bots are not complete player-equivalent characters.",
+    "evidence": "README.md:208",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — professions, merchants and auction house",
+    "status": "✅",
+    "feature": "Auction supply without walking playerbots",
+    "scope": "Virtual auction traders run independently, including when the Playerbots option is off.",
+    "evidence": "README.md:209",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — professions, merchants and auction house",
+    "status": "⚠️",
+    "feature": "Local auction house",
+    "scope": "Browse, list, bid, buy out, expire and cancel unbid listings, with multi-stack posting, refunds and saved deliveries. Queue capacity is checked exactly and listing IDs survive empty-board restarts. The exchange is bounded and not a complete retail economy.",
+    "evidence": "README.md:210",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — professions, merchants and auction house",
+    "status": "⚠️",
+    "feature": "Original Blizzard_AuctionUI",
+    "scope": "Loaded before opening; production callbacks are host-tested. Full PS4 visual/controller and two-console transaction validation remains outstanding.",
+    "evidence": "README.md:211",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — professions, merchants and auction house",
+    "status": "✅",
+    "feature": "Saved auction escrow and pending delivery",
+    "scope": "Full bags and offline owners retain pending items/proceeds. Escrow transfers to owner mail when space is available. Money collection preserves the unpaid remainder at the wallet cap.",
+    "evidence": "README.md:212",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — professions, merchants and auction house",
+    "status": "⚠️",
+    "feature": "Automatic random 4–10× base multiplier with no menu control",
+    "scope": "Each new simulated listing draws a multiplier before rarity/drop/mount premiums and seller variation. Existing listings and player prices are retained. Console market confirmation remains pending.",
+    "evidence": "README.md:213",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — professions, merchants and auction house",
+    "status": "⚠️",
+    "feature": "Full retail auction deposits, sale cuts and mailbox settlement",
+    "scope": "Purchased goods, expired/cancelled items, proceeds and bid refunds use local mail. Deposits, sale cuts and retail invoices remain absent; cancellation after bids is unavailable.",
+    "evidence": "README.md:214",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — LAN, social systems and PvP",
+    "status": "⚠️",
+    "feature": "Host / Join LAN",
+    "scope": "A custom host-authoritative UDP realm replicates player, travel and gameplay state. Expired sessions are removed before commands/simulation; console counts exclude bots. Matching builds and further two-console testing are required.",
+    "evidence": "README.md:227",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — LAN, social systems and PvP",
+    "status": "⚠️",
+    "feature": "Versioned LAN messages and local save codecs",
+    "scope": "LAN protocol 68 and save format 25 (reading formats 1–24). Private mail and owner progress assemble atomically. Saved state includes talents, spellbooks, riding, taxi discovery/flights and timed self buffs. Owner progress is private; NPC damage aura and viewer-specific threat snapshots accompany world updates. Functional Save25/LAN68 acceptance remains pending.",
+    "evidence": "README.md:228",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — LAN, social systems and PvP",
+    "status": "⚠️",
+    "feature": "Player-to-player trade",
+    "scope": "Private two-player sessions support six item stacks per side and copper, revision-checked mutual acceptance and atomic saving. Requires nearby same-faction online humans on the same map/instance and known unbound, unequipped items. Full binding/enchantment rules and console confirmation remain open.",
+    "evidence": "README.md:229",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — LAN, social systems and PvP",
+    "status": "⚠️",
+    "feature": "Mailboxes and player mail",
+    "scope": "Original mail UI supports saved letters, up to 12 attachments, gold, COD, returns and saved offline recipients. Actions save atomically. Mail is available at innkeepers and local mailbox model sites near catalog inns, Northshire and the Blood Elf start; Square opens nearby mail within five yards. Original world placements, expiry/delays and full item-instance rules remain open; visibility and console interaction need confirmation.",
+    "evidence": "README.md:230",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — LAN, social systems and PvP",
+    "status": "⚠️",
+    "feature": "Personal bank",
+    "scope": "28 saved slots support moves, splits, merges and whole-stack swaps, selected deposit/withdrawal destinations and quick deposits. Banker access and source/destination snapshots are checked; transfers save atomically. Bank bags, complete item-instance properties and console presentation remain incomplete.",
+    "evidence": "README.md:231",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — LAN, social systems and PvP",
+    "status": "❌",
+    "feature": "Guild bank",
+    "scope": "No local guild authority, permissions or guild-bank storage.",
+    "evidence": "README.md:232",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — LAN, social systems and PvP",
+    "status": "❌",
+    "feature": "Guilds",
+    "scope": "No working standalone guild system.",
+    "evidence": "README.md:233",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — LAN, social systems and PvP",
+    "status": "⚠️",
+    "feature": "Parties and raid groups",
+    "scope": "Session parties support five same-faction human LAN players, invites/withdrawal, leader permissions, roster UI and disconnect cleanup. Eligible members share NPC XP/copper and rotating corpse loot, with isolated instance bindings. Party chat and leader ready checks are implemented. Raids, retail XP formulas and loot rolls remain absent; console confirmation is pending.",
+    "evidence": "README.md:234",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — LAN, social systems and PvP",
+    "status": "❌",
+    "feature": "Original PvP and duels",
+    "scope": "No working standalone player-versus-player ruleset.",
+    "evidence": "README.md:235",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — LAN, social systems and PvP",
+    "status": "❌",
+    "feature": "Battlegrounds",
+    "scope": "No working standalone battleground matches, objectives or rewards.",
+    "evidence": "README.md:236",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  },
+  {
+    "section": "Standalone play — LAN, social systems and PvP",
+    "status": "❌",
+    "feature": "Arenas",
+    "scope": "No working standalone arena matches, teams or rating system.",
+    "evidence": "README.md:237",
+    "evidenceKind": "documented_baseline_not_new_runtime_test"
+  }
+]

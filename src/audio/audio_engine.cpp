@@ -29,7 +29,7 @@ struct DecodedWavCacheEntry {
     ma_uint32 channels = 0;
     ma_uint32 sampleRate = 0;
     ma_uint64 frames = 0;
-    std::shared_ptr<std::vector<uint8_t>> pcmData;
+    std::shared_ptr<platform::CpuGeometryVector<uint8_t>> pcmData;
 };
 
 namespace {
@@ -152,7 +152,11 @@ static bool decodeWavCached(const std::vector<uint8_t>& wavData, DecodedWavCache
         return false;
     }
     size_t bufferSize = size_t(totalFrames) * frameBytes;
-    auto pcmData = std::make_shared<std::vector<uint8_t>>(bufferSize);
+    // Long ambience is decoded CPU data, just like collision geometry. Keep
+    // its cache/active voice ownership off the 448 MiB flexible heap on PS4.
+    // The bounded write-back Onion allocator preserves miniaudio's ordinary
+    // CPU pointer access and returns pages after the last cache/voice owner.
+    auto pcmData = std::make_shared<platform::CpuGeometryVector<uint8_t>>(bufferSize);
     ma_uint64 framesRead = 0;
     result = ma_decoder_read_pcm_frames(&decoder, pcmData->data(), totalFrames, &framesRead);
     if (result != MA_SUCCESS || framesRead == 0) {

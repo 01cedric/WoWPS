@@ -2,6 +2,7 @@
 
 #include "core/coordinates.hpp"
 #include "rendering/terrain_preparation_budget.hpp"
+#include "rendering/terrain_placement_index.hpp"
 #ifdef WOWEE_PS4
 #include "rendering/ps4_world_budget.hpp"
 #endif
@@ -76,11 +77,19 @@ using SharedTerrainDoodads = std::unordered_map<uint32_t, std::shared_ptr<Shared
  * Loaded terrain tile data
  */
 struct TerrainTile {
+#ifdef WOWEE_PS4
+    // The fixed ADT chunk arrays are also sizeable CPU geometry. Returning a
+    // tile releases its Onion pages instead of leaving flexible arena growth.
+    static void* operator new(size_t bytes) { return platform::allocateCpuGeometry(bytes); }
+    static void operator delete(void* p) noexcept { platform::freeCpuGeometry(p, sizeof(TerrainTile)); }
+#endif
     TileCoord coord;
     pipeline::ADTTerrain terrain;
     pipeline::TerrainMesh mesh;
     bool loaded = false;
     bool objectsIncomplete = false;
+    TerrainPlacementIndex doodadPlacementIndex;
+    TerrainPlacementIndex wmoPlacementIndex;
     std::chrono::steady_clock::time_point nextObjectRetry{};
 
     // Tile bounds in world coordinates
@@ -144,11 +153,13 @@ struct PendingTile {
     struct WMODoodadReady {
         uint32_t modelId;
         uint32_t parentWmoUniqueId = 0;
-        pipeline::M2Model model;
+        // Only the first placement of a model owns parsed geometry. Thousands
+        // of repeated chairs/lamps must not each embed an empty M2Model.
+        std::unique_ptr<pipeline::M2Model> model;
         glm::vec3 worldPosition;   // For frustum culling
         glm::mat4 modelMatrix;     // Pre-computed world transform
     };
-    std::vector<WMODoodadReady> wmoDoodads;
+    platform::CpuGeometryVector<WMODoodadReady> wmoDoodads;
 
     // Ambient sound emitters (detected from doodads)
     struct AmbientEmitter {
@@ -203,6 +214,7 @@ struct FinalizingTile {
     size_t wmoLiquidGroupIndex = 0; // Next liquid group within current WMO instance
 
     // Incremental terrain upload state (splits TERRAIN phase across frames)
+    bool sharedOwnershipRetained = false; // Object-only passes skip TERRAIN.
     bool terrainPreloaded = false;  // True after preloaded textures uploaded
     // Retains one detached texture across an upload attempt, without copying
     // its decoded pixels. PS4 drains the prepared texture set incrementally.
@@ -256,7 +268,9 @@ public:
     /**
      * Enqueue a tile for async loading (returns false if previously failed).
      */
-    bool enqueueTile(int x, int y, bool priority = false);
+    // repairIncomplete also prepares missing objects for speculative cinematic lookahead
+    // without moving that work ahead of the current camera tile.
+    bool enqueueTile(int x, int y, bool priority = false, bool repairIncomplete = false);
 
     /**
      * Unload a tile
@@ -359,6 +373,7 @@ public:
      * it.
      */
     [[nodiscard]] bool isTileLoadedAt(float glX, float glY) const;
+    bool isTileSceneReadyAt(float glX, float glY) const;
 
     /**
      * The chunk under a world position, plus the offsets within it that

@@ -70,11 +70,9 @@ void Minimap::buildDisplayPipeline(VkDevice device,
         .setRasterization(VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE)
         .setNoDepthTest()
         .setColorBlendAttachment(PipelineBuilder::blendAlpha())
-        .setMultisample(targetPass_ != VK_NULL_HANDLE ? targetSamples_
-                                                      : vkCtx->getMsaaSamples())
+        .setMultisample(VK_SAMPLE_COUNT_1_BIT)
         .setLayout(displayPipelineLayout)
-        .setRenderPass(targetPass_ != VK_NULL_HANDLE ? targetPass_
-                                                     : vkCtx->getImGuiRenderPass())
+        .setRenderPass(vkCtx->getOverlayRenderPass())
         .setDynamicStates(viewportAndScissorDynamic())
         .build(device, vkCtx->getPipelineCache());
 }
@@ -291,7 +289,7 @@ void Minimap::recreatePipelines() {
     vs.destroy();
     fs.destroy();
 
-    LOG_INFO("Minimap: display pipeline recreated with MSAA ", static_cast<int>(vkCtx->getMsaaSamples()), "x");
+    LOG_INFO("Minimap: display pipeline recreated for final HUD overlay (1x)");
 }
 
 void Minimap::setMapName(const std::string& name) {
@@ -498,7 +496,7 @@ void Minimap::compositePass(VkCommandBuffer cmd, const glm::vec3& centerWorldPos
 }
 
 // --------------------------------------------------------
-// Display quad (call INSIDE main render pass)
+// Display quad (call INSIDE final HUD overlay render pass)
 // --------------------------------------------------------
 
 void Minimap::render(VkCommandBuffer cmd, const Camera& playerCamera,
@@ -527,8 +525,7 @@ void Minimap::render(VkCommandBuffer cmd, const Camera& playerCamera,
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, displayPipeline);
 
     // The display shader normalizes the authored rectangle against the window.
-    // Its viewport must cover the current framebuffer, including a scaled
-    // scene target. Dynamic state left by another draw (or another command
+    // Its viewport covers the full-resolution final HUD framebuffer. Dynamic state left by another draw (or another command
     // buffer) can otherwise move/clip the map independently of its UI ring.
     VkViewport viewport{};
     viewport.width = static_cast<float>(displayExtent.width);

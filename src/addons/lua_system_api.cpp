@@ -4,6 +4,9 @@
 #include "rendering/ps4_world_budget.hpp"
 #include "rendering/render_setting_bridge.hpp"
 #include "rendering/shadow_quality.hpp"
+#include "rendering/volumetric_intensity.hpp"
+#include "rendering/volumetric_fog_intensity.hpp"
+#include "rendering/bloom_settings.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -544,6 +547,9 @@ static void loadStoredCVars() {
         if (eq == std::string::npos || eq == 0) continue;
         std::string key = line.substr(0, eq);
         toLowerInPlace(key);
+        // Inspection is an in-memory tool, not a preference to replay on boot.
+        // Ignoring disk also preserves a live choice if Lua is reinitialized.
+        if (key == "extvolumetricdebug") continue;
         cvarStore()[key] = line.substr(eq + 1);
         ++loaded;
     }
@@ -581,6 +587,8 @@ static void saveStoredCVars() {
     std::sort(rows.begin(), rows.end(),
               [](const auto* a, const auto* b) { return a->first < b->first; });
     for (const auto* kv : rows) {
+        // Preserve the live value in cvarStore(), but never persist inspection.
+        if (kv->first == "extvolumetricdebug") continue;
         // A value with a newline in it would come back as two broken lines.
         if (kv->second.find('\n') != std::string::npos) continue;
         out << kv->first << '=' << kv->second << '\n';
@@ -823,6 +831,14 @@ static void pushCvarDefault(lua_State* L, const std::string& n) {
     else if (n == "extshadowquality") {
         lua_pushstring(L, rendering::kShadowQualityDefaultCVar);
     }
+    else if (n == "extvolumetricquality") lua_pushstring(L, rendering::kVolumetricQualityDefaultCVar);
+    else if (n == "extvolumetricraysenabled") lua_pushstring(L, "1");
+    else if (n == "extvolumetricfogenabled") lua_pushstring(L, "1");
+    else if (n == "extbloomenabled") lua_pushstring(L, "1");
+    else if (n == "extbloomintensity") lua_pushstring(L, "0.25");
+    else if (n == "extvolumetricintensity") lua_pushstring(L, "1.35");
+    else if (n == "extvolumetricfogintensity") lua_pushstring(L, rendering::kVolumetricFogIntensityDefaultCVar);
+    else if (n == "extvolumetricdebug") lua_pushstring(L, "0");
     // Clicking open ground clears the target, which is the real client's
     // behaviour and this one's. Without saying so it fell to the generic zero,
     // and zero here means sticky targeting - so the checkbox would have shown
@@ -1219,6 +1235,14 @@ constexpr ClientCVarBinding kClientCVars[] = {
     // reads the CVar - or the other way round - is told two different things
     // about one setting.
     {"extshadowquality",     "shadowquality"},
+    {"extvolumetricquality", "volumetricquality"},
+    {"extvolumetricdebug", "volumetricdebug"},
+    {"extvolumetricraysenabled", "volumetricraysenabled"},
+    {"extvolumetricfogenabled", "volumetricfogenabled"},
+    {"extbloomenabled", "bloomenabled"},
+    {"extbloomintensity", "bloomintensity"},
+    {"extvolumetricintensity", "volumetricintensity"},
+    {"extvolumetricfogintensity", "volumetricfogintensity"},
     {"extwaterreflections",  "waterreflections"},
     // Mouse Sensitivity. Its shipped range is 0.5 to 1.5, a multiplier around
     // 1.0, and this client's sensitivity is an amount that runs 0.05 to 1.0 -
@@ -1547,6 +1571,38 @@ static void applyCVarSideEffects(lua_State* L, const std::string& key,
             sink(std::atoi(value.c_str()));
         }
     }
+    if (key == "extvolumetricquality") {
+        if (auto& sink = rendering::renderSettingSinks().setVolumetricQuality; sink)
+            sink(std::clamp(std::atoi(value.c_str()), 0, 2));
+    }
+    if (key == "extvolumetricfogintensity") {
+        if (auto& sink = rendering::renderSettingSinks().setVolumetricFogIntensity; sink)
+            sink(rendering::clampVolumetricFogIntensity(static_cast<float>(std::atof(value.c_str()))));
+    }
+    if (key == "extvolumetricraysenabled") {
+        if (auto& sink = rendering::renderSettingSinks().setVolumetricRaysEnabled; sink)
+            sink(std::atoi(value.c_str()) != 0);
+    }
+    if (key == "extvolumetricfogenabled") {
+        if (auto& sink = rendering::renderSettingSinks().setVolumetricFogEnabled; sink)
+            sink(std::atoi(value.c_str()) != 0);
+    }
+    if (key == "extbloomenabled") {
+        if (auto& sink = rendering::renderSettingSinks().setBloomEnabled; sink)
+            sink(std::atoi(value.c_str()) != 0);
+    }
+    if (key == "extbloomintensity") {
+        if (auto& sink = rendering::renderSettingSinks().setBloomIntensity; sink)
+            sink(rendering::clampBloomIntensity(static_cast<float>(std::atof(value.c_str()))));
+    }
+    if (key == "extvolumetricintensity") {
+        if (auto& sink = rendering::renderSettingSinks().setVolumetricIntensity; sink)
+            sink(rendering::clampVolumetricIntensity(static_cast<float>(std::atof(value.c_str()))));
+    }
+    if (key == "extvolumetricdebug") {
+        if (auto& sink = rendering::renderSettingSinks().setVolumetricDebug; sink)
+            sink(std::clamp(std::atoi(value.c_str()), 0, 4));
+    }
     // Unticking it puts the interface back to the size the screen's own height
     // gives, which is what the tick means: use a scale of mine rather than the
     // default. It did nothing at all before - the box moved and the interface
@@ -1728,6 +1784,9 @@ std::string storedCVarValue(const std::string& key, const std::string& fallback)
     std::string wanted = key;
     toLowerInPlace(wanted);
     if (auto it = cvarStore().find(wanted); it != cvarStore().end()) return it->second;
+    // Renderer initialization can query before loadStoredCVars(). Never read
+    // a legacy inspection value directly from disk through this fallback.
+    if (wanted == "extvolumetricdebug") return "0";
 
     std::ifstream in(cvarStorePath());
     if (!in.is_open()) return fallback;
@@ -1786,15 +1845,16 @@ void applyStoredCVarSideEffects(lua_State* L) {
     // what the console cannot afford is handled by the map size the level
     // picks rather than by the level.
     //
-    // extGodrays stood beside it and is gone with its pass. The sun is the
-    // original client's now - Light.dbc's bands for its colour and the zone's
-    // LightSkybox model for the sky it sits in - and that client has no light
-    // shafts to switch on or off. A CVar nothing reads is a control that says
-    // it does something.
+    // Sun / moon rays share the current celestial light and shadow map.
+    // Replay the same platform default used at renderer startup.
     if (cvarStore().find("extshadowquality") == cvarStore().end()) {
         if (auto& sink = rendering::renderSettingSinks().setShadowQuality; sink) {
             sink(std::atoi(rendering::kShadowQualityDefaultCVar));
         }
+    }
+    if (cvarStore().find("extvolumetricquality") == cvarStore().end()) {
+        if (auto& sink = rendering::renderSettingSinks().setVolumetricQuality; sink)
+            sink(rendering::kDefaultVolumetricQuality);
     }
     g_replayingStoredCVars = false;
     LOG_INFO("CVars: applied ", cvarStore().size(), " stored values");
@@ -4852,6 +4912,14 @@ constexpr CVarRange kCVarRanges[] = {
     // silently rounds. Not a shipped CVar: the original client's shadow setting
     // named a map size and nothing about what went into it.
     {"extshadowquality", 0.0f, static_cast<float>(rendering::kShadowQualityMaxLevel)},
+    {"extvolumetricquality", 0.0f, 2.0f},
+    {"extvolumetricdebug", 0.0f, 4.0f},
+    {"extvolumetricraysenabled", 0.0f, 1.0f},
+    {"extvolumetricfogenabled", 0.0f, 1.0f},
+    {"extbloomenabled", 0.0f, 1.0f},
+    {"extbloomintensity", 0.0f, 1.0f},
+    {"extvolumetricintensity", 0.0f, 2.0f},
+    {"extvolumetricfogintensity", 0.0f, 1.0f},
 };
 
 const CVarRange* findCVarRange(lua_State* L) {

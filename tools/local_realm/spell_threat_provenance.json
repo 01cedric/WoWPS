@@ -1,0 +1,17 @@
+{
+  "source_commit": "9c416aaacb5537636abb13c80f55a88947838e33",
+  "inputs": {
+    "spell_threat.sql": "28cbca84ea1464ab631ce6fdd72bdca30f9f5e5448bf8c490682d66b5333ba9f",
+    "trainer_spell.sql": "18f3e7fcedcfc9bed4d47551d014c1b009dc359bb003e6415d3f59c66f5690b4"
+  },
+  "spell_threat_rows": 106,
+  "spell_threat_flat_rows": 77,
+  "spell_threat_pct_rows": 31,
+  "spell_threat_ap_rows": 2,
+  "trainer_spell_rows": 3592,
+  "outputs": {
+    "local_spell_threat_generated.inc": "3f28dc0a05a5eb29b20675f19058c15752f506044243e1b65fc26a0b2bb2417f",
+    "local_trainer_spells_generated.inc": "e87c5710e25df35a44cb8ae992cc4ee39a179a4ac5fc895138c4f25759d23b57"
+  },
+  "scope": "Generated metadata, not gameplay/console acceptance"
+}

@@ -1,0 +1,13 @@
+{
+  "upstream": "https://github.com/azerothcore/azerothcore-wotlk",
+  "commit": "4e80596cdaa21fa31830522f6f2d7ed8750bfffd",
+  "sourceURL": "https://github.com/azerothcore/azerothcore-wotlk/blob/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/game_graveyard.sql",
+  "sha256": "bc781a59d4abf8a4fa658ddb989743695150636b27e5926fb03cfc7532f1d074",
+  "sourceRows": 685,
+  "linkedPositions": 582,
+  "joinedZoneTeamSites": 704,
+  "missingLinkedIds": [],
+  "coordinates": "Unmodified upstream map/x/y/z. No client DBC required.",
+  "orientation": "Zero default: upstream has no facing field.",
+  "eligibility": "Preserve every (graveyardID,zoneId,team) link separately."
+}

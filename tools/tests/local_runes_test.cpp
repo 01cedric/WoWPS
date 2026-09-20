@@ -17,7 +17,9 @@ static std::unique_ptr<DBCFile> dbc(std::vector<uint32_t> fields) {
 static uint32_t floatBits(float f) {uint32_t v;std::memcpy(&v,&f,4);return v;}
 static void testCosts() {
     std::vector<uint32_t> spell(234);spell[0]=45477;spell[28]=1;spell[39]=1;
-    spell[41]=5;spell[46]=1;spell[68]=UINT32_MAX;spell[71]=2;spell[80]=10;spell[86]=6;spell[226]=77;
+    // A damaging client spell names its school; the importer refuses one that
+    // does not, so the rune fixture declares physical like its source row.
+    spell[41]=5;spell[46]=1;spell[68]=UINT32_MAX;spell[71]=2;spell[80]=10;spell[86]=6;spell[225]=1;spell[226]=77;
     std::vector<uint32_t> range(40);range[0]=1;range[3]=range[4]=floatBits(20);
     auto spells=dbc(spell), ranges=dbc(range), casts=dbc({1,0,0,0}), durations=dbc({1,0,0,0});
     auto costs=dbc({77,1,0,1,100});

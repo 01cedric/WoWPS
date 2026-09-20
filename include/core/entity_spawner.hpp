@@ -117,7 +117,7 @@ public:
     }
     bool isPlayerSpawned(uint64_t guid) const { return playerInstances_.count(guid) > 0; }
     bool isPlayerPending(uint64_t guid) const { return pendingPlayerSpawnGuids_.count(guid) > 0; }
-    bool isGameObjectSpawned(uint64_t guid) const { return gameObjectInstances_.count(guid) > 0; }
+    bool isGameObjectSpawned(uint64_t guid) const;
 
     // Quick instance ID lookups (returns 0 if not found)
     uint32_t getCreatureInstanceId(uint64_t guid) const {
@@ -136,6 +136,7 @@ public:
     // Display data lookups
     bool areCreatureLookupsBuilt() const { return creatureLookupsBuilt_; }
     bool areGameObjectLookupsBuilt() const { return gameObjectLookupsBuilt_; }
+    uint32_t localMailboxDisplayId();
     std::string getModelPathForDisplayId(uint32_t displayId) const;
     /// The skin textures a creature display wears, by M2 texture type - 11,
     /// 12 and 13 are skin1, skin2 and skin3 in CreatureDisplayInfo.dbc.
@@ -440,6 +441,10 @@ private:
     // GameObject display lookups
     std::unordered_map<uint32_t, std::string> gameObjectDisplayIdToPath_;
     bool gameObjectLookupsBuilt_ = false;
+    uint32_t localMailboxDisplayId_ = 0;
+    uint32_t gameObjectLookupAttempts_ = 0;
+    std::chrono::steady_clock::time_point gameObjectLookupRetryAt_{};
+    void invalidateGameObjectDisplayLookups();
     void buildGameObjectDisplayLookups();
 
     // --- Creature instances and tracking ---
@@ -696,6 +701,7 @@ private:
 
     std::unordered_map<uint32_t, uint32_t> gameObjectDisplayIdModelCache_;
     std::unordered_set<uint32_t> gameObjectDisplayIdFailedCache_;
+    std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> gameObjectUploadRetryAt_;
     std::unordered_map<uint32_t, uint32_t> gameObjectDisplayIdWmoCache_;
     std::unordered_map<uint64_t, GameObjectInstanceInfo> gameObjectInstances_;
     std::unordered_map<uint64_t, uint64_t> gameObjectGenerations_;

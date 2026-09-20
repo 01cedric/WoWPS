@@ -36,6 +36,8 @@ struct GPUPerFrameData {
     glm::vec4 localLightPosRadius[MAX_LOCAL_LIGHTS];       // xyz = position, w = radius
     glm::vec4 localLightColorIntensity[MAX_LOCAL_LIGHTS];  // rgb = color, w = intensity
     glm::ivec4 localLightMeta;                             // x = active light count
+    glm::mat4 nearLightSpaceMatrix; // append-only ABI, focused receiver cascade
+    glm::vec4 shadowAtlasParams; // near/far world texel, near distance, atlas enabled
 };
 
 // Push constants for the model matrix (most common case)

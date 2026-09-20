@@ -1,6 +1,9 @@
 #pragma once
 
 #include <memory>
+#include "rendering/volumetric_intensity.hpp"
+#include "rendering/bloom_settings.hpp"
+#include "rendering/volumetric_fog_intensity.hpp"
 #include <string>
 #include <cstdint>
 #include <glm/glm.hpp>
@@ -127,11 +130,40 @@ public:
     [[nodiscard]] size_t getAmdFsr3FramegenDispatchCount() const { return fsr2_.amdFsr3FramegenDispatchCount; }
     [[nodiscard]] size_t getAmdFsr3FallbackCount() const { return fsr2_.amdFsr3FallbackCount; }
 
+    // World-space single-scattering sunlight. Off / 8 samples / 12 samples.
+    // Off by default until console visual and frame-budget acceptance.
+    void setVolumetricQuality(int quality);
+    void setVolumetricIntensity(float intensity);
+    void setVolumetricFogIntensity(float intensity);
+    bool isVolumetricRaysEnabled() const { return volumetric_.raysEnabled; }
+    bool isVolumetricFogEnabled() const { return volumetric_.fogEnabled; }
+    void setVolumetricRaysEnabled(bool enabled) { volumetric_.raysEnabled = enabled; }
+    void setVolumetricFogEnabled(bool enabled) { volumetric_.fogEnabled = enabled; }
+    float getVolumetricFogIntensity() const { return volumetric_.fogIntensity; }
+    void setVolumetricFogEnvironment(const glm::vec3& color, float groundHeight, float deltaTime);
+    void setVolumetricDebug(int mode); // 0 normal, 1 scene depth, 2 shadow depth, 3 scattering, 4 surface shadow
+    [[nodiscard]] int getVolumetricDebug() const { return volumetric_.debug; }
+    void finishVolumetricFrame(VkCommandBuffer cmd);
+    [[nodiscard]] int getVolumetricQuality() const { return volumetric_.quality; }
+    [[nodiscard]] bool isVolumetricActive() const { return volumetric_.rendered; }
+    [[nodiscard]] bool wasVolumetricRendered() const { return volumetric_.rendered; }
+    [[nodiscard]] const char* getVolumetricStatus() const { return volumetric_.rendered ? "rendered" : volumetric_.status; }
+    void setVolumetricLighting(const glm::mat4& lightMatrix, const glm::mat4& nearLightMatrix, const glm::vec3& lightTravel,
+                               const glm::vec3& color, VkImageView shadowView, bool allowed,
+                               const char* blockedReason = "environment-blocked");
+
     // Brightness (1.0 = default, <1 darkens, >1 brightens)
     void setBrightness(float b) { brightness_ = b; }
     [[nodiscard]] float getBrightness() const { return brightness_; }
     void setIntoxication(float amount) { intoxication_ = glm::clamp(amount, 0.0f, 1.0f); }
     [[nodiscard]] float getIntoxication() const { return intoxication_; }
+
+    void setBloomEnabled(bool enabled);
+    [[nodiscard]] bool isBloomEnabled() const { return bloom_.enabled; }
+    void setBloomIntensity(float intensity);
+    [[nodiscard]] float getBloomIntensity() const { return bloom_.intensity; }
+    [[nodiscard]] bool isBloomActive() const { return bloom_.rendered; }
+    [[nodiscard]] const char* getBloomStatus() const { return bloom_.status; }
 
 private:
     VkContext* vkCtx_ = nullptr;
@@ -149,6 +181,76 @@ private:
     [[nodiscard]] VkExtent2D desiredSceneExtent() const;
     bool worldRendering_ = false;
     bool fxaaAllocationFailed_ = false;
+
+    struct BloomState {
+        bool enabled = kDefaultBloomEnabled;
+        bool failed = false;
+        bool rendered = false;
+        float intensity = kDefaultBloomIntensity;
+        const char* status = "not-rendered";
+        static constexpr uint32_t frames = 2;
+        VkExtent2D extent{};
+        AllocatedImage images[frames][2]{};
+        AllocatedBuffer uniforms[frames][3]{};
+        VkFramebuffer framebuffers[frames][2]{};
+        VkFramebuffer compositeFramebuffer = VK_NULL_HANDLE;
+        VkRenderPass renderPass = VK_NULL_HANDLE;
+        VkRenderPass compositeRenderPass = VK_NULL_HANDLE;
+        VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
+        VkDescriptorPool pool = VK_NULL_HANDLE;
+        VkDescriptorSet sets[frames*3]{};
+        VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+        VkPipeline blurPipeline = VK_NULL_HANDLE;
+        VkPipeline compositePipeline = VK_NULL_HANDLE;
+        VkSampler sampler = VK_NULL_HANDLE;
+    } bloom_;
+    bool initBloomResources();
+    void destroyBloomResources(); // caller has retired every frame
+    void renderBloom(); // scene shader-readable, outside all render passes
+
+    struct VolumetricState {
+        int quality = 0;
+        int debug = 0;
+        float intensity = kDefaultVolumetricIntensity;
+        float fogIntensity = kDefaultVolumetricFogIntensity;
+        bool raysEnabled = true, fogEnabled = true, raysAllowed = false;
+        float fogGroundHeight = 0.0f;
+        bool fogAnchorInitialized = false;
+        glm::vec3 fogColor{0.2f};
+        uint32_t lightingDiagnosticsFrames = 0;
+        bool needsRecreate = false;
+        uint32_t resolutionFactor = 4;
+        bool failed = false, allowed = false, rendered = false;
+        const char* blockedReason = "not-configured";
+        const char* status = "not-executed";
+        glm::mat4 lightMatrix{1.0f};
+        glm::mat4 nearLightMatrix{1.0f};
+        glm::vec3 lightTravel{0.0f, 0.0f, -1.0f}, lightColor{1.0f};
+        VkImageView shadowView = VK_NULL_HANDLE;
+        VkExtent2D extent{};
+        VkSampler sampler = VK_NULL_HANDLE;
+        VkSampler radianceSampler = VK_NULL_HANDLE;
+        VkRenderPass renderPass = VK_NULL_HANDLE;
+        VkRenderPass compositeRenderPass = VK_NULL_HANDLE;
+        VkFramebuffer compositeFramebuffer = VK_NULL_HANDLE;
+        VkPipeline pipeline = VK_NULL_HANDLE, resolvePipeline = VK_NULL_HANDLE, compositePipeline = VK_NULL_HANDLE;
+        VkPipeline debugPipeline = VK_NULL_HANDLE;
+        VkPipeline fogCompositePipeline = VK_NULL_HANDLE;
+        VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+        VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
+        VkDescriptorPool pool = VK_NULL_HANDLE;
+        static constexpr uint32_t frames = 2;
+        AllocatedImage scattering[frames]{}; // RGBA16F, red stores peak directional radiance
+        AllocatedImage resolvedScattering[frames]{}; // full scene resolution, RGBA16F, red stores peak radiance
+        AllocatedBuffer uniforms[frames]{};
+        VkFramebuffer framebuffer[frames]{};
+        VkFramebuffer resolveFramebuffer[frames]{};
+        VkDescriptorSet sets[frames * 3]{}; // raymarch, resolve, denoise/composite per frame
+    } volumetric_;
+    bool initVolumetricResources();
+    void destroyVolumetricResources(); // caller has waited for all frames
+    void renderVolumetricScattering(); // outside scene/output render passes
+    void compositeVolumetricScattering(); // own scene-resolution color-load render pass
 
     // FSR 1.0 upscaling state
     struct FSRState {

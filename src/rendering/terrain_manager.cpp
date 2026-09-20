@@ -1,3 +1,4 @@
+#include "rendering/stream_load_timing.hpp"
 #include <string_view>
 #include "rendering/terrain_manager.hpp"
 #ifdef WOWEE_PS4
@@ -313,10 +314,30 @@ void TerrainManager::update(const Camera& camera, float deltaTime) {
     }
 }
 
-bool TerrainManager::enqueueTile(int x, int y, bool priority) {
+bool TerrainManager::enqueueTile(int x, int y, bool priority, bool repairIncomplete) {
     if (x < 0 || x >= 64 || y < 0 || y >= 64) return false;
     TileCoord coord = {.x = x, .y = y};
-    if (loadedTiles.find(coord) != loadedTiles.end()) {
+    if (auto tile = loadedTiles.find(coord); tile != loadedTiles.end()) {
+        if ((priority || repairIncomplete) && tile->second->objectsIncomplete) {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            const auto now = std::chrono::steady_clock::now();
+            if (!pendingTiles.count(coord) && now >= tile->second->nextObjectRetry) {
+                tile->second->nextObjectRetry = now + std::chrono::seconds(15);
+                objectRepairRequests_.insert(coord);
+                pendingTiles[coord] = true;
+                if (priority) loadQueue.push_front(coord);
+                else loadQueue.push_back(coord);
+                queueCV.notify_all();
+            } else if (priority && pendingTiles.count(coord)) {
+                // A speculative object repair has become visible/required.
+                // Promote only queued work; an active worker keeps ownership.
+                auto queued = std::find(loadQueue.begin(), loadQueue.end(), coord);
+                if (queued != loadQueue.end()) {
+                    loadQueue.erase(queued);
+                    loadQueue.push_front(coord);
+                }
+            }
+        }
         return true;
     }
     if (failedTiles.find(coord) != failedTiles.end()) {
@@ -545,7 +566,11 @@ std::shared_ptr<PendingTile> TerrainManager::prepareTile(int x, int y, bool obje
 
     if (!workerRunning.load()) return nullptr;
 
+#ifdef WOWEE_PS4
+    auto pending = std::allocate_shared<PendingTile>(platform::CpuGeometryAllocator<PendingTile>{});
+#else
     auto pending = std::make_shared<PendingTile>();
+#endif
     pending->coord = coord;
     pending->objectsOnly = objectsOnly;
     pending->terrain = std::move(*terrainPtr);
@@ -561,13 +586,60 @@ std::shared_ptr<PendingTile> TerrainManager::prepareTile(int x, int y, bool obje
         pending->preloadedTextures[texPath] = assetManager->loadTexture(texPath, true);
     }
 
+#ifdef WOWEE_PS4
+    if (!objectsOnly) {
+        // Publish required ground before parsing a city and thousands of child
+        // objects. The single preparation lease otherwise prevents every other
+        // nearby ADT from reaching the renderer until that city is finalized.
+        // Scene readiness still waits for the later object pass.
+        pending->objectsIncomplete = true;
+        // Clutter has no persistent placement IDs, so it belongs to this one
+        // ground pass. Object-repair passes must never scatter duplicates.
+        // This prepares only ground detail, not any WMO/city children.
+        try {
+            std::unordered_set<uint32_t> clutterModels;
+            generateGroundClutterPlacements(pending, clutterModels);
+        } catch (const std::bad_alloc&) {
+            assetManager->trimFileCache();
+        }
+        return pending;
+    }
+#endif
+
     // Ground and terrain textures are complete before optional world objects.
     // A large building or clutter allocation must not throw away the spawn ADT.
     const char* preparationStage = "M2 models";
+    const char* wmoSubstage = "none";
+    uint32_t preparingWmoGroup = 0;
     uint32_t unfinishedWmoClaim = 0;
     size_t wmoDoodadCheckpoint = 0, wmoEmitterCheckpoint = 0;
     try {
     std::unordered_set<uint32_t> preparedModelIds;
+#ifdef WOWEE_PS4
+    size_t objectTexturePrefetchBytes = 0;
+    auto prefetchObjectTexture = [&](auto& cache, const std::string& key) {
+        // Prefetch is optional: both renderers already load a cache miss during
+        // their resumable upload phase. Never keep an entire city's textures
+        // next to all its parsed geometry in the 448 MiB flexible heap.
+        constexpr size_t maxPrefetchBytes = 2 * 1024 * 1024;
+        if (cache.count(key) || objectTexturePrefetchBytes >= maxPrefetchBytes) return;
+        const auto memory = platform::ps4::queryAvailableCpuMemory();
+        if (memory.measured && memory.bytes < 16 * 1024 * 1024) return;
+        try {
+            auto image = assetManager->loadTexture(key, true);
+            size_t bytes = image.data.capacity();
+            for (const auto& mip : image.mipmaps) bytes += mip.capacity();
+            if (image.isValid() && bytes <= maxPrefetchBytes - objectTexturePrefetchBytes) {
+                cache.emplace(key, std::move(image));
+                objectTexturePrefetchBytes += bytes;
+            }
+        } catch (const std::bad_alloc&) {
+            // The critical model remains valid; finalization retries the real
+            // texture load without retaining unrelated prefetched images.
+            assetManager->trimFileCache();
+        }
+    };
+#endif
     auto ensureModelPrepared = [&](const std::string& m2Path,
                                    uint32_t modelId,
                                    int& skippedFileNotFound,
@@ -645,10 +717,14 @@ std::shared_ptr<PendingTile> TerrainManager::prepareTile(int x, int y, bool obje
             std::transform(texKey.begin(), texKey.end(), texKey.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
             if (pending->preloadedM2Textures.find(texKey) != pending->preloadedM2Textures.end()) continue;
+#ifdef WOWEE_PS4
+            prefetchObjectTexture(pending->preloadedM2Textures, texKey);
+#else
             auto blp = assetManager->loadTexture(texKey, true);
             if (blp.isValid()) {
                 pending->preloadedM2Textures[texKey] = std::move(blp);
             }
+#endif
         }
 
         PendingTile::M2Ready ready;
@@ -708,6 +784,7 @@ std::shared_ptr<PendingTile> TerrainManager::prepareTile(int x, int y, bool obje
             }
 
             if (!wobLoaded) {
+                wmoSubstage = "root";
                 std::vector<uint8_t> wmoData = assetManager->readFile(wmoPath);
                 if (wmoData.empty()) { pending->objectsIncomplete = true; continue; }
 
@@ -715,7 +792,14 @@ std::shared_ptr<PendingTile> TerrainManager::prepareTile(int x, int y, bool obje
                 std::vector<uint8_t>{}.swap(wmoData);
                 if (wmoModel.nGroups > 0) {
                     bool groupsComplete = true;
+                    wmoSubstage = "group geometry";
                     for (uint32_t gi = 0; gi < wmoModel.nGroups; gi++) {
+                        preparingWmoGroup = gi;
+#ifdef WOWEE_PS4
+                        const auto memory = platform::ps4::queryAvailableCpuMemory();
+                        if (memory.measured && memory.bytes < 16 * 1024 * 1024)
+                            assetManager->trimFileCache();
+#endif
                         bool groupLoaded = false;
                         for (const std::string& groupPath :
                              pipeline::wmoGroupCandidates(wmoPath, gi)) {
@@ -727,6 +811,11 @@ std::shared_ptr<PendingTile> TerrainManager::prepareTile(int x, int y, bool obje
                         }
                         groupsComplete = groupsComplete && groupLoaded;
                     }
+#ifdef WOWEE_PS4
+                    // Raw group files have no further owner after parsing.
+                    // Reclaim their cache copy before child models/texture I/O.
+                    assetManager->trimFileCache();
+#endif
                     if (!groupsComplete) {
                         pending->objectsIncomplete = true;
                         LOG_WARNING("[TERRAIN_REPAIR] incomplete WMO groups; retry required: ", wmoPath);
@@ -743,6 +832,7 @@ std::shared_ptr<PendingTile> TerrainManager::prepareTile(int x, int y, bool obje
 
                 glm::vec3 rot = placementEuler(placement.rotation);
 
+                wmoSubstage = "doodad models";
                 // Pre-load WMO doodads (M2 models inside WMO)
                 if (!workerRunning.load()) return nullptr;
 
@@ -839,10 +929,14 @@ std::shared_ptr<PendingTile> TerrainManager::prepareTile(int x, int y, bool obje
                                 std::transform(texKey.begin(), texKey.end(), texKey.begin(),
                                                [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
                                 if (pending->preloadedM2Textures.find(texKey) != pending->preloadedM2Textures.end()) continue;
+#ifdef WOWEE_PS4
+                                prefetchObjectTexture(pending->preloadedM2Textures, texKey);
+#else
                                 auto blp = assetManager->loadTexture(texKey, true);
                                 if (blp.isValid()) {
                                     pending->preloadedM2Textures[texKey] = std::move(blp);
                                 }
+#endif
                             }
                         }
 
@@ -892,7 +986,8 @@ std::shared_ptr<PendingTile> TerrainManager::prepareTile(int x, int y, bool obje
                         PendingTile::WMODoodadReady doodadReady;
                         doodadReady.modelId = doodadModelId;
                         doodadReady.parentWmoUniqueId = placement.uniqueId;
-                        doodadReady.model = std::move(m2Model);
+                        if (!modelAlreadyUploaded && !modelAlreadyPreparedInWmo)
+                            doodadReady.model = std::make_unique<pipeline::M2Model>(std::move(m2Model));
                         doodadReady.worldPosition = worldPos;
                         doodadReady.modelMatrix = worldMatrix;
                         pending->wmoDoodads.push_back(std::move(doodadReady));
@@ -900,6 +995,7 @@ std::shared_ptr<PendingTile> TerrainManager::prepareTile(int x, int y, bool obje
                     }
                 }
 
+                wmoSubstage = "texture prefetch";
                 // Pre-decode WMO textures on background thread
                 for (const auto& texPath : wmoModel.textures) {
                     if (texPath.empty()) continue;
@@ -923,6 +1019,9 @@ std::shared_ptr<PendingTile> TerrainManager::prepareTile(int x, int y, bool obje
                     // Blocks for the upload; the normal map decodes a copy
                     // here on the worker thread and lets it go, which is where
                     // that cost already was.
+#ifdef WOWEE_PS4
+                    prefetchObjectTexture(pending->preloadedWMOTextures, blpKey);
+#else
                     auto blp = assetManager->loadTexture(blpKey, true);
                     if (blp.isValid()) {
 #ifndef WOWEE_PS4
@@ -943,6 +1042,7 @@ std::shared_ptr<PendingTile> TerrainManager::prepareTile(int x, int y, bool obje
 #endif
                         pending->preloadedWMOTextures[blpKey] = std::move(blp);
                     }
+#endif
                 }
 
                 PendingTile::WMOReady ready;
@@ -955,6 +1055,11 @@ std::shared_ptr<PendingTile> TerrainManager::prepareTile(int x, int y, bool obje
                 ready.rotation = rot;
                 ready.scale = placement.scale > 0
                     ? static_cast<float>(placement.scale) / 1024.0f : 1.0f;
+                const auto geometry = platform::cpuGeometryStats();
+                LOG_INFO("[WMO_PREPARED] path=", wmoPath, " groups=", ready.model.groups.size(),
+                         " geometryDirectMiB=", geometry.mappedBytes / (1024 * 1024),
+                         " geometryPeakMiB=", geometry.peakBytes / (1024 * 1024),
+                         " geometryFailures=", geometry.allocationFailures);
                 pending->wmoModels.push_back(std::move(ready));
                 unfinishedWmoClaim = 0;
             }
@@ -1033,6 +1138,7 @@ std::shared_ptr<PendingTile> TerrainManager::prepareTile(int x, int y, bool obje
         }
         const size_t reclaimed = assetManager->trimFileCache();
         LOG_ERROR("Terrain objects incomplete tile=[", x, ",", y, "] stage=", preparationStage,
+                  " wmoSubstage=", wmoSubstage, " wmoGroup=", preparingWmoGroup,
                   "; keeping terrain/collision and completed objects; raw cache reclaimed=", reclaimed,
                   ". Missing objects will retry in place; existing terrain is retained.");
     }
@@ -1064,9 +1170,21 @@ bool TerrainManager::advanceFinalization(FinalizingTile& ft) {
     int y = pending->coord.y;
     TileCoord coord = pending->coord;
 
+    // Object-only passes skip TERRAIN, so transfer preparation pins before
+    // checking duplicate parents/children, not only after instances were made.
+    if (pending->objectsOnly && !ft.sharedOwnershipRetained) {
+        retainSharedWmos(ft);
+        retainSharedDoodads(ft);
+        ft.sharedOwnershipRetained = true;
+    }
+
     switch (ft.phase) {
 
     case FinalizationPhase::TERRAIN: {
+        StreamLoadDiagnostic loadDiagnostic(
+            ft.terrainPreloaded ? "TERRAIN_CHUNKS" : "TERRAIN_PRELOAD",
+            (static_cast<uint64_t>(static_cast<uint32_t>(x)) << 32) | static_cast<uint32_t>(y),
+            4.0f, 1);
         // Check if tile was already loaded or failed
         if (loadedTiles.find(coord) != loadedTiles.end() || failedTiles.find(coord) != failedTiles.end()) {
             {
@@ -1082,10 +1200,15 @@ bool TerrainManager::advanceFinalization(FinalizingTile& ft) {
             // Retain spanning buildings before evicting their old owner for
             // the resident cap, including stationary-preload duplicates for
             // which preparation intentionally did not reparse the WMO.
-            retainSharedWmos(ft);
-            retainSharedDoodads(ft);
+            {
+                StreamLoadStageScope residencyTiming(activeStreamLoadTiming, StreamLoadStage::Residency);
+                retainSharedWmos(ft);
+                retainSharedDoodads(ft);
 #ifdef WOWEE_PS4
-            if (!makeResidentRoom(coord)) return false;
+                if (!makeResidentRoom(coord)) return false;
+#endif
+            }
+#ifdef WOWEE_PS4
             // A full tile's diffuse uploads used to be a single unbounded
             // step. Move one node, preserving its pixel storage on retries.
             if (ft.terrainTextureUpload.empty() && !pending->preloadedTextures.empty()) {
@@ -1155,7 +1278,10 @@ bool TerrainManager::advanceFinalization(FinalizingTile& ft) {
         // Load water after all terrain chunks are uploaded
         if (waterRenderer) {
             size_t beforeSurfaces = waterRenderer->getSurfaceCount();
-            waterRenderer->loadFromTerrain(pending->terrain, true, x, y);
+            {
+                StreamLoadStageScope waterTiming(activeStreamLoadTiming, StreamLoadStage::Water);
+                waterRenderer->loadFromTerrain(pending->terrain, true, x, y);
+            }
             size_t afterSurfaces = waterRenderer->getSurfaceCount();
             if (afterSurfaces > beforeSurfaces) {
                 LOG_INFO("Water: tile [", x, ",", y, "] added ", afterSurfaces - beforeSurfaces,
@@ -1269,10 +1395,8 @@ bool TerrainManager::advanceFinalization(FinalizingTile& ft) {
                         ft.sharedDoodads.emplace(instId, shared);
                         sharedDoodads_[p.uniqueId] = shared;
                         for (auto& [tileCoord, tile] : loadedTiles) {
-                            const auto& placements = tile->terrain.doodadPlacements;
-                            if (std::any_of(placements.begin(), placements.end(), [&](const auto& other) {
-                                    return other.uniqueId == p.uniqueId;
-                                }) && tile->sharedDoodads.emplace(instId, shared).second) {
+                            if (tile->doodadPlacementIndex.contains(p.uniqueId) &&
+                                tile->sharedDoodads.emplace(instId, shared).second) {
                                 tile->m2InstanceIds.push_back(instId);
                             }
                         }
@@ -1478,7 +1602,9 @@ bool TerrainManager::advanceFinalization(FinalizingTile& ft) {
             size_t uploaded = 0;
             while (ft.wmoDoodadIndex < pending->wmoDoodads.size() && uploaded < kDoodadsPerStep) {
                 auto& doodad = pending->wmoDoodads[ft.wmoDoodadIndex];
-                if (!m2Renderer->loadModel(doodad.model, doodad.modelId)) {
+                if (!m2Renderer->hasModel(doodad.modelId) &&
+                    (!doodad.model || !m2Renderer->loadModel(*doodad.model, doodad.modelId))) {
+                    pending->objectsIncomplete = true;
 #ifdef WOWEE_PS4
                     doodad.model = {};
 #endif
@@ -1577,45 +1703,51 @@ bool TerrainManager::advanceFinalization(FinalizingTile& ft) {
         // Commit tile to loadedTiles
         retainSharedWmos(ft);
         retainSharedDoodads(ft);
-        auto tile = std::make_unique<TerrainTile>();
-        tile->coord = coord;
-        tile->terrain = std::move(pending->terrain);
-#ifndef WOWEE_PS4
-        tile->mesh = std::move(pending->mesh);
-#endif
-        // PS4 keeps the ADT height/alpha data for collision and grass. No
-        // runtime consumer reads TerrainTile::mesh; its uploaded vertex,
-        // index and duplicate alpha arrays otherwise cost several MiB per
-        // tile. Let the pending payload release them after the upload.
-        tile->loaded = true;
-        tile->objectsIncomplete = pending->objectsIncomplete;
-        tile->nextObjectRetry = std::chrono::steady_clock::now() + std::chrono::seconds(15);
-        tile->m2InstanceIds = std::move(ft.m2InstanceIds);
-        tile->wmoInstanceIds = std::move(ft.wmoInstanceIds);
-        tile->wmoUniqueIds = std::move(ft.tileWmoUniqueIds);
-        tile->doodadUniqueIds = std::move(ft.tileUniqueIds);
-        tile->sharedWmos = std::move(ft.sharedWmos);
-        tile->sharedDoodads = std::move(ft.sharedDoodads);
-        getTileBounds(coord, tile->minX, tile->minY, tile->maxX, tile->maxY);
+        const auto nextRetry = std::chrono::steady_clock::now() +
+            std::chrono::seconds(pending->objectsOnly ? 15 : 0);
         if (pending->objectsOnly && loadedTiles.count(coord)) {
-            // Repair missing objects in place. Do not replace visible ground,
-            // water, collision data or successfully loaded buildings.
+            // Repair in place without allocating another full ADT/TerrainTile.
+            // Merge IDs in linear expected time: repeated vector searches made
+            // a large city's final commit quadratic within a single phase step.
             auto& existing = *loadedTiles.at(coord);
-            const auto append = [](auto& dst, auto& src) {
-                for (const auto id : src) if (std::find(dst.begin(), dst.end(), id) == dst.end()) dst.push_back(id);
+            const auto append = [](auto& dst, const auto& src) {
+                if (src.empty()) return;
+                std::unordered_set<uint32_t> seen(dst.begin(), dst.end());
+                seen.reserve(dst.size() + src.size());
+                for (const auto id : src) if (seen.insert(id).second) dst.push_back(id);
             };
-            append(existing.m2InstanceIds, tile->m2InstanceIds);
-            append(existing.wmoInstanceIds, tile->wmoInstanceIds);
-            append(existing.wmoUniqueIds, tile->wmoUniqueIds);
-            append(existing.doodadUniqueIds, tile->doodadUniqueIds);
-            for (const auto& shared : tile->sharedWmos)
+            append(existing.m2InstanceIds, ft.m2InstanceIds);
+            append(existing.wmoInstanceIds, ft.wmoInstanceIds);
+            append(existing.wmoUniqueIds, ft.tileWmoUniqueIds);
+            append(existing.doodadUniqueIds, ft.tileUniqueIds);
+            for (const auto& shared : ft.sharedWmos)
                 if (std::find(existing.sharedWmos.begin(), existing.sharedWmos.end(), shared) == existing.sharedWmos.end())
                     existing.sharedWmos.push_back(shared);
-            existing.sharedDoodads.insert(tile->sharedDoodads.begin(), tile->sharedDoodads.end());
+            existing.sharedDoodads.insert(ft.sharedDoodads.begin(), ft.sharedDoodads.end());
             existing.objectsIncomplete = pending->objectsIncomplete;
-            existing.nextObjectRetry = tile->nextObjectRetry;
+            existing.nextObjectRetry = nextRetry;
             LOG_INFO("[TERRAIN_REPAIR] tile=[", x, ",", y, "] incomplete=", existing.objectsIncomplete);
         } else {
+            auto tile = std::make_unique<TerrainTile>();
+            tile->coord = coord;
+            tile->terrain = std::move(pending->terrain);
+#ifndef WOWEE_PS4
+            tile->mesh = std::move(pending->mesh);
+#endif
+            // Compact sorted IDs avoid scanning every ADT placement for every
+            // newly created neighboring doodad; retained geometry is unchanged.
+            tile->doodadPlacementIndex.assign(tile->terrain.doodadPlacements);
+            tile->wmoPlacementIndex.assign(tile->terrain.wmoPlacements);
+            tile->loaded = true;
+            tile->objectsIncomplete = pending->objectsIncomplete;
+            tile->nextObjectRetry = nextRetry;
+            tile->m2InstanceIds = std::move(ft.m2InstanceIds);
+            tile->wmoInstanceIds = std::move(ft.wmoInstanceIds);
+            tile->wmoUniqueIds = std::move(ft.tileWmoUniqueIds);
+            tile->doodadUniqueIds = std::move(ft.tileUniqueIds);
+            tile->sharedWmos = std::move(ft.sharedWmos);
+            tile->sharedDoodads = std::move(ft.sharedDoodads);
+            getTileBounds(coord, tile->minX, tile->minY, tile->maxX, tile->maxY);
             loadedTiles[coord] = std::move(tile);
         }
         // NOTE: Don't cache pending here - std::move above empties terrain/mesh,
@@ -1626,6 +1758,17 @@ bool TerrainManager::advanceFinalization(FinalizingTile& ft) {
         {
             std::lock_guard<std::mutex> lock(queueMutex);
             pendingTiles.erase(coord);
+#ifdef WOWEE_PS4
+            // The current camera/player tile needs its buildings before distant
+            // neighbors need decoration. Explicit intro requests independently
+            // promote their ground-complete scene through enqueueTile(priority).
+            if (!pending->objectsOnly && coord == currentTile) {
+                objectRepairRequests_.insert(coord);
+                pendingTiles[coord] = true;
+                loadQueue.push_front(coord);
+                queueCV.notify_all();
+            }
+#endif
         }
 
         LOG_DEBUG("  Finalized tile [", x, ",", y, "]");
@@ -1844,7 +1987,11 @@ void TerrainManager::processReadyTiles() {
         if (elapsed >= budgetMs) break;
     }
 
-    if (vkCtx) vkCtx->endUploadBatch();  // Async - submits but doesn't wait
+    if (vkCtx) {
+        StreamLoadDiagnostic flushDiagnostic("TERRAIN_FLUSH", 0, budgetMs, 2);
+        StreamLoadStageScope submitTiming(activeStreamLoadTiming, StreamLoadStage::UploadSubmit);
+        vkCtx->endUploadBatch(); // Async submission; receipt measures any actual CPU delay.
+    }
 }
 
 void TerrainManager::processPendingUnloads() {
@@ -2037,10 +2184,8 @@ void TerrainManager::completeSharedWmos(FinalizingTile& ft) {
         // ready. Cancelling a partial creator must not leave an incomplete
         // building pinned by an otherwise completed neighboring ADT.
         for (auto& [tileCoord, tile] : loadedTiles) {
-            const auto& placements = tile->terrain.wmoPlacements;
-            if (std::any_of(placements.begin(), placements.end(), [&](const auto& p) {
-                    return p.uniqueId == shared->uniqueId;
-                }) && std::none_of(tile->sharedWmos.begin(), tile->sharedWmos.end(), [&](const auto& p) {
+            if (tile->wmoPlacementIndex.contains(shared->uniqueId) &&
+                std::none_of(tile->sharedWmos.begin(), tile->sharedWmos.end(), [&](const auto& p) {
                     return p->uniqueId == shared->uniqueId;
                 })) tile->sharedWmos.push_back(shared);
         }
@@ -2935,6 +3080,11 @@ std::optional<float> TerrainManager::getHeightAt(float glX, float glY) const {
     return surface.z;
 }
 
+bool TerrainManager::isTileSceneReadyAt(float glX, float glY) const {
+    const auto it = loadedTiles.find(worldToTile(glX, glY));
+    return it != loadedTiles.end() && !it->second->objectsIncomplete;
+}
+
 bool TerrainManager::isTileLoadedAt(float glX, float glY) const {
     return loadedTiles.find(worldToTile(glX, glY)) != loadedTiles.end();
 }
@@ -3179,14 +3329,23 @@ void TerrainManager::streamTiles() {
         std::lock_guard<std::mutex> lock(queueMutex);
         const auto now = std::chrono::steady_clock::now();
         if (loadQueue.empty() && pendingTiles.empty()) {
+            // Ground reaches every required ADT first. Then restore objects
+            // nearest the player, rather than unordered-map iteration order.
+            TerrainTile* nearest = nullptr;
+            int nearestDistance = std::numeric_limits<int>::max();
             for (const auto& [coord, tile] : loadedTiles) {
                 if (!tile->objectsIncomplete || !retainStreamTile(coord) || now < tile->nextObjectRetry) continue;
-                tile->nextObjectRetry = now + std::chrono::seconds(15);
+                const int dx = coord.x - currentTile.x, dy = coord.y - currentTile.y;
+                const int distance = dx * dx + dy * dy;
+                if (distance < nearestDistance) { nearestDistance = distance; nearest = tile.get(); }
+            }
+            if (nearest) {
+                const auto coord = nearest->coord;
+                nearest->nextObjectRetry = now + std::chrono::seconds(15);
                 objectRepairRequests_.insert(coord);
                 pendingTiles[coord] = true;
                 loadQueue.push_back(coord);
                 LOG_INFO("[TERRAIN_REPAIR] queued tile=[", coord.x, ",", coord.y, "]");
-                break;
             }
         }
     }

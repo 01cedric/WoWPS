@@ -1,0 +1,27 @@
+{
+  "source_commit": "9c416aaacb5537636abb13c80f55a88947838e33",
+  "inputs": {
+    "spell_ranks.sql": "1b94535b3e05912b08b2dfc219ab047ef6698bc04c3b49241d95fab41050cd04",
+    "spell_group.sql": "740f601e4867c631d124ec9304f802ee9b90535b02ff384ea0e3193cfadf902f",
+    "spell_group_stack_rules.sql": "c56cb9a08645d1bb75a8e9c70e6fc1de1603cedf8b600fe29b6f5cd5a4728f46"
+  },
+  "spell_ranks_rows": 3502,
+  "spell_ranks_chains": 598,
+  "spell_group_rows": 532,
+  "spell_group_groups": 113,
+  "spell_group_subgroup_rows": 75,
+  "spell_group_stack_rules_rows": 69,
+  "stack_rule_histogram": {
+    "0": 2,
+    "1": 19,
+    "2": 3,
+    "3": 20,
+    "4": 25
+  },
+  "outputs": {
+    "local_spell_ranks_generated.inc": "db17e6577460e481eaa4fd9e8684b9ceade3843ba3201da075f7a4d1de34a8c1",
+    "local_spell_groups_generated.inc": "b1e2a2cdd7bc571059807776907dac0ea290080c245feb4662aa58e24afbbf82",
+    "local_spell_group_stack_rules_generated.inc": "e97bb214e3b739bc2834a048ea62bbc10afc513e695c50bc81d58fdaa20b7f38"
+  },
+  "scope": "Generated metadata, not gameplay/console acceptance"
+}

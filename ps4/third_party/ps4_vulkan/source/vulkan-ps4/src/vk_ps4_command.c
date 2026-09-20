@@ -15,6 +15,8 @@
 #include <gpuaddr.h>
 #include "vk_ps4_subresource.h"
 #include "vk_ps4_dispatch.h"
+#include "vk_ps4_vertex_hash.h"
+#include "vk_ps4_cache_sync.h"
 
 #include <string.h>
 #include <math.h>
@@ -489,7 +491,7 @@ static void vk_ps4_clear_color_draw(VkPs4CommandBuffer *cmd,
     }
     memcpy(uniform->color, cc->uint32, sizeof(uniform->color));
     uniform->descriptor = sceGnmCreateConstBuffer(uniform->color, sizeof(uniform->color));
-    vk_ps4_cpu_store_fence();
+    /* Command-owned WC writes are published by EndCommandBuffer. */
     /* GFX7 RADV/PSBC carries the low pointer dword in this SGPR and embeds
      * address32_hi in the code. Do not overwrite the adjacent user SGPR. */
     uint32_t *packet = cmd->gnm_cmd.cmdptr;
@@ -715,6 +717,30 @@ static void vk_ps4_bind_subpass_targets(VkPs4CommandBuffer *cmd) {
         }
     }
     sceGnmDrawCmdSetDepthRenderTarget(&cmd->gnm_cmd, depth);
+    /* Polygon offset units depend on the bound depth format, not the shader
+     * or VkPipeline. OpenGNM's target setter does not program this register.
+     * Inheriting it from platform initialization can interpret a Vulkan bias
+     * in normalized depth units instead of D32 mantissa units. Set it on
+     * every subpass bind, including passes reusing the same pipeline.
+     * GFX7 encoding agrees with Mesa RADV radv_emit_depth_bias_state. */
+    uint32_t bias_format = 0;
+    if (depth) {
+        switch (depth->zinfo.format) {
+        case GNM_Z_16:
+            bias_format = S_028B78_POLY_OFFSET_NEG_NUM_DB_BITS(-16);
+            break;
+        case GNM_Z_24:
+            bias_format = S_028B78_POLY_OFFSET_NEG_NUM_DB_BITS(-24);
+            break;
+        case GNM_Z_32_FLOAT:
+            bias_format = S_028B78_POLY_OFFSET_NEG_NUM_DB_BITS(-23) |
+                S_028B78_POLY_OFFSET_DB_IS_FLOAT_FMT(1);
+            break;
+        default: break;
+        }
+    }
+    vk_ps4_emit_context_reg(&cmd->gnm_cmd,
+        R_028B78_PA_SU_POLY_OFFSET_DB_FMT_CNTL, bias_format);
 }
 
 /* Look up the framebuffer attachment index for a given color RT slot
@@ -752,7 +778,13 @@ static void vk_ps4_reset_user_data_state(VkPs4CommandBuffer *cmd) {
     cmd->compute_tables_dirty = false;
     cmd->graphics_dynamic_table = NULL;
     cmd->compute_dynamic_table = NULL;
+    cmd->graphics_dynamic_shadow_count = 0;
+    cmd->compute_dynamic_shadow_count = 0;
     cmd->vertex_table_pipeline = NULL;
+    cmd->index_buffer_state_valid = false;
+    cmd->direct_draw_state_valid = false;
+    cmd->graphics_sync_endptr = NULL;
+    cmd->graphics_sync_shader_reads = false;
 }
 
 /* Re-emit the current pipeline's graphics state after it has been clobbered
@@ -760,6 +792,7 @@ static void vk_ps4_reset_user_data_state(VkPs4CommandBuffer *cmd) {
  * depth/stencil control, and primitive type so the app can continue drawing
  * without re-binding its pipeline (per Vulkan spec for CmdClearAttachments). */
 static void vk_ps4_rebind_pipeline_state(VkPs4CommandBuffer *cmd) {
+    cmd->direct_draw_state_valid = false;
     VkPs4Pipeline *pipe = cmd->current_pipeline;
     const uint32_t stencil_front = cmd->stencil_refmask_front;
     const uint32_t stencil_back = cmd->stencil_refmask_back;
@@ -767,9 +800,14 @@ static void vk_ps4_rebind_pipeline_state(VkPs4CommandBuffer *cmd) {
     /* The clear PS overwrites user SGPRs 0..3. Re-binding the pipeline marks
      * the set tables, push constants and vertex table for re-emission at
      * the next draw, which is what restores them. */
-    if (pipe && pipe->bind_point == VK_PIPELINE_BIND_POINT_GRAPHICS)
+    if (pipe && pipe->bind_point == VK_PIPELINE_BIND_POINT_GRAPHICS) {
+        /* Native clear draws changed registers without changing the Vulkan
+         * binding. Force restoration even when the application pipeline is
+         * identical; ordinary redundant binds can safely take the fast path. */
+        cmd->current_pipeline = NULL;
         vk_ps4_CmdBindPipeline((VkCommandBuffer)cmd,
                               VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipeline)pipe);
+    }
     if (stencil_valid) {
         cmd->stencil_refmask_front = stencil_front;
         cmd->stencil_refmask_back = stencil_back;
@@ -1009,10 +1047,11 @@ static void vk_ps4_rebuild_vertex_table(VkPs4CommandBuffer *cmd) {
     /* Never submit a partially initialized table: a zero V# descriptor can
      * turn a missing binding into a GPU read from address zero. */
     if (valid_count == semantic_count) {
-        uint32_t hash = 2166136261u;
-        const unsigned char *bytes = (const unsigned char *)candidate;
-        for (size_t i = 0; i < sizeof(candidate); ++i)
-            hash = (hash ^ bytes[i]) * 16777619u;
+        /* Unused descriptors are zero-filled in every key. Hash only the
+         * populated prefix, retaining the full-key equality check below.
+         * Terrain commonly uses 2 of 32 descriptors: hashing the padding
+         * added 480 serial byte/multiply steps to every rebuilt table. */
+        const uint32_t hash = vk_ps4_vertex_table_hash(candidate, semantic_count);
         uint32_t bucket = hash & 8191u;
         GnmBuffer *gpu_base = (GnmBuffer *)cmd->vertex_table_mem.mapped;
         GnmBuffer *cpu_base = cmd->vertex_table_cpu_keys;
@@ -1056,7 +1095,7 @@ static void vk_ps4_rebuild_vertex_table(VkPs4CommandBuffer *cmd) {
         cmd->vertex_descriptor_count = semantic_count;
         cmd->vertex_buffers_dirty = true;
     }
-    vk_ps4_cpu_store_fence();
+    /* Immutable snapshots are published together by EndCommandBuffer. */
 }
 
 /* === Command pool === */
@@ -1407,6 +1446,7 @@ vk_ps4_BeginCommandBuffer(VkCommandBuffer commandBuffer, const VkCommandBufferBe
     /* Initialize GnmCommandBuffer with the PM4 buffer */
     cmd->recording_error = VK_SUCCESS;
     cmd->compute_dispatch_count = 0;
+    cmd->depth_draw_diagnostics.active = false;
     cmd->pm4_segment_count = 1;
     memset(cmd->pm4_segment_used, 0, sizeof(cmd->pm4_segment_used));
     GnmCommandCallbackFunc overflow_callback = vk_ps4_command_overflow;
@@ -1502,6 +1542,18 @@ vk_ps4_EndCommandBuffer(VkCommandBuffer commandBuffer) {
                 cmd->vertex_table_slot_cursor, cmd->vertex_table_slot_capacity,
                 cmd->dynamic_table_cursor, VK_PS4_MAX_DYNAMIC_TABLE_SNAPSHOTS, (int)cmd->recording_error);
     }
+    if (total >= 16u * 1024u && cmd->pm4_world_recordings % 300u == 0u) {
+        vk_ps4_log("[ICD_RECORD_API] windowLargeRecordings=300 drawCalls=%llu drawSamples=%llu drawWallMeanNs=%llu drawWallMaxUs=%llu descriptorCalls=%llu descriptorSamples=%llu descriptorWallMeanNs=%llu descriptorWallMaxUs=%llu sampleStride=128/64 wallTimeOnly=1 GPUTime=unmeasured",
+            (unsigned long long)cmd->recording_perf.draw_calls,
+            (unsigned long long)cmd->recording_perf.draw_samples,
+            (unsigned long long)(cmd->recording_perf.draw_samples ? cmd->recording_perf.draw_us * 1000u / cmd->recording_perf.draw_samples : 0),
+            (unsigned long long)cmd->recording_perf.draw_max_us,
+            (unsigned long long)cmd->recording_perf.descriptor_calls,
+            (unsigned long long)cmd->recording_perf.descriptor_samples,
+            (unsigned long long)(cmd->recording_perf.descriptor_samples ? cmd->recording_perf.descriptor_us * 1000u / cmd->recording_perf.descriptor_samples : 0),
+            (unsigned long long)cmd->recording_perf.descriptor_max_us);
+        memset(&cmd->recording_perf, 0, sizeof(cmd->recording_perf));
+    }
     if (cmd->recording_error != VK_SUCCESS) return cmd->recording_error;
     if (cmd->vertex_table_overflow) {
         vk_ps4_log("EndCommandBuffer: immutable vertex table arena exhausted; submit rejected");
@@ -1513,6 +1565,15 @@ vk_ps4_EndCommandBuffer(VkCommandBuffer commandBuffer) {
         cmd->recording_error = VK_ERROR_OUT_OF_DEVICE_MEMORY;
         return cmd->recording_error;
     }
+    /* Publish all command-owned write-combined PM4, push-constant and
+     * descriptor snapshots ON THE RECORDING THREAD. None can be consumed by
+     * the GPU before a completed command buffer is submitted. Fencing each
+     * draw flushed short WC bursts thousands of times per shadow frame.
+     * This fence also makes worker-record/main-submit safe: a submit-thread
+     * SFENCE alone cannot drain another core's write-combining buffers.
+     * QueueSubmit retains its separate fence for the submission epilogue.
+     * Descriptor updates and resource uploads retain their own publication. */
+    vk_ps4_cpu_store_fence();
     return VK_SUCCESS;
 }
 
@@ -1614,6 +1675,11 @@ vk_ps4_CmdBindPipeline(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipeli
     /* Validate bind point matches pipeline type */
     if (pipe->bind_point != pipelineBindPoint) return;
 
+    /* Pipeline objects are immutable. Rebinding the current object cannot
+     * change shader/raster state, so preserve the pending user-data dirtiness
+     * and emit no duplicate PM4. Native clears force a rebind explicitly,
+     * secondary execution and command-buffer reset invalidate this pointer. */
+    if (cmd->current_pipeline == pipe && !cmd->pipeline_rebind_required) return;
     cmd->current_pipeline = pipe;
 
     /* Whatever is bound reaches the new shaders through their own user-data
@@ -1867,12 +1933,17 @@ vk_ps4_CmdBindPipeline(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipeli
     } else if (pipelineBindPoint == VK_PIPELINE_BIND_POINT_COMPUTE) {
         sceGnmDrawCmdSetCsShader(&cmd->gnm_cmd, &pipe->cs_regs);
     }
+    /* Calls above may use CmdSet* to restore static values. The completed
+     * bind now owns those registers again. */
+    cmd->pipeline_rebind_required = false;
 }
 
 VKAPI_ATTR void VKAPI_CALL
 vk_ps4_CmdSetViewport(VkCommandBuffer commandBuffer, uint32_t firstViewport, uint32_t viewportCount, const VkViewport *pViewports) {
     if (!commandBuffer || !pViewports) return;
     VkPs4CommandBuffer *cmd = (VkPs4CommandBuffer *)commandBuffer;
+    if (cmd->current_pipeline && !cmd->current_pipeline->dynamic_viewport)
+        cmd->pipeline_rebind_required = true;
 
     /* GNM viewport: scale/offset maps Vulkan viewport to GNM */
     for (uint32_t i = 0; i < viewportCount; i++) {
@@ -1901,6 +1972,8 @@ VKAPI_ATTR void VKAPI_CALL
 vk_ps4_CmdSetScissor(VkCommandBuffer commandBuffer, uint32_t firstScissor, uint32_t scissorCount, const VkRect2D *pScissors) {
     if (!commandBuffer || !pScissors) return;
     VkPs4CommandBuffer *cmd = (VkPs4CommandBuffer *)commandBuffer;
+    if (cmd->current_pipeline && !cmd->current_pipeline->dynamic_scissor)
+        cmd->pipeline_rebind_required = true;
 
     for (uint32_t i = 0; i < scissorCount; i++) {
         const VkRect2D *sc = &pScissors[i];
@@ -1921,6 +1994,9 @@ VKAPI_ATTR void VKAPI_CALL
 vk_ps4_CmdSetBlendConstants(VkCommandBuffer commandBuffer, const float blendConstants[4]) {
     if (!commandBuffer || !blendConstants) return;
     VkPs4CommandBuffer *cmd = (VkPs4CommandBuffer *)commandBuffer;
+    /* This pipeline does not retain a dynamic-state flag for this register;
+     * conservatively preserve the old rebind behavior. */
+    cmd->pipeline_rebind_required = true;
     sceGnmDrawCmdSetBlendColor(&cmd->gnm_cmd,
         blendConstants[0], blendConstants[1],
         blendConstants[2], blendConstants[3]);
@@ -1931,19 +2007,22 @@ vk_ps4_CmdSetDepthBias(VkCommandBuffer commandBuffer, float depthBiasConstantFac
                        float depthBiasClamp, float depthBiasSlopeFactor) {
     if (!commandBuffer) return;
     VkPs4CommandBuffer *cmd = (VkPs4CommandBuffer *)commandBuffer;
+    if (cmd->current_pipeline && !cmd->current_pipeline->dynamic_depth_bias)
+        cmd->pipeline_rebind_required = true;
 
-    /* GCN polygon offset: scale and offset are in fixed-point format.
-     * The hardware expects the float values converted to uint32 bit patterns
-     * (the GPU interprets them as floats). */
+    /* GFX7 slope is measured in 1/16-pixel rasterizer units; Vulkan's slope
+     * factor is per pixel (same conversion as Mesa RADV). Offsets/clamp are
+     * floats; constant-factor units are selected by the attachment format
+     * emitted in vk_ps4_bind_subpass_targets. */
     vk_ps4_emit_context_reg(&cmd->gnm_cmd,
         R_028B80_PA_SU_POLY_OFFSET_FRONT_SCALE,
-        vk_ps4_fui(depthBiasSlopeFactor));
+        vk_ps4_fui(depthBiasSlopeFactor * 16.0f));
     vk_ps4_emit_context_reg(&cmd->gnm_cmd,
         R_028B84_PA_SU_POLY_OFFSET_FRONT_OFFSET,
         vk_ps4_fui(depthBiasConstantFactor));
     vk_ps4_emit_context_reg(&cmd->gnm_cmd,
         R_028B88_PA_SU_POLY_OFFSET_BACK_SCALE,
-        vk_ps4_fui(depthBiasSlopeFactor));
+        vk_ps4_fui(depthBiasSlopeFactor * 16.0f));
     vk_ps4_emit_context_reg(&cmd->gnm_cmd,
         R_028B8C_PA_SU_POLY_OFFSET_BACK_OFFSET,
         vk_ps4_fui(depthBiasConstantFactor));
@@ -1956,6 +2035,9 @@ VKAPI_ATTR void VKAPI_CALL
 vk_ps4_CmdSetDepthBounds(VkCommandBuffer commandBuffer, float minDepthBounds, float maxDepthBounds) {
     if (!commandBuffer) return;
     VkPs4CommandBuffer *cmd = (VkPs4CommandBuffer *)commandBuffer;
+    /* This pipeline does not retain a dynamic-state flag for this register;
+     * conservatively preserve the old rebind behavior. */
+    cmd->pipeline_rebind_required = true;
     vk_ps4_emit_context_reg(&cmd->gnm_cmd,
         R_028020_DB_DEPTH_BOUNDS_MIN, vk_ps4_fui(minDepthBounds));
     vk_ps4_emit_context_reg(&cmd->gnm_cmd,
@@ -1967,6 +2049,9 @@ vk_ps4_CmdSetStencilCompareMask(VkCommandBuffer commandBuffer, VkStencilFaceFlag
                                  uint32_t compareMask) {
     if (!commandBuffer) return;
     VkPs4CommandBuffer *cmd = (VkPs4CommandBuffer *)commandBuffer;
+    /* This pipeline does not retain a dynamic-state flag for this register;
+     * conservatively preserve the old rebind behavior. */
+    cmd->pipeline_rebind_required = true;
 
     /* DB_STENCILREFMASK: [7:0]=TESTVAL, [15:8]=MASK, [23:16]=WRITEMASK, [31:24]=OPVAL
      * Read-modify-write: only update the MASK field, preserving the others.
@@ -1992,6 +2077,9 @@ vk_ps4_CmdSetStencilWriteMask(VkCommandBuffer commandBuffer, VkStencilFaceFlags 
                                uint32_t writeMask) {
     if (!commandBuffer) return;
     VkPs4CommandBuffer *cmd = (VkPs4CommandBuffer *)commandBuffer;
+    /* This pipeline does not retain a dynamic-state flag for this register;
+     * conservatively preserve the old rebind behavior. */
+    cmd->pipeline_rebind_required = true;
     if (!cmd->stencil_shadow_valid) return;
 
     if (faceMask & VK_STENCIL_FACE_FRONT_BIT) {
@@ -2013,6 +2101,9 @@ vk_ps4_CmdSetStencilReference(VkCommandBuffer commandBuffer, VkStencilFaceFlags 
                                uint32_t reference) {
     if (!commandBuffer) return;
     VkPs4CommandBuffer *cmd = (VkPs4CommandBuffer *)commandBuffer;
+    /* This pipeline does not retain a dynamic-state flag for this register;
+     * conservatively preserve the old rebind behavior. */
+    cmd->pipeline_rebind_required = true;
     if (!cmd->stencil_shadow_valid) return;
 
     if (faceMask & VK_STENCIL_FACE_FRONT_BIT) {
@@ -2033,6 +2124,8 @@ VKAPI_ATTR void VKAPI_CALL
 vk_ps4_CmdSetLineWidth(VkCommandBuffer commandBuffer, float lineWidth) {
     if (!commandBuffer) return;
     VkPs4CommandBuffer *cmd = (VkPs4CommandBuffer *)commandBuffer;
+    if (cmd->current_pipeline && !cmd->current_pipeline->dynamic_line_width)
+        cmd->pipeline_rebind_required = true;
 
     /* PA_SU_LINE_CNTL: [15:0]=WIDTH (in 4.12 fixed-point format).
      * Convert float pixels to fixed-point: width * 4096.
@@ -2089,8 +2182,18 @@ vk_ps4_CmdBindIndexBuffer(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDevi
     VkPs4CommandBuffer *cmd = (VkPs4CommandBuffer *)commandBuffer;
     if (indexType != VK_INDEX_TYPE_UINT16 && indexType != VK_INDEX_TYPE_UINT32) {
         memset(&cmd->index_buffer, 0, sizeof(cmd->index_buffer));
+        cmd->index_buffer_state_valid = false;
         return;
     }
+    /* Many material ranges bind identical index storage. Buffer memory
+     * bindings are immutable while recorded commands use them; content
+     * uploads do not change CP index base/type. Secondary execution and
+     * recording resets invalidate this hardware-state shadow. */
+    if (cmd->index_buffer_state_valid &&
+        cmd->index_buffer.buffer == buffer &&
+        cmd->index_buffer.offset == offset && cmd->index_buffer.type == indexType)
+        return;
+    cmd->index_buffer_state_valid = false;
     cmd->index_buffer.buffer = buffer;
     cmd->index_buffer.offset = offset;
     cmd->index_buffer.type = indexType;
@@ -2110,6 +2213,7 @@ vk_ps4_CmdBindIndexBuffer(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDevi
         default: idx_size = GNM_INDEX_16; break;
         }
         sceGnmDrawCmdSetIndexSize(&cmd->gnm_cmd, idx_size, GNM_POLICY_BYPASS);
+        cmd->index_buffer_state_valid = true;
         /* No INDEX_BUFFER_SIZE here. 01.16 emitted one per index-buffer
          * bind (GNM's setIndexCount) and the scene draw that had completed
          * on the console in 01.15 faulted in every launch of 01.16, with
@@ -2245,7 +2349,7 @@ static void vk_ps4_flush_push_pointer(VkPs4CommandBuffer *cmd, GnmShaderStage st
             return;
         }
         memcpy(snapshot, values, VK_PS4_MAX_PUSH_CONST_DWORDS * sizeof(uint32_t));
-        vk_ps4_cpu_store_fence();
+        /* EndCommandBuffer publishes this immutable snapshot. */
         vk_ps4_emit_address32_user_data(cmd, stage, slots[i].startregister, snapshot);
     }
 }
@@ -2307,6 +2411,21 @@ static void vk_ps4_flush_compute_user_data(VkPs4CommandBuffer *cmd) {
     vk_ps4_flush_push_constants(cmd);
 }
 
+/* Thousands of shadow batches share these values. Avoid re-emitting the
+ * same context register (VGT_INDX_OFFSET) and instance packet for every batch.
+ * This only shadows values written by this command buffer; meta clears,
+ * indirect draws, secondary execution and recording reset invalidate it. */
+static void vk_ps4_set_direct_draw_state(VkPs4CommandBuffer *cmd,
+                                        uint32_t instances, uint32_t vertex_offset) {
+    if (!cmd->direct_draw_state_valid || cmd->direct_draw_instances != instances)
+        sceGnmDrawCmdSetNumInstances(&cmd->gnm_cmd, instances);
+    if (!cmd->direct_draw_state_valid || cmd->direct_draw_vertex_offset != vertex_offset)
+        vk_ps4_emit_context_reg(&cmd->gnm_cmd, R_028408_VGT_INDX_OFFSET, vertex_offset);
+    cmd->direct_draw_instances = instances;
+    cmd->direct_draw_vertex_offset = vertex_offset;
+    cmd->direct_draw_state_valid = cmd->recording_error == VK_SUCCESS;
+}
+
 VKAPI_ATTR void VKAPI_CALL
 vk_ps4_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount, uint32_t instanceCount,
                uint32_t firstVertex, uint32_t firstInstance) {
@@ -2342,7 +2461,6 @@ vk_ps4_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount, uint32_t ins
         cmd->current_pipeline->has_fetch_shader &&
         cmd->current_pipeline->has_vb_table_slot &&
         cmd->vertex_descriptor_count > 0 && cmd->gnm_vertex_buffers) {
-        vk_ps4_cpu_store_fence();
         sceGnmDrawCmdSetPointerUserData(
             &cmd->gnm_cmd, GNM_STAGE_VS,
             cmd->current_pipeline->vertex_buffer_table_slot,
@@ -2351,8 +2469,8 @@ vk_ps4_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount, uint32_t ins
         cmd->vertex_buffers_dirty = false;
     }
 
-    /* Always set instance count to avoid state leak from previous draw */
-    sceGnmDrawCmdSetNumInstances(&cmd->gnm_cmd, instanceCount);
+    /* Direct draw state is emitted below, including restoration after meta draws. */
+
 
     /* Emit firstVertex and firstInstance via SET_SH_REG to the
      * user-data registers that psbc reserved for base_vertex and
@@ -2371,7 +2489,7 @@ vk_ps4_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount, uint32_t ins
      * ones included), so the id the fetch shader sees already carries it -
      * which is why the SGPR below is written as 0 rather than the offset.
      * Written on every draw, offset or not: the register is sticky. */
-    vk_ps4_emit_context_reg(&cmd->gnm_cmd, R_028408_VGT_INDX_OFFSET, firstVertex);
+    vk_ps4_set_direct_draw_state(cmd, instanceCount, firstVertex);
     if (cmd->current_pipeline) {
         VkPs4Pipeline *pipe = cmd->current_pipeline;
         bool both = pipe->has_base_vertex_reg && pipe->has_start_instance_reg &&
@@ -2528,27 +2646,42 @@ static void vk_ps4_log_draw_resources(VkPs4CommandBuffer *cmd, unsigned draw_ind
     }
 }
 
-VKAPI_ATTR void VKAPI_CALL
-vk_ps4_CmdDrawIndexed(VkCommandBuffer commandBuffer, uint32_t indexCount, uint32_t instanceCount,
+static void
+vk_ps4_record_draw_indexed(VkCommandBuffer commandBuffer, uint32_t indexCount, uint32_t instanceCount,
                       uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance) {
     if (!commandBuffer) return;
     VkPs4CommandBuffer *cmd = (VkPs4CommandBuffer *)commandBuffer;
     VkPs4Pipeline *bound_pipe = cmd->current_pipeline;
-    if (!bound_pipe || bound_pipe->rasterization_state.rasterizerDiscardEnable)
+    const bool depth_receipt = cmd->depth_draw_diagnostics.active;
+    if (depth_receipt) ++cmd->depth_draw_diagnostics.attempts;
+    if (!bound_pipe) {
+        if (depth_receipt) ++cmd->depth_draw_diagnostics.no_pipeline;
         return;
+    }
+    if (bound_pipe->rasterization_state.rasterizerDiscardEnable) {
+        if (depth_receipt) ++cmd->depth_draw_diagnostics.raster_discard;
+        return;
+    }
     vk_ps4_flush_graphics_user_data(cmd);
-    if (cmd->recording_error != VK_SUCCESS) return;
+    if (cmd->recording_error != VK_SUCCESS) {
+        if (depth_receipt) ++cmd->depth_draw_diagnostics.recording_failed;
+        return;
+    }
     if (bound_pipe->vertex_input_state.vertexAttributeDescriptionCount > 0 &&
         (!bound_pipe->has_fetch_shader ||
-         cmd->vertex_descriptor_count != bound_pipe->vs_input_semantic_count))
+         cmd->vertex_descriptor_count != bound_pipe->vs_input_semantic_count)) {
+        if (depth_receipt) {
+            if (!bound_pipe->has_fetch_shader) ++cmd->depth_draw_diagnostics.no_fetch;
+            else ++cmd->depth_draw_diagnostics.vertex_table;
+        }
         return;
+    }
 
     /* Emit vertex buffer table if dirty and pipeline has a VB table slot */
     if (cmd->vertex_buffers_dirty && cmd->current_pipeline &&
         cmd->current_pipeline->has_fetch_shader &&
         cmd->current_pipeline->has_vb_table_slot &&
         cmd->vertex_descriptor_count > 0 && cmd->gnm_vertex_buffers) {
-        vk_ps4_cpu_store_fence();
         sceGnmDrawCmdSetPointerUserData(
             &cmd->gnm_cmd, GNM_STAGE_VS,
             cmd->current_pipeline->vertex_buffer_table_slot,
@@ -2557,8 +2690,8 @@ vk_ps4_CmdDrawIndexed(VkCommandBuffer commandBuffer, uint32_t indexCount, uint32
         cmd->vertex_buffers_dirty = false;
     }
 
-    /* Always set instance count to avoid state leak from previous draw */
-    sceGnmDrawCmdSetNumInstances(&cmd->gnm_cmd, instanceCount);
+    /* Direct draw state is emitted below, including restoration after meta draws. */
+
 
     /* Emit vertexOffset and firstInstance via SET_SH_REG BEFORE the draw.
      * GCN user-data registers are read at draw time, so they must be
@@ -2573,7 +2706,7 @@ vk_ps4_CmdDrawIndexed(VkCommandBuffer commandBuffer, uint32_t indexCount, uint32
      * lists with a vertexOffset; with the offset only in an SGPR those
      * lists fetched the first list's vertices, and the login screen showed
      * the whole glyph atlas stretched over the backdrop quad (B4 test 8). */
-    vk_ps4_emit_context_reg(&cmd->gnm_cmd, R_028408_VGT_INDX_OFFSET, (uint32_t)vertexOffset);
+    vk_ps4_set_direct_draw_state(cmd, instanceCount, (uint32_t)vertexOffset);
     if (cmd->current_pipeline) {
         VkPs4Pipeline *pipe = cmd->current_pipeline;
         bool both = pipe->has_base_vertex_reg && pipe->has_start_instance_reg &&
@@ -2666,13 +2799,43 @@ vk_ps4_CmdDrawIndexed(VkCommandBuffer commandBuffer, uint32_t indexCount, uint32
             buf->create_info.size - cmd->index_buffer.offset;
         const uint64_t first_byte = (uint64_t)firstIndex * index_size;
         const uint64_t draw_bytes = (uint64_t)indexCount * index_size;
-        if (first_byte > available || draw_bytes > available - first_byte)
+        if (first_byte > available || draw_bytes > available - first_byte) {
+            if (depth_receipt) ++cmd->depth_draw_diagnostics.index_range;
             return;
+        }
         void *gpu_addr = (char *)buf->memory->gnm_mem.mapped + buf->memory_offset +
                          cmd->index_buffer.offset;
         GnmDrawModifier mod = {0};
+        uint32_t *before_draw = cmd->gnm_cmd.cmdptr;
         sceGnmDrawCmdDrawIndex2(&cmd->gnm_cmd, indexCount,
                                (char *)gpu_addr + first_byte, mod);
+        if (depth_receipt) {
+            if (cmd->recording_error == VK_SUCCESS && cmd->gnm_cmd.cmdptr != before_draw)
+                ++cmd->depth_draw_diagnostics.emitted;
+            else ++cmd->depth_draw_diagnostics.emitter_failed;
+        }
+    } else if (depth_receipt) {
+        ++cmd->depth_draw_diagnostics.index_buffer;
+    }
+}
+
+/* Sample one in 128 API calls, keeping timer overhead out of nearly every
+ * draw. Sampling includes deferred descriptor/push emission and early exits.
+ * These are host API wall times (including preemption), NOT GPU draw times. */
+VKAPI_ATTR void VKAPI_CALL
+vk_ps4_CmdDrawIndexed(VkCommandBuffer commandBuffer, uint32_t indexCount, uint32_t instanceCount,
+                      uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance) {
+    VkPs4CommandBuffer *cmd = (VkPs4CommandBuffer *)commandBuffer;
+    if (!cmd) return;
+    const bool sample = (++cmd->recording_perf.draw_calls & 127u) == 0;
+    const uint64_t start = sample ? vk_ps4_record_clock_us() : 0;
+    vk_ps4_record_draw_indexed(commandBuffer, indexCount, instanceCount, firstIndex,
+                              vertexOffset, firstInstance);
+    if (sample) {
+        const uint64_t elapsed = vk_ps4_record_clock_us() - start;
+        ++cmd->recording_perf.draw_samples;
+        cmd->recording_perf.draw_us += elapsed;
+        if (elapsed > cmd->recording_perf.draw_max_us) cmd->recording_perf.draw_max_us = elapsed;
     }
 }
 
@@ -2681,6 +2844,7 @@ vk_ps4_CmdDrawIndirect(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceS
                        uint32_t drawCount, uint32_t stride) {
     if (!commandBuffer || !buffer) return;
     VkPs4CommandBuffer *cmd = (VkPs4CommandBuffer *)commandBuffer;
+    cmd->direct_draw_state_valid = false; /* GPU arguments change draw registers. */
     VkPs4Buffer *buf = (VkPs4Buffer *)buffer;
     if (!cmd->current_pipeline) return;
     vk_ps4_flush_graphics_user_data(cmd);
@@ -2727,6 +2891,7 @@ vk_ps4_CmdDrawIndexedIndirect(VkCommandBuffer commandBuffer, VkBuffer buffer, Vk
                               uint32_t drawCount, uint32_t stride) {
     if (!commandBuffer || !buffer) return;
     VkPs4CommandBuffer *cmd = (VkPs4CommandBuffer *)commandBuffer;
+    cmd->direct_draw_state_valid = false; /* GPU arguments change draw registers. */
     VkPs4Buffer *buf = (VkPs4Buffer *)buffer;
     if (!cmd->current_pipeline) return;
     vk_ps4_flush_graphics_user_data(cmd);
@@ -3525,6 +3690,74 @@ static void vk_ps4_clear_subpass_loads(VkPs4CommandBuffer *cmd) {
     }
 }
 
+/* Apply execution/memory dependencies at render-pass boundaries. Dependencies
+ * were previously retained by CreateRenderPass but never executed. In
+ * particular a color-write -> external shader-read edge needs an acquire of
+ * readonly texture caches after the attachment release. */
+static void vk_ps4_render_pass_dependencies(VkPs4CommandBuffer *cmd,
+                                            uint32_t destination,
+                                            bool already_released) {
+    VkPs4RenderPass *rp = cmd->current_render_pass.pass;
+    if (!rp) return;
+    bool found = false, shader_reads = false;
+    const VkAccessFlags reads = VK_ACCESS_SHADER_READ_BIT |
+        VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_INPUT_ATTACHMENT_READ_BIT |
+        VK_ACCESS_MEMORY_READ_BIT;
+    for (uint32_t i = 0; i < rp->subpass_dependency_count; ++i) {
+        const VkSubpassDependency *dep = &rp->dependencies[i];
+        if (dep->dstSubpass != destination || dep->srcSubpass == destination)
+            continue; /* Self-dependencies are executed by an explicit barrier. */
+        found = true;
+        shader_reads |= (dep->dstAccessMask & reads) != 0;
+    }
+    if (!found) return;
+    if (!already_released)
+        vk_ps4_emit_cache_release(&cmd->gnm_cmd, GNM_CACHE_FLUSH_AND_INV_TS_EVENT);
+    vk_ps4_acquire_graphics_writes(&cmd->gnm_cmd, shader_reads);
+    cmd->graphics_sync_endptr = cmd->recording_error == VK_SUCCESS ? cmd->gnm_cmd.cmdptr : NULL;
+    cmd->graphics_sync_shader_reads = shader_reads;
+}
+
+static void vk_ps4_depth_draw_receipt_begin(VkPs4CommandBuffer *cmd) {
+    const uint32_t passes = cmd->depth_draw_diagnostics.passes;
+    memset(&cmd->depth_draw_diagnostics, 0, sizeof(cmd->depth_draw_diagnostics));
+    cmd->depth_draw_diagnostics.passes = passes;
+    const VkPs4RenderPass *rp = cmd->current_render_pass.pass;
+    const uint32_t sub = cmd->current_render_pass.current_subpass;
+    if (!rp || sub >= rp->subpass_count) return;
+    const VkSubpassDescription *sp = &rp->subpasses[sub];
+    if (sp->colorAttachmentCount || !sp->pDepthStencilAttachment ||
+        sp->pDepthStencilAttachment->attachment == VK_ATTACHMENT_UNUSED) return;
+    cmd->depth_draw_diagnostics.active = true;
+    ++cmd->depth_draw_diagnostics.passes;
+}
+
+static void vk_ps4_depth_draw_receipt_end(VkPs4CommandBuffer *cmd) {
+    if (!cmd->depth_draw_diagnostics.active) return;
+    cmd->depth_draw_diagnostics.active = false;
+    const uint32_t serial = cmd->depth_draw_diagnostics.passes;
+    if (serial > 3u && serial % 300u != 0u) return;
+    const uint32_t rejected = cmd->depth_draw_diagnostics.no_pipeline +
+        cmd->depth_draw_diagnostics.raster_discard + cmd->depth_draw_diagnostics.recording_failed +
+        cmd->depth_draw_diagnostics.no_fetch + cmd->depth_draw_diagnostics.vertex_table +
+        cmd->depth_draw_diagnostics.index_buffer + cmd->depth_draw_diagnostics.index_range +
+        cmd->depth_draw_diagnostics.emitter_failed;
+    const uint32_t att = vk_ps4_subpass_depth_attachment(cmd);
+    VkPs4ImageView *view = vk_ps4_get_attachment_view(cmd, att);
+    const VkPs4Image *image = view ? view->image : NULL;
+    vk_ps4_log("[DEPTH_DRAW] pass=%u target=%p size=%ux%u indexedAttempts=%u emittedPackets=%u noPipeline=%u rasterDiscard=%u recordingFailed=%u noFetch=%u vertexTable=%u indexBuffer=%u indexRange=%u emitterFailed=%u otherEarlyExit=%u recordingResult=%d CPU-receipt-only",
+        serial, (const void *)image,
+        image ? image->create_info.extent.width : 0u,
+        image ? image->create_info.extent.height : 0u,
+        cmd->depth_draw_diagnostics.attempts, cmd->depth_draw_diagnostics.emitted,
+        cmd->depth_draw_diagnostics.no_pipeline, cmd->depth_draw_diagnostics.raster_discard,
+        cmd->depth_draw_diagnostics.recording_failed, cmd->depth_draw_diagnostics.no_fetch,
+        cmd->depth_draw_diagnostics.vertex_table, cmd->depth_draw_diagnostics.index_buffer,
+        cmd->depth_draw_diagnostics.index_range, cmd->depth_draw_diagnostics.emitter_failed,
+        cmd->depth_draw_diagnostics.attempts - cmd->depth_draw_diagnostics.emitted - rejected,
+        (int)cmd->recording_error);
+}
+
 VKAPI_ATTR void VKAPI_CALL
 vk_ps4_CmdBeginRenderPass(VkCommandBuffer commandBuffer, const VkRenderPassBeginInfo *pBeginInfo,
                           VkSubpassContents contents) {
@@ -3540,6 +3773,7 @@ vk_ps4_CmdBeginRenderPass(VkCommandBuffer commandBuffer, const VkRenderPassBegin
     cmd->current_render_pass.framebuffer = fb;
     cmd->current_render_pass.render_area = pBeginInfo->renderArea;
     cmd->current_render_pass.current_subpass = 0;
+    vk_ps4_depth_draw_receipt_begin(cmd);
 
     /* For imageless framebuffers, extract attachment views from
      * VkRenderPassAttachmentBeginInfo in the pNext chain. */
@@ -3573,6 +3807,8 @@ vk_ps4_CmdBeginRenderPass(VkCommandBuffer commandBuffer, const VkRenderPassBegin
                pBeginInfo->pClearValues,
                cmd->current_render_pass.clear_value_count * sizeof(VkClearValue));
     }
+
+    vk_ps4_render_pass_dependencies(cmd, 0, false);
 
     /* Set scissor to render area first (needed for draw-based clears) */
     sceGnmDrawCmdSetScreenScissor(&cmd->gnm_cmd,
@@ -3617,6 +3853,7 @@ VKAPI_ATTR void VKAPI_CALL
 vk_ps4_CmdEndRenderPass(VkCommandBuffer commandBuffer) {
     if (!commandBuffer) return;
     VkPs4CommandBuffer *cmd = (VkPs4CommandBuffer *)commandBuffer;
+    vk_ps4_depth_draw_receipt_end(cmd);
 
     /* Defensive reset. vk_ps4_clear_depth_draw() already disables the sticky
      * clear bits immediately after each meta draw. */
@@ -3626,25 +3863,23 @@ vk_ps4_CmdEndRenderPass(VkCommandBuffer commandBuffer) {
     db_ctrl.stencilclearenable = 0;
     sceGnmDrawCmdSetDbRenderControl(&cmd->gnm_cmd, &db_ctrl);
 
-    /* DIAGNOSTIC (black-screen investigation): every EOP flush in this ICD
-     * uses the generic CACHE_FLUSH_AND_INV_TS_EVENT, and none ever emits
-     * FLUSH_AND_INV_CB_DATA_TS - a distinct event type this header defines
-     * specifically for flushing/invalidating color-buffer data, and which
-     * is otherwise unused anywhere in the codebase. The presented buffer's
-     * pixels never change across 1400+ frames of real draws while CPU/DMA
-     * writes (FillMemory) always land, which is consistent with CB writes
-     * completing on-GPU but never being written back to the memory that
-     * flip/scanout and this host-side pixel dump actually read. Emit it
-     * before the general flush, in case the two are not redundant here. */
-    sceGnmDrawCmdEventWriteEop(&cmd->gnm_cmd,
-        GNM_FLUSH_AND_INV_CB_DATA_TS, 0,
-        GNM_DATA_SEL_DISCARD, 0);
+    /* Preserve the explicit color-data release and combined CB/DB release.
+     * The pinned emitter requires a valid address even with DISCARD; a NULL
+     * address used to reject both calls without emitting either packet. */
+    vk_ps4_emit_cache_release(&cmd->gnm_cmd, GNM_FLUSH_AND_INV_CB_DATA_TS);
 
     /* Emit EOP event to signal completion */
-    sceGnmDrawCmdEventWriteEop(&cmd->gnm_cmd,
-        GNM_CACHE_FLUSH_AND_INV_TS_EVENT, 0,
-        GNM_DATA_SEL_DISCARD, 0);
+    vk_ps4_emit_cache_release(&cmd->gnm_cmd, GNM_CACHE_FLUSH_AND_INV_TS_EVENT);
 
+    vk_ps4_render_pass_dependencies(cmd, VK_SUBPASS_EXTERNAL, true);
+    VkPs4RenderPass *rp = cmd->current_render_pass.pass;
+    if (rp) {
+        for (uint32_t i = 0; i < rp->attachment_count; ++i) {
+            VkPs4ImageView *view = vk_ps4_get_attachment_view(cmd, i);
+            if (view && view->image)
+                view->image->layout = rp->attachments[i].finalLayout;
+        }
+    }
     cmd->current_render_pass.pass = NULL;
     cmd->current_render_pass.framebuffer = NULL;
 }
@@ -3662,6 +3897,7 @@ vk_ps4_CmdNextSubpass(VkCommandBuffer commandBuffer, VkSubpassContents contents)
     uint32_t next = cmd->current_render_pass.current_subpass + 1;
     if (next >= rp->subpass_count) return;
 
+    vk_ps4_render_pass_dependencies(cmd, next, false);
     cmd->current_render_pass.current_subpass = next;
     vk_ps4_bind_subpass_targets(cmd);
 
@@ -3691,17 +3927,35 @@ vk_ps4_CmdPipelineBarrier(VkCommandBuffer commandBuffer, VkPipelineStageFlags sr
      * newly uploaded texture or depth surface is consumed.  Layouts remain
      * software bookkeeping, but memory visibility is no longer bookkeeping
      * only. */
-    sceGnmDrawCmdEventWriteEop(&cmd->gnm_cmd,
-        GNM_CACHE_FLUSH_AND_INV_TS_EVENT, 0,
-        GNM_DATA_SEL_DISCARD, 0);
-    const GnmAcquireTargetFlags acquire_all = (GnmAcquireTargetFlags)(
-        GNM_ACQUIRE_TARGET_CB0 | GNM_ACQUIRE_TARGET_CB1 |
-        GNM_ACQUIRE_TARGET_CB2 | GNM_ACQUIRE_TARGET_CB3 |
-        GNM_ACQUIRE_TARGET_CB4 | GNM_ACQUIRE_TARGET_CB5 |
-        GNM_ACQUIRE_TARGET_CB6 | GNM_ACQUIRE_TARGET_CB7 |
-        GNM_ACQUIRE_TARGET_DB
-    );
-    sceGnmDrawCmdWaitGraphicsWrite(&cmd->gnm_cmd, acquire_all);
+    const VkAccessFlags shader_read_access = VK_ACCESS_SHADER_READ_BIT |
+        VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_INPUT_ATTACHMENT_READ_BIT |
+        VK_ACCESS_MEMORY_READ_BIT;
+    bool shader_reads = false;
+    for (uint32_t i = 0; i < memoryBarrierCount; ++i)
+        shader_reads |= (pMemoryBarriers[i].dstAccessMask & shader_read_access) != 0;
+    for (uint32_t i = 0; i < bufferMemoryBarrierCount; ++i)
+        shader_reads |= (pBufferMemoryBarriers[i].dstAccessMask & shader_read_access) != 0;
+    for (uint32_t i = 0; i < imageMemoryBarrierCount; ++i)
+        shader_reads |= (pImageMemoryBarriers[i].dstAccessMask & shader_read_access) != 0;
+    /* Coalesce only adjacent graphics dependencies. Equality of the exact
+     * PM4 cursor proves no draw, dispatch, DMA, clear or other GPU command
+     * occurred since the preceding full release/acquire. Graphics-only source
+     * stages cannot introduce host writes or CPU-side upload/alias work, which
+     * has no packet and must ALWAYS retain its own barrier. Reset/re-record
+     * clears this checkpoint. A stronger shader-read acquire is never skipped.
+     * This removes EndRenderPass external-dependency + immediate transition
+     * duplicates without weakening a single cache visibility operation. */
+    const VkPipelineStageFlags graphics_producers = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    const bool covered = srcStageMask && !(srcStageMask & ~graphics_producers) &&
+        cmd->graphics_sync_endptr == cmd->gnm_cmd.cmdptr &&
+        (!shader_reads || cmd->graphics_sync_shader_reads);
+    if (!covered) {
+        vk_ps4_emit_cache_release(&cmd->gnm_cmd, GNM_CACHE_FLUSH_AND_INV_TS_EVENT);
+        vk_ps4_acquire_graphics_writes(&cmd->gnm_cmd, shader_reads);
+        cmd->graphics_sync_endptr = cmd->recording_error == VK_SUCCESS ? cmd->gnm_cmd.cmdptr : NULL;
+        cmd->graphics_sync_shader_reads = shader_reads;
+    }
 
     /* Track image layout transitions */
     for (uint32_t i = 0; i < imageMemoryBarrierCount; i++) {
@@ -3734,9 +3988,7 @@ vk_ps4_CmdSetEvent(VkCommandBuffer commandBuffer, VkEvent event, VkPipelineStage
      * KNOWN LIMITATION: Without a GPU-visible memory location for the event,
      * we can't truly signal a GPU event. This sets the CPU flag and emits
      * a cache flush as a side effect. */
-    sceGnmDrawCmdEventWriteEop(&cmd->gnm_cmd,
-        GNM_CACHE_FLUSH_AND_INV_TS_EVENT, 0,
-        GNM_DATA_SEL_DISCARD, 0);
+    vk_ps4_emit_cache_release(&cmd->gnm_cmd, GNM_CACHE_FLUSH_AND_INV_TS_EVENT);
     ev->signaled = true;
     (void)stageMask;
 }
@@ -3765,10 +4017,8 @@ vk_ps4_CmdWaitEvents(VkCommandBuffer commandBuffer, uint32_t eventCount, const V
      * KNOWN LIMITATION: Without GPU-visible event memory, we can't wait
      * on specific events. We emit a full pipeline stall instead, which
      * is over-synchronized but safe. */
-    sceGnmDrawCmdEventWriteEop(&cmd->gnm_cmd,
-        GNM_CACHE_FLUSH_AND_INV_TS_EVENT, 0,
-        GNM_DATA_SEL_DISCARD, 0);
-    sceGnmDrawCmdWaitGraphicsWrite(&cmd->gnm_cmd, 0);
+    vk_ps4_emit_cache_release(&cmd->gnm_cmd, GNM_CACHE_FLUSH_AND_INV_TS_EVENT);
+    vk_ps4_acquire_graphics_writes(&cmd->gnm_cmd, true);
 
     /* Track image layout transitions */
     for (uint32_t i = 0; i < imageMemoryBarrierCount; i++) {
@@ -4009,4 +4259,6 @@ vk_ps4_CmdExecuteCommands(VkCommandBuffer commandBuffer,
      * the primary's previous bindings. */
     primary->current_pipeline = NULL;
     primary->vertex_table_pipeline = NULL;
+    primary->index_buffer_state_valid = false;
+    primary->direct_draw_state_valid = false;
 }

@@ -543,6 +543,10 @@ void SettingsPanel::renderSettingsWindow(ChatPanel& chatPanel,
                 ImGui::Spacing();
                 ImGui::SeparatorText("Graphics");
                 drawSchemaCategory("Graphics", saveCallback);
+                ImGui::SeparatorText("Effects");
+                drawSchemaCategory("Effects", saveCallback);
+                ImGui::SeparatorText("Lighting");
+                drawSchemaCategory("Lighting", saveCallback);
                 // View distance moved into the schema, so it is drawn by
                 // drawSchemaCategory above rather than here - the options
                 // panels the FrameXML interface builds are generated from the
@@ -750,7 +754,12 @@ void SettingsPanel::drawSchemaCategory(const char* category,
             }
             case SettingKind::Float: {
                 float v = static_cast<float>(std::atof(current.c_str()));
-                if (ImGui::SliderFloat(d.label, &v, d.minValue, d.maxValue, "%.2f")) {
+                const bool fogPercent = std::string(d.key) == "volumetricfogintensity";
+                float shown = fogPercent ? v * 100.0f : v;
+                if (ImGui::SliderFloat(d.label, &shown, fogPercent ? 0.0f : d.minValue,
+                                      fogPercent ? 100.0f : d.maxValue,
+                                      fogPercent ? (shown <= 0.0f ? "Off" : "%.0f%%") : "%.2f")) {
+                    v = fogPercent ? shown / 100.0f : shown;
                     changed = setSettingValue(d.key, settingNumberText(v));
                 }
                 break;
@@ -849,6 +858,8 @@ constexpr const char* kGraphicsApplyKeys[] = {
     "fsrsharpness", "framegen", "brightness", "uiopacity", "minimapsquare",
     "minimapnpcdots", "minimapclock", "minimapcoords", "latencymeter",
     "fogskyblend", "fogstrength", "sharpstars",
+    "volumetricraysenabled", "volumetricfogenabled", "volumetricfogintensity",
+    "bloomenabled", "bloomintensity",
 };
 
 /// Whether a quality preset has an opinion about this setting.
@@ -986,6 +997,14 @@ constexpr FieldBinding kFieldBindings[] = {
     {.key = "parallax",          .asBool  = &SettingsPanel::pendingPOM},
     {.key = "sharpstars",        .asBool  = &SettingsPanel::pendingSharpStars},
     {.key = "shadowquality",     .asInt   = &SettingsPanel::pendingShadowQuality},
+    {.key = "volumetricquality", .asInt   = &SettingsPanel::pendingVolumetricQuality},
+    {.key = "volumetricintensity", .asFloat = &SettingsPanel::pendingVolumetricIntensity},
+    {.key = "volumetricfogintensity", .asFloat = &SettingsPanel::pendingVolumetricFogIntensity},
+    {.key = "volumetricraysenabled", .asBool = &SettingsPanel::pendingVolumetricRaysEnabled},
+    {.key = "volumetricfogenabled", .asBool = &SettingsPanel::pendingVolumetricFogEnabled},
+    {.key = "bloomenabled", .asBool = &SettingsPanel::pendingBloomEnabled},
+    {.key = "bloomintensity", .asFloat = &SettingsPanel::pendingBloomIntensity},
+    {.key = "volumetricdebug", .asInt   = &SettingsPanel::pendingVolumetricDebug},
     {.key = "waterreflections",  .asBool  = &SettingsPanel::pendingWaterReflections},
     {.key = "parallaxquality",   .asInt   = &SettingsPanel::pendingPOMQuality},
 
@@ -1165,6 +1184,30 @@ void SettingsPanel::applySettingSideEffects(const std::string& key) {
         // point in a session.
         if (auto& sink = rendering::renderSettingSinks().setShadowQuality; sink)
             sink(pendingShadowQuality);
+    } else if (key == "volumetricquality") {
+        if (auto& sink = rendering::renderSettingSinks().setVolumetricQuality; sink)
+            sink(pendingVolumetricQuality);
+    } else if (key == "volumetricintensity") {
+        if (auto& sink = rendering::renderSettingSinks().setVolumetricIntensity; sink)
+            sink(rendering::clampVolumetricIntensity(pendingVolumetricIntensity));
+    } else if (key == "volumetricfogintensity") {
+        if (auto& sink = rendering::renderSettingSinks().setVolumetricFogIntensity; sink)
+            sink(rendering::clampVolumetricFogIntensity(pendingVolumetricFogIntensity));
+    } else if (key == "volumetricraysenabled") {
+        if (auto& sink = rendering::renderSettingSinks().setVolumetricRaysEnabled; sink)
+            sink(pendingVolumetricRaysEnabled);
+    } else if (key == "volumetricfogenabled") {
+        if (auto& sink = rendering::renderSettingSinks().setVolumetricFogEnabled; sink)
+            sink(pendingVolumetricFogEnabled);
+    } else if (key == "bloomenabled") {
+        if (auto& sink = rendering::renderSettingSinks().setBloomEnabled; sink)
+            sink(pendingBloomEnabled);
+    } else if (key == "bloomintensity") {
+        if (auto& sink = rendering::renderSettingSinks().setBloomIntensity; sink)
+            sink(rendering::clampBloomIntensity(pendingBloomIntensity));
+    } else if (key == "volumetricdebug") {
+        if (auto& sink = rendering::renderSettingSinks().setVolumetricDebug; sink)
+            sink(pendingVolumetricDebug);
     } else if (key == "waterreflections") {
         // No sink for this one: the reflection pass reads its CVar every frame
         // itself, and the binding above has already written it.
@@ -1403,7 +1446,9 @@ double clampedToSchema(const std::string& key, double value) {
 }  // namespace
 
 bool SettingsPanel::setSettingValue(const std::string& key, const std::string& value) {
-    const double v = std::atof(value.c_str());
+    double v = std::atof(value.c_str());
+    if (key == "volumetricfogintensity") v = rendering::clampVolumetricFogIntensity(static_cast<float>(v));
+    if (key == "bloomintensity") v = rendering::clampBloomIntensity(static_cast<float>(v));
     const bool on = settingIsOn(value);
 
     if (key == "graphicspreset") {

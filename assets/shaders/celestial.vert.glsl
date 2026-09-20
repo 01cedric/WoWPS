@@ -30,5 +30,11 @@ void main() {
     TexCoord = aTexCoord;
     // Sky object: remove camera translation so celestial bodies are at infinite distance
     mat4 rotView = mat4(mat3(view));
-    gl_Position = projection * rotView * push.model * vec4(aPos, 1.0);
+    // A celestial disc is a camera-facing billboard, not an XY world plane.
+    // The old world quad became edge-on looking toward the horizon, exactly
+    // where silhouettes and the forward-scattering rays should meet it.
+    vec4 center = rotView * vec4(push.model[3].xyz, 1.0);
+    center.xy += aPos.xy * vec2(length(push.model[0].xyz), length(push.model[1].xyz));
+    gl_Position = projection * center;
+    gl_Position.z = gl_Position.w; // sky depth; independent of terrain far clip
 }

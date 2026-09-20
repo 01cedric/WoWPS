@@ -204,7 +204,10 @@ int main() {
         assert(h.runCommand(owner,withdraw,result));assert(owner.inventory[0].count==6 && owner.bank[0].count==4);
         withdraw.bid=2392;assert(!h.runCommand(owner,withdraw,result));withdraw.bid=117;
         auto unchanged=owner;
+        // Combat is the realm's shared localCombatActive state, so the creature
+        // attacking the owner has to be a living one standing beside them.
         auto attacker=limited;attacker.guid=90;attacker.targetGuid=owner.guid;attacker.mapId=owner.mapId;attacker.instanceId=owner.instanceId;
+        attacker.health=attacker.maxHealth=100;attacker.hostile=true;attacker.vendor=false;
         h.gameplay.setRemoteNpcs({banker,trainer,attacker});assert(!h.runCommand(owner,withdraw,result));h.gameplay.setRemoteNpcs({banker,trainer});
         owner.x=100;assert(!h.runCommand(owner,withdraw,result));owner=unchanged;
         owner.dead=true;assert(!h.runCommand(owner,withdraw,result));owner=unchanged;
@@ -246,7 +249,15 @@ int main() {
         owner.dead=true;assert(!h.runCommand(owner,relocate,result));owner=unchanged;
         owner.castingSpellId=1;assert(!h.runCommand(owner,relocate,result));owner=unchanged;
         owner.flight.active=true;assert(!h.runCommand(owner,relocate,result));owner=unchanged;
-        owner.attackTarget=90;assert(!h.runCommand(owner,relocate,result));owner=unchanged;
+        // attackTarget only puts the player in combat while the creature it
+        // names is actually in the realm's view, alive and beside them, so the
+        // attacker has to be on the roster for this rejection to mean anything.
+        // Drop the creature's own aggro so the rejection can only come from the
+        // player-initiated side of combat that this line is about.
+        auto aggressor=attacker;aggressor.targetGuid=0;
+        h.gameplay.setRemoteNpcs({banker,trainer,aggressor});
+        owner.attackTarget=aggressor.guid;assert(!h.runCommand(owner,relocate,result));owner=unchanged;
+        h.gameplay.setRemoteNpcs({banker,trainer});
         relocate.serviceNpcGuid=80;assert(!h.runCommand(owner,relocate,result));relocate.serviceNpcGuid=70;
         h.directory+="/missing/arrange";assert(!h.runCommand(owner,relocate,result));assert(owner.bank==unchanged.bank && owner.inventory==unchanged.inventory);h.directory=directory;
         assert(h.runCommand(owner,relocate,result));assert(owner.bank[0].itemId==0 && owner.bank[3].itemId==2392);
@@ -276,7 +287,11 @@ int main() {
         // Force the complete owner snapshot above the datagram limit. Bags,
         // bank, recipe book and skill progress commit only once every page arrives.
         owner.bank.fill({117,3});owner.inventory.clear();
-        for(unsigned i=0;i<LocalGameplay::MaxInventory;++i)owner.inventory.push_back({100000+i,20});
+        // Bags carry an explicit layout: validLocalInventoryLayout() wants a
+        // distinct slot under MaxInventory for every stack, and the default 255
+        // is normalised away in transit, so the owner's own copy would never
+        // match what the guest receives. Lay the fixture out properly instead.
+        for(unsigned i=0;i<LocalGameplay::MaxInventory;++i)owner.inventory.push_back({100000+i,20,uint8_t(i)});
         owner.knownSpells.clear();owner.cooldowns.clear();
         for(unsigned i=1;i<=LocalGameplay::MaxSpells;++i)owner.knownSpells.push_back(i);
         for(unsigned i=1;i<=LocalGameplay::MaxCooldowns;++i)owner.cooldowns.push_back({i,100});

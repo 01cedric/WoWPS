@@ -25,3 +25,26 @@ inline void rewardKill(LocalGameplay& game,LocalRealmPlayer& attacker,const std:
     std::string result;assert(game.execute(attacker,{LocalAction::CastSpell,npc.guid,1},players,result));
     assert(game.npcs().size()==1 && game.npcs()[0].dead);
 }
+
+// LocalStatAura::operator== is defaulted, so it also compares the two fields
+// the header marks session-only and neither the save format nor the LAN wire
+// carries:
+// costModGeneration (a cast reservation cannot be spent across a refresh) and
+// applicationGeneration (the authority's identity for one application). A
+// reloaded or replicated aura is therefore never byte-identical to the live
+// record, and a test that compares the two wholesale is asserting something the
+// format has promised not to do. This checks what a reload really is supposed
+// to reproduce: the session identities arrive cleared and every carried field
+// matches, so a genuinely dropped field still fails.
+inline bool reloadedStatAurasMatch(const std::vector<LocalStatAura>& restored,
+                                   const std::vector<LocalStatAura>& live) {
+    if (restored.size() != live.size()) return false;
+    for (size_t i = 0; i < restored.size(); ++i) {
+        if (restored[i].costModGeneration || restored[i].applicationGeneration) return false;
+        auto expected = live[i];
+        expected.costModGeneration = 0;
+        expected.applicationGeneration = 0;
+        if (!(restored[i] == expected)) return false;
+    }
+    return true;
+}

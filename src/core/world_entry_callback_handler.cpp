@@ -10,6 +10,7 @@
 #include "rendering/wmo_renderer.hpp"
 #include "rendering/m2_renderer.hpp"
 #include "game/game_handler.hpp"
+#include "game/local_realm.hpp"
 #include "pipeline/asset_manager.hpp"
 
 #include <cmath>
@@ -145,6 +146,9 @@ static void precacheNearbyTiles(rendering::TerrainManager* terrainMgr,
 void WorldEntryCallbackHandler::setupCallbacks() {
     // World entry callback (online mode) - load terrain when entering world
     gameHandler_.setWorldEntryCallback([this](uint32_t mapId, float x, float y, float z, bool isInitialEntry) {
+        // Every authoritative relocation invalidates the previous support,
+        // including short same-map moves that avoid a full terrain reload.
+        if (auto* cc = renderer_.getCameraController()) cc->resetGroundRecovery();
         LOG_INFO("Online world entry: mapId=", mapId, " pos=(", x, ", ", y, ", ", z, ")"
                  " initial=", isInitialEntry);
         renderer_.resetCombatVisualState();
@@ -387,24 +391,30 @@ void WorldEntryCallbackHandler::setupCallbacks() {
         LOG_INFO("Unstuck hearth: teleporting to bind point, waiting for terrain...");
     });
 
-    // Auto-unstuck: falling for > 5 seconds = void fall, teleport to map entry
+    // Recover only to a recently confirmed, still-supported position. Normal
+    // falls and transport travel never authorize this callback.
     if (renderer_.getCameraController()) {
-        renderer_.getCameraController()->setAutoUnstuckCallback([this]() {
-            const char* allowAutoUnstuck = std::getenv("WOWEE_ALLOW_AUTO_UNSTUCK");
-            if (!allowAutoUnstuck || std::string(allowAutoUnstuck) != "1") {
-                LOG_WARNING("Auto-unstuck suppressed. Set WOWEE_ALLOW_AUTO_UNSTUCK=1 to teleport to the map entry point after long falls.");
-                return;
-            }
-            if (!renderer_.getCameraController()) return;
-            clearMountForUnstuck();
+        renderer_.getCameraController()->setAutoUnstuckCallback([this]() -> bool {
             auto* cc = renderer_.getCameraController();
-
-            // Last resort: teleport to map entry point (terrain guaranteed loaded here)
-            glm::vec3 spawnPos = cc->getDefaultPosition();
-            spawnPos.z += 5.0f;
-            cc->teleportTo(spawnPos);
-            forceServerTeleportCommand(spawnPos);
-            LOG_INFO("Auto-unstuck: teleported to map entry point (server synced)");
+            if (!cc) return false;
+            const auto safe = cc->getValidatedRecoveryPosition();
+            if (!safe) return false;
+            // Local movement is owned by the local authority. Do not use GM
+            // chat commands or resurrect a dead body as an unstuck side effect.
+            if (auto* realm = gameHandler_.localServiceRealm()) {
+                const auto* self = realm->localPlayer();
+                if (!self || (self->dead && !self->ghost) || self->flight.active || self->transportEntry) return false;
+                const auto server = coords::canonicalToServer(coords::renderToCanonical(*safe));
+                if (!realm->setLocalPosition(self->mapId, server.x, server.y, server.z, self->orientation, 0)) return false;
+                cc->clearMovementInputs();
+                cc->teleportTo(*safe);
+                const auto canonical = coords::renderToCanonical(*safe);
+                gameHandler_.setPosition(canonical.x, canonical.y, canonical.z);
+                LOG_WARNING("[GROUND_RECOVERY] restored last supported local position ",
+                            server.x, ",", server.y, ",", server.z);
+                return true;
+            }
+            return false;
         });
     }
 

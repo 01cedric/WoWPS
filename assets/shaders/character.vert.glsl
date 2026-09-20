@@ -53,12 +53,17 @@ void main() {
     // Bone slots past the model's own count stay identity, so clamping keeps a
     // stray index harmless instead of reading past the buffer.
     uvec4 bi = min(aBoneIndices, uvec4(MAX_BONES - 1u));
-    mat4 skinMat = bones[bi.x] * aBoneWeights.x
-                 + bones[bi.y] * aBoneWeights.y
-                 + bones[bi.z] * aBoneWeights.z
-                 + bones[bi.w] * aBoneWeights.w;
-    // Static scene vertices may have no bone influence at all.
-    if (dot(aBoneWeights, vec4(1.0)) < 0.0001) skinMat = mat4(1.0);
+    // WotLK rigid/partially weighted vertices commonly use fewer than four
+    // influences. Do not fetch matrices whose exact zero weight discards them.
+    // Retain the original order and zero-influence identity convention.
+    mat4 skinMat = mat4(1.0);
+    if (dot(aBoneWeights, vec4(1.0)) >= 0.0001) {
+        skinMat = mat4(0.0);
+        if (aBoneWeights.x != 0.0) skinMat += bones[bi.x] * aBoneWeights.x;
+        if (aBoneWeights.y != 0.0) skinMat += bones[bi.y] * aBoneWeights.y;
+        if (aBoneWeights.z != 0.0) skinMat += bones[bi.z] * aBoneWeights.z;
+        if (aBoneWeights.w != 0.0) skinMat += bones[bi.w] * aBoneWeights.w;
+    }
 
     vec4 skinnedPos = skinMat * vec4(aPos, 1.0);
     vec3 skinnedNorm = mat3(skinMat) * aNormal;

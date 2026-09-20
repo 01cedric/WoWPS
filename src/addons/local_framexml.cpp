@@ -1,5 +1,9 @@
+#include "game/local_talents.hpp"
+#include "game/local_cooldowns.hpp"
+#include "game/local_spell_range.hpp"
 #include "game/local_aura_presentation.hpp"
 #include "addons/local_framexml.hpp"
+#include "game/shapeshift_forms.hpp"
 #include "addons/local_framexml_lua.hpp"
 #include "addons/local_auction_framexml_lua.hpp"
 #include "addons/local_merchant_framexml_lua.hpp"
@@ -11,6 +15,9 @@
 #include "game/local_realm.hpp"
 #include "game/local_services.hpp"
 #include "game/local_mount.hpp"
+#include "game/local_spell_equipment.hpp"
+#include "game/local_runes.hpp"
+#include "game/local_combo.hpp"
 #include "game/game_handler.hpp"
 #include "game/local_quest_dialogue.hpp"
 #include "core/logger.hpp"
@@ -84,7 +91,7 @@ platform::ps4::setInputMenuNavigation(platform::ps4::MenuOwner::FrameXml,false);
 platform::ps4::setInputActionBars(false);
 #endif
 ui::frameXmlClearPadCursorAnchor();
-socialRevision_=UINT64_MAX;partyRevision_=partyRosterRevision_=0;partyInvite_=0;craftSkill_=0;handler_=nullptr;installed_=false;closing_=false;enabled_=false;focus_=0;padFocus_.clear();navigationRoot_=0;phase_=DialoguePhase::None;pendingQuest_=0;pendingTurnIn_=false;missingNpcSeconds_=pendingQuestSeconds_=merchantRefreshSeconds_=0;padCrossHandled_=false;targetShouldersReleased_=false;engine_=nullptr;realm_={};target_={};logout_={};greeting_={};itemIcon_={};changes_={};npc_=lastTarget_=revision_=0;selected_=0;timer_=0;}
+socialRevision_=UINT64_MAX;partyRevision_=partyRosterRevision_=0;partyInvite_=0;craftSkill_=0;handler_=nullptr;installed_=false;closing_=false;enabled_=false;focus_=0;padFocus_.clear();navigationRoot_=0;phase_=DialoguePhase::None;pendingQuest_=0;pendingTurnIn_=false;missingNpcSeconds_=pendingQuestSeconds_=merchantRefreshSeconds_=0;padCrossHandled_=false;engine_=nullptr;realm_={};target_={};logout_={};greeting_={};itemIcon_={};changes_={};npc_=lastTarget_=revision_=0;selected_=0;timer_=0;}
 bool LocalFrameXml::ready() const {
     if(!ui::frameXmlActive() || !enabled_ || !engine_ || !realm_ || !realm_()) return false;
     auto& tree=engine_->widgets();return tree.findByName("MainMenuBar") && tree.findByName("PlayerFrame");
@@ -98,7 +105,11 @@ void LocalFrameXml::publish() {
     const auto& c=realm->content();const int top=lua_gettop(L);lua_newtable(L);
     snapshotTime_=core::appTimeSeconds();num(L,"time",snapshotTime_);
     str(L,"name",p->name);str(L,"bankOwner",std::to_string(p->guid));str(L,"bankNpc",std::to_string(npc_));num(L,"money",p->money);num(L,"xp",p->xp);num(L,"xpMax",p->xpToLevel);
+    num(L,"formSpell",p->formSpellId);num(L,"formId",game::localActiveForm(*p)?game::localActiveForm(*p)->form:0);
+    num(L,"comboPoints",p->comboPoints);str(L,"comboTarget",std::to_string(p->comboTarget));
     num(L,"level",p->level);num(L,"selected",selected_);flag(L,"dead",p->dead);num(L,"mountedSpell",p->mountSpellId);
+    flag(L,"ghost",p->ghost);flag(L,"corpseValid",p->corpseValid);
+    flag(L,"canReclaimCorpse",realm->canReclaimCorpse());
     num(L,"health",p->health);num(L,"maxHealth",p->maxHealth);num(L,"power",p->mana);num(L,"maxPower",p->maxMana);
     const game::LocalRealmNpc* npc=nullptr;
     for(const auto& n:realm->npcs())if(n.guid==npc_){npc=&n;break;}
@@ -158,7 +169,10 @@ void LocalFrameXml::publish() {
         lua_rawseti(L,-2,++serviceIndex);
     };
     if(npc && npc->classTrainer)for(auto id:realm->trainableSpells(npc_))if(const auto* spell=c.spell(id)){
-        service("learn_spell",id,spell->name,game::localTrainerSpellCost(*spell),spell->baseLevel);
+        // The level the trainer gate itself uses, not the raw column: since
+        // the implementation baseLevel is Spell.dbc's real BaseLevel, which is zero on rows
+        // the gate treats as available from level 1 .
+        service("learn_spell",id,spell->name,game::localTrainerSpellCost(*spell),game::localSpellUnlockLevel(*spell));
         if(serviceIndex>=256)break;
     }
     if(npc && npc->professionTrainer && npc->trainerSkill==762)for(const auto& rank:game::LocalRidingRanks){
@@ -245,6 +259,14 @@ void LocalFrameXml::publish() {
         }lua_setfield(L,-2,"choices");
         lua_rawseti(L,-2,q.id);
     }lua_setfield(L,-2,"quests");
+    lua_newtable(L);int formIndex=0;
+    std::unordered_set<uint32_t> learnedForms(p->knownSpells.begin(),p->knownSpells.end());
+    for(const auto& f:game::knownShapeshiftForms(p->classId,learnedForms)){
+        const auto* d=c.spell(f.spellId);if(!d||!d->formId||!d->unsupportedReason.empty())continue;
+        lua_newtable(L);num(L,"id",f.spellId);num(L,"form",f.formId);str(L,"name",d->name);str(L,"icon",d->iconPath);
+        flag(L,"active",p->formSpellId==f.spellId);lua_rawseti(L,-2,++formIndex);
+    }lua_setfield(L,-2,"forms");
+    flag(L,"hasHome",p->hasHome);num(L,"hearthCooldown",p->hearthCooldown);flag(L,"inFlight",p->flight.active);
     lua_newtable(L);int i=0;for(const auto& q:p->quests){lua_pushnumber(L,q.id);lua_rawseti(L,-2,++i);}lua_setfield(L,-2,"log");
     const auto bagLayout=game::localInventoryLayout(*p);
     lua_newtable(L);i=0;for(const auto& s:p->inventory){const auto* item=c.item(s.itemId);lua_newtable(L);
@@ -256,8 +278,19 @@ void LocalFrameXml::publish() {
     lua_newtable(L);i=0;for(auto id:p->knownSpells){const auto* s=c.spell(id);if(!s)continue;lua_newtable(L);
         num(L,"id",id);str(L,"name",s->name);str(L,"icon",s->iconPath);flag(L,"heal",s->heal!=0);
         num(L,"mountDisplay",s->mountDisplayId);num(L,"mountCreature",s->mountCreatureId);
-        flag(L,"usable",s->unsupportedReason.empty());num(L,"cost",s->mana);num(L,"cast",s->castTimeMs);
-        uint32_t cooldown=p->globalCooldownMs;for(const auto& cd:p->cooldowns)if(cd.spellId==id)cooldown=std::max(cooldown,cd.remainingMs);
+        const auto resourceCost=game::localSpellResourceCost(*p,c,*s);
+        const bool noResource=(s->formId&&p->classId==11?game::localAvailableMana(*p):p->mana)<resourceCost;
+        const bool classReady=!s->allowableClasses||(p->classId&&p->classId<=32&&(s->allowableClasses&(1u<<(p->classId-1))));
+        const bool resourceReady=s->formId|| (s->resourceType==5?p->classId==6:s->resourceType==255||s->resourceType==uint8_t(p->resourceType));
+        const bool runesReady=bool(game::selectLocalRunes(p->classId,p->runeCooldownMs,s->runeCost));
+        const auto target=target_?target_():0;
+        const bool comboReady=!s->comboFinisher||(p->comboPoints&&p->comboTarget==target);
+        flag(L,"passive",s->passive);
+        flag(L,"noResource",noResource);
+        flag(L,"usable",s->unsupportedReason.empty()&&!s->passive&&!p->dead&&p->health&&!noResource&&classReady&&resourceReady&&runesReady&&comboReady&&game::localSpellFormReady(*p,*s)&&game::localFormEnvironmentReady(*p,*s)&&game::localSpellEquipmentReady(*p,c,*s));num(L,"cost",resourceCost);num(L,"cast",game::localSpellCastTime(*p,c,*s));
+        flag(L,"comboFinisher",s->comboFinisher);num(L,"comboGain",s->comboGain);flag(L,"requiresBehind",s->requiresBehind);
+        const uint32_t cooldown=std::max(p->globalCooldownMs,game::localSpellCooldownRemaining(*p,c,*s));
+        num(L,"minRange",s->minRange);num(L,"maxRange",game::localSpellMaximumRange(*p,c,*s));
         num(L,"cooldown",cooldown/1000.0);lua_rawseti(L,-2,++i);}lua_setfield(L,-2,"spells");
     const auto& party=realm->partyView();lua_newtable(L);
     num(L,"id",party.partyId);num(L,"inviteId",party.inviteId);
@@ -272,6 +305,9 @@ void LocalFrameXml::publish() {
         num(L,"power",own?p->mana:member.power);num(L,"maxPower",own?p->maxMana:member.maxPower);
         num(L,"level",member.level);num(L,"class",member.classId);num(L,"race",member.race);num(L,"powerType",member.powerType);
         flag(L,"dead",own?p->dead:member.dead);
+        bool memberGhost=own && p->ghost;
+        if(!own)for(const auto& other:realm->players())if(other.guid==member.guid){memberGhost=other.ghost;break;}
+        flag(L,"ghost",memberGhost);
         const bool same=member.mapId==p->mapId && member.instanceId==p->instanceId;
         const float dx=member.x-p->x,dy=member.y-p->y,dz=member.z-p->z;
         flag(L,"sameInstance",same);flag(L,"inRange",same && dx*dx+dy*dy+dz*dz<=1600.0f);
@@ -343,7 +379,7 @@ void LocalFrameXml::update(float dt){
         // A missing paged NPC snapshot is not a server instruction to close a
         // dialog. A present NPC outside talk range still closes immediately.
         missingNpcSeconds_=talker?0:missingNpcSeconds_+.2f;
-        if((talker && !game::localNpcInTalkRange(*p,*talker)) || missingNpcSeconds_>=2.0f){
+        if(p->dead || (talker && !game::localNpcInTalkRange(*p,*talker)) || missingNpcSeconds_>=2.0f){
             LOG_INFO("[LOCAL_QUEST_UI] closing invalid/out-of-range conversation");
             act("close",0);
         }
@@ -419,6 +455,10 @@ void LocalFrameXml::update(float dt){
         engine_->fireEvent(maximumEvent, {"player"});
     }
     if(dirty&Change::Target){engine_->fireEvent("UNIT_HEALTH",{"target"});engine_->fireEvent("UNIT_MAXHEALTH",{"target"});}
+    if(dirty&Change::Combo){engine_->fireEvent("PLAYER_COMBO_POINTS");engine_->fireEvent("UNIT_COMBO_POINTS",{"player"});}
+    if(dirty&(Change::Combo|Change::Target|Change::Power|Change::Bags|Change::Spells)){
+        engine_->fireEvent("ACTIONBAR_UPDATE_USABLE");engine_->fireEvent("SPELL_UPDATE_USABLE");
+    }
     if(dirty&Change::Experience) engine_->fireEvent("PLAYER_XP_UPDATE",{"player"});
     if(dirty&Change::Cooldowns) engine_->fireEvent("ACTIONBAR_UPDATE_COOLDOWN");
     if(dirty&Change::Quests) {
@@ -652,6 +692,8 @@ bool LocalFrameXml::act(const std::string& name,uint32_t id,uint32_t quantity){
     else if(name=="turnin")ok=r->turnInQuest(id,npc_,quantity);
     else if(name=="abandon")ok=r->abandonQuest(id);
     else if(name=="interact_or_attack"){
+        if(p->ghost)return r->reclaimCorpse();
+        if(p->dead)return false;
         const auto guid=target_?target_():0;
         for(const auto& n:r->npcs())if(n.guid==guid){
             if(n.dead)return r->loot(guid);
@@ -662,6 +704,8 @@ bool LocalFrameXml::act(const std::string& name,uint32_t id,uint32_t quantity){
     }
     else if(name=="attack")ok=r->attack(target_());
     else if(name=="stop")ok=r->stopAttack();
+    else if(name=="cancelform")ok=r->cancelForm(id);
+    else if(name=="returnhome")ok=r->returnHome();
     else if(name=="cast"){
         const auto* s=r->content().spell(id);
         if(s)ok=r->castSpell(id,localSpellCommandTarget(*s,*p,target_?target_():0,r->players()));
@@ -671,6 +715,7 @@ bool LocalFrameXml::act(const std::string& name,uint32_t id,uint32_t quantity){
     else if(name=="dismount")ok=r->dismount();
     else if(name=="equip")ok=r->equipItem(id);
     else if(name=="respawn")ok=r->respawn();
+    else if(name=="reclaimcorpse")ok=r->reclaimCorpse();
     else if(name=="save")ok=r->save();
     else if(name=="interact"){ok=r->interact(target_());if(ok)open(target_());}
     if(ok && (name=="accept" || name=="turnin")){

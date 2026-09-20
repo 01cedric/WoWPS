@@ -25,7 +25,8 @@ namespace wowee::rendering {
 inline SkyParams skyParamsFromLighting(float timeOfDay, float gameTime,
                                        float weatherIntensity,
                                        const LightingParams* lighting,
-                                       bool useOriginalSkybox, uint32_t skyboxFlags = 0) {
+                                       bool useOriginalSkybox, uint32_t skyboxFlags = 0,
+                                       uint32_t mapId = 0xffffffffu) {
     SkyParams params;
     params.timeOfDay = timeOfDay;
     params.gameTime = gameTime;
@@ -33,6 +34,8 @@ inline SkyParams skyParamsFromLighting(float timeOfDay, float gameTime,
         params.directionalDir = lighting->directionalDir;
         params.sunColor = lighting->sunColor;
         params.cloudColor = lighting->cloudColor;
+        params.directionalColor = lighting->diffuseColor;
+        params.ambientColor = lighting->ambientColor;
         params.skyTopColor = lighting->skyTopColor;
         params.skyMiddleColor = lighting->skyMiddleColor;
         params.skyBand1Color = lighting->skyBand1Color;
@@ -46,6 +49,10 @@ inline SkyParams skyParamsFromLighting(float timeOfDay, float gameTime,
     params.skyboxHasStars = useOriginalSkybox;
     params.useOriginalSkybox = useOriginalSkybox;
     params.originalSkyboxAllowsAtmosphere = (skyboxFlags & 2u) != 0;
+    // Only the three terrestrial world maps opt into moving celestial bodies
+    // above authored sky layers. Outland and instance-specific skies retain
+    // their original atmosphere flag, including authored space/indoor skies.
+    params.terrestrialCelestials = mapId == 0u || mapId == 1u || mapId == 571u;
     return params;
 }
 

@@ -50,10 +50,10 @@ bool applyFrame(rendering::Camera& camera, const CharacterIntroFrame& frame) {
     return true;
 }
 
-bool requestPosition(rendering::TerrainManager& terrain, const glm::vec3& position, bool priority=false) {
+bool requestPosition(rendering::TerrainManager& terrain, const glm::vec3& position, bool priority=false, bool repairIncomplete=false) {
     if (!usablePosition(position)) return false;
     const auto tile = coords::worldToTile(position.x, position.y);
-    return terrain.enqueueTile(tile.first, tile.second, priority);
+    return terrain.enqueueTile(tile.first, tile.second, priority, repairIncomplete);
 }
 } // namespace
 
@@ -67,6 +67,7 @@ void Application::stopCharacterIntro(bool completed) {
     if (!owned) return; // Logout before any cinematic must preserve the camera.
     audio::AudioEngine::instance().stopNarration();
     if (characterIntro_) characterIntro_->cancel();
+    introSceneVisible_ = false;
     introNarrationStarted_ = false;
     introNarrationShot_ = kNoShot;
     introSkipRequested_ = false;
@@ -83,6 +84,8 @@ void Application::stopCharacterIntro(bool completed) {
         introCompleteOnReturn_ = true;
         introBuffering_ = true;
         camera->setPosition(introSavedCameraPosition_);
+        LOG_INFO("[INTRO_RETURN] Waiting for starting-area scenery at ",
+                 introSpawnPosition_.x, ",", introSpawnPosition_.y, ",", introSpawnPosition_.z);
         return;
     }
     audio::AudioEngine::instance().setCinematicAudioExclusive(false);
@@ -125,9 +128,19 @@ void Application::updateCharacterIntro(float deltaTime) {
 
     if (introReturning_) {
         camera->setPosition(introSavedCameraPosition_);
-        const bool ready = localRealmWmoOnly_ || (terrain &&
-            terrain->isTileLoadedAt(introSpawnPosition_.x, introSpawnPosition_.y) &&
-            terrain->isTileLoadedAt(introSavedCameraPosition_.x, introSavedCameraPosition_.y));
+        // A flyover can evict the spawn's buildings as well as its terrain.
+        // Releasing movement on ADT completion alone lets a crypt or elevated
+        // WMO platform lose its floor. Priority requests also repair objects in
+        // already loaded tiles; ordinary requests deliberately do not.
+        if (!localRealmWmoOnly_) {
+            requestPosition(*terrain, introSpawnPosition_, true);
+            requestPosition(*terrain, introSavedCameraPosition_, true);
+        }
+        const bool sceneReady = localRealmWmoOnly_ || (
+            terrain->isTileSceneReadyAt(introSpawnPosition_.x, introSpawnPosition_.y) &&
+            terrain->isTileSceneReadyAt(introSavedCameraPosition_.x, introSavedCameraPosition_.y));
+        const bool ready = introWarmup_.ready(kNoShot, sceneReady,
+                                              terrain->hasFinalizationWork(), elapsed);
         if (ready) {
             const bool markComplete = introCompleteOnReturn_;
             stopCharacterIntro(false);
@@ -136,13 +149,12 @@ void Application::updateCharacterIntro(float deltaTime) {
             LOG_INFO("[INTRO] Returned to ordinary spawn camera; completed=", markComplete);
             return;
         }
-        if (terrain) {
-            requestPosition(*terrain, introSpawnPosition_);
-            requestPosition(*terrain, introSavedCameraPosition_);
-        }
         introWaitSeconds_ += elapsed;
         if (introWaitSeconds_ >= kStreamTimeoutSeconds) {
-            LOG_WARNING("[INTRO] Spawn terrain did not recover before timeout");
+            LOG_WARNING("[INTRO] Spawn scenery did not recover before timeout; map=", player->mapId,
+                        " spawnReady=", terrain->isTileSceneReadyAt(introSpawnPosition_.x, introSpawnPosition_.y),
+                        " cameraReady=", terrain->isTileSceneReadyAt(introSavedCameraPosition_.x, introSavedCameraPosition_.y),
+                        " finalizing=", terrain->hasFinalizationWork());
             stopCharacterIntro(false);
             disconnectNotice_ = "The starting area could not finish loading. Please try entering the world again.";
             logoutToLoginPending_ = true; // Teardown runs between frames, never here.
@@ -214,6 +226,7 @@ void Application::updateCharacterIntro(float deltaTime) {
         introSavedCameraPosition_ = camera->getPosition();
         introSpawnPosition_ = renderer->getCharacterPosition();
         introBuffering_ = true;
+        introSceneVisible_ = false;
         introWaitSeconds_ = 0.0f;
         introWarmup_.reset();
         introPendingAdvanceSeconds_ = 0.0f;
@@ -273,7 +286,7 @@ void Application::updateCharacterIntro(float deltaTime) {
     if (!pending || !applyFrame(*camera, *pending)) { beginReturn(false); return; }
     const auto pendingPosition = camera->getPosition();
     const bool requested = requestPosition(*terrain, pendingPosition, true);
-    bool ready = requested && terrain->isTileLoadedAt(pendingPosition.x, pendingPosition.y);
+    bool ready = requested && terrain->isTileSceneReadyAt(pendingPosition.x, pendingPosition.y);
 
     // Require nearby scenery in the viewing direction, not just the tile
     // underneath the camera. A flyover can look into an unfinished neighbour.
@@ -281,34 +294,81 @@ void Application::updateCharacterIntro(float deltaTime) {
     for(float distance:{75.f,150.f}) {
         const auto visible=pendingPosition+direction*distance;
         if(requestPosition(*terrain,visible,true))
-            ready=terrain->isTileLoadedAt(visible.x,visible.y)&&ready;
+            ready=terrain->isTileSceneReadyAt(visible.x,visible.y)&&ready;
     }
-    // Stage the next ten seconds of the authored camera path, but only in
-    // adjacent tiles that the active streaming window can retain. There is no
-    // full-route preload and no permanently raised world draw distance.
+    // Prewarm both the future camera position and its viewing corridor. The
+    // old camera-only lookahead missed neighbours entered by a turning view,
+    // even while the camera stayed inside an already complete tile.
+    const auto activeTile = coords::worldToTile(pendingPosition.x, pendingPosition.y);
+    // Before the first frame of a shot, require its near-future corridor too.
+    // Previously narration began with a ready camera tile while the next tile
+    // was ground-only; three seconds later playback held for ~9.7 seconds.
+    const bool preparingShot = introNarrationShot_ != pending->shotIndex;
+    bool entryCorridorReady = true;
+    const auto prewarm = [&](const glm::vec3& position, bool requiredAtEntry = false) {
+        if (!usablePosition(position)) return;
+        const auto tile = coords::worldToTile(position.x, position.y);
+        if (std::abs(activeTile.first-tile.first) <= 1 &&
+            std::abs(activeTile.second-tile.second) <= 1) {
+            // Request object repair early, but retain background queue priority
+            // and TerrainManager's existing pending/retry backoff.
+            const bool accepted = requestPosition(*terrain, position, false, true);
+            if (preparingShot && requiredAtEntry && accepted)
+                entryCorridorReady = terrain->isTileSceneReadyAt(position.x, position.y) &&
+                                     entryCorridorReady;
+        }
+    };
     for (const uint32_t leadMs : kLookaheadMs) {
         if (const auto preview = characterIntro_->peekAhead(aheadMs + leadMs)) {
+            if (preview->shotIndex != pending->shotIndex) continue;
             const auto position = coords::canonicalToRender(preview->canonicalPosition);
-            if (usablePosition(position) && preview->shotIndex == pending->shotIndex) {
-                const auto a = coords::worldToTile(pendingPosition.x, pendingPosition.y);
-                const auto b = coords::worldToTile(position.x, position.y);
-                if (std::abs(a.first-b.first) <= 1 && std::abs(a.second-b.second) <= 1)
-                    requestPosition(*terrain, position);
-            }
+            const auto target = coords::canonicalToRender(preview->canonicalTarget);
+            if (!usablePosition(position) || !usablePosition(target)) continue;
+            const bool requiredAtEntry = leadMs <= 6000;
+            prewarm(position, requiredAtEntry);
+            const auto look = glm::normalize(target-position);
+            for (float distance : {75.f, 150.f})
+                prewarm(position+look*distance, requiredAtEntry);
         }
     }
+    // Warm the ordinary camera when it re-enters the cinematic working set.
+    // Do not pin a second distant world region throughout a flyover: that
+    // competes with the shot for the PS4's limited flexible-memory budget.
+    prewarm(introSpawnPosition_);
+    prewarm(introSavedCameraPosition_);
+    // Neighbour requests push to the front. Keep the required camera tile
+    // ahead of speculative scenery, especially after skip/shot changes.
+    if (requested) requestPosition(*terrain, pendingPosition, true);
     // Finish initial/cut uploads behind the existing buffering overlay instead
     // of starting narration as soon as the first terrain tile becomes ready.
-    ready = introWarmup_.ready(pending->shotIndex, ready,
+    ready = introWarmup_.ready(pending->shotIndex, ready && entryCorridorReady,
                                   terrain->hasFinalizationWork(), elapsed);
     const bool wasBuffering = introBuffering_;
     introBuffering_ = !ready;
+    if (!ready) {
+        // Pause camera and narration at the last complete frame during a
+        // same-shot streaming stall. Painting black here caused the repeated
+        // flashes reported on every race. Initial loads and discontinuous
+        // cuts still stay covered until their destination scene is ready.
+        const bool canHold = introSceneVisible_ &&
+            current->shotIndex == pending->shotIndex;
+        if (canHold) {
+            if (!applyFrame(*camera, *current)) { beginReturn(false); return; }
+        } else {
+            introSceneVisible_ = false;
+        }
+    } else {
+        introSceneVisible_ = true;
+    }
     if (wasBuffering != introBuffering_) {
         LOG_INFO("[INTRO_STREAM] shot=", pending->shotIndex,
                  " buffering=", introBuffering_, " waitSeconds=", introWaitSeconds_,
                  " tiles=", terrain->getLoadedTileCount(),
                  " pending=", terrain->getPendingTileCount(),
-                 " finalizing=", terrain->hasFinalizationWork());
+                 " finalizing=", terrain->hasFinalizationWork(),
+                 " holdVisibleFrame=", introBuffering_ && introSceneVisible_,
+                 " entryCorridorReady=", entryCorridorReady,
+                 " futureObjectRepair=1");
     }
     auto& audio = audio::AudioEngine::instance();
     audio.setNarrationPaused(!ready);
@@ -317,7 +377,7 @@ void Application::updateCharacterIntro(float deltaTime) {
         introWaitSeconds_ += elapsed;
         if (!requested || introWaitSeconds_ >= kStreamTimeoutSeconds) {
             const auto tile = coords::worldToTile(pendingPosition.x, pendingPosition.y);
-            LOG_WARNING("[INTRO] Camera terrain unavailable; returning to spawn: tile=",
+            LOG_WARNING("[INTRO] Camera scenery incomplete; returning without marking intro seen: tile=",
                         tile.first, ",", tile.second, " requested=", requested,
                         " waitSeconds=", introWaitSeconds_, " map=", player->mapId);
             beginReturn(false);
@@ -371,10 +431,11 @@ void Application::renderCharacterIntroOverlay() {
         ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) introSkipRequested_ = true;
     auto* draw = ImGui::GetForegroundDrawList();
     const ImVec2 size = io.DisplaySize;
-    if (introBuffering_ || introReturning_)
+    if ((introBuffering_ && !introSceneVisible_) || introReturning_)
         draw->AddRectFilled(ImVec2(0, 0), size, IM_COL32(0, 0, 0, 255));
     const char* label = introReturning_ ? "Loading starting area..." :
-        introBuffering_ ? "Loading cinematic...  Circle / Esc: Skip" : "Circle / Esc: Skip";
+        introBuffering_ ? (introSceneVisible_ ? "Buffering cinematic...  Circle / Esc: Skip" :
+            "Loading cinematic...  Circle / Esc: Skip") : "Circle / Esc: Skip";
     const ImVec2 text = ImGui::CalcTextSize(label);
     const ImVec2 at(std::max(16.0f, (size.x-text.x)*0.5f), std::max(16.0f, size.y-48.0f));
     draw->AddRectFilled(ImVec2(at.x-12, at.y-8), ImVec2(at.x+text.x+12, at.y+text.y+8),

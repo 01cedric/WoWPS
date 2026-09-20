@@ -36,20 +36,10 @@ inline constexpr std::array<VertexAttribute, 5> kWmoVertexAttributes = {{
     {.location = 4, .componentCount = 4, .offset = static_cast<uint32_t>(offsetof(WMOVertex, tangent))},
 }};
 
-/// The same geometry through assets/shaders/shadow.vert.glsl, which is shared
-/// with the skinned renderers and so declares two attributes this geometry has
-/// no data for.
-///
-/// Locations 2 and 3 are bone weights and indices. WMO geometry has no bones
-/// and the shader is compiled with useBones = 0, so nothing reads them, but a
-/// declared input still needs a description or the pipeline is invalid. They
-/// point at the colour, which is the right size and is never read through
-/// them.
-inline constexpr std::array<VertexAttribute, 4> kWmoShadowVertexAttributes = {{
+/// Dedicated WMO shadow geometry uses the same position and authored UV.
+inline constexpr std::array<VertexAttribute, 2> kWmoShadowVertexAttributes = {{
     {.location = 0, .componentCount = 3, .offset = static_cast<uint32_t>(offsetof(WMOVertex, position))},
     {.location = 1, .componentCount = 2, .offset = static_cast<uint32_t>(offsetof(WMOVertex, texCoord))},
-    {.location = 2, .componentCount = 4, .offset = static_cast<uint32_t>(offsetof(WMOVertex, color))},
-    {.location = 3, .componentCount = 4, .offset = static_cast<uint32_t>(offsetof(WMOVertex, color))},
 }};
 
 }  // namespace rendering

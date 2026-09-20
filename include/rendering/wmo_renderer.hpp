@@ -1,4 +1,9 @@
 #pragma once
+#include "rendering/shadow_receiver_hull.hpp"
+#include "rendering/wmo_draw_bounds.hpp"
+#include "rendering/wmo_portal_scratch.hpp"
+#include "rendering/wmo_shadow_material.hpp"
+#include "platform/cpu_geometry.hpp"
 #include "rendering/shadow_ranges.hpp"
 #include "rendering/triangle_cell_index.hpp"
 
@@ -217,7 +222,8 @@ public:
      * Render depth-only for shadow casting
      */
     void renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMatrix,
-                      const glm::vec3& shadowCenter = glm::vec3(0), float shadowRadius = 1e9f);
+                      const glm::vec3& shadowCenter = glm::vec3(0), float shadowRadius = 1e9f,
+                      uint32_t shadowPassIndex = 0, const ShadowReceiverHull* receiverHull = nullptr);
 
     /**
      * Get number of loaded models
@@ -419,6 +425,8 @@ public:
      * @return Distance to first intersection, or maxDistance if no hit
      */
     float raycastBoundingBoxes(const glm::vec3& origin, const glm::vec3& direction, float maxDistance) const;
+    // Conservative void-recovery veto, independent of view/focus culling.
+    bool hasPotentialGroundBelow(const glm::vec3& feet) const;
 
     /**
      * Limit expensive collision/raycast queries to objects near a focus point.
@@ -483,7 +491,7 @@ private:
         float wmoAmbientG;         // 56 (interior ambient color G)
         float wmoAmbientB;         // 60 (interior ambient color B)
         int32_t emissive;           // 64 (0 none, 1 lamp glass, 2 firelit)
-        int32_t padding0;           // 68
+        int32_t unfogged;           // 68 (MOMT 0x02; formerly padding)
         int32_t padding1;           // 72
         int32_t padding2;           // 76
     };  // 80 bytes total
@@ -502,6 +510,7 @@ private:
         glm::vec3 boundingBoxMax;
 
         uint32_t groupFlags = 0;
+        bool hasVertexColors = false;
         bool allUntextured = false;  // True if ALL batches use fallback white texture (collision/placeholder group)
         bool isLOD = false;          // Distance-only group (skip when camera is close)
 
@@ -525,6 +534,8 @@ private:
             bool hasTexture = false;
             bool alphaTest = false;
             bool unlit = false;
+            bool unfogged = false;
+            float specularIntensity = 0.0f;
             bool isTransparent = false;     // blendMode >= 2
             bool isWindow = false;          // F_SIDN or F_WINDOW material
             bool isLava = false;            // lava/magma texture (UV scroll)
@@ -533,18 +544,25 @@ private:
             // branch for how each level is shaded.
             uint8_t emissiveLevel = 0;
             // For multi-draw: store index ranges
-            struct DrawRange { uint32_t firstIndex; uint32_t indexCount; };
+            struct DrawRange {
+                uint32_t firstIndex;
+                uint32_t indexCount;
+                WmoDrawBounds bounds;
+            };
             std::vector<DrawRange> draws;
         };
         std::vector<MergedBatch> mergedBatches;
         bool materialBatchesPrepared = false;
-        std::vector<ShadowRange> shadowRanges;
+        std::vector<ShadowRange> shadowRanges; // opaque only; coalesced across materials
+        std::vector<WmoDrawBounds> shadowRangeBounds; // parallel immutable local bounds
+        VkDescriptorSet opaqueShadowSet = VK_NULL_HANDLE; // alias of a merged material set, not owned
+        std::vector<uint32_t> cutoutShadowBatches; // indices into owned mergedBatches
         // Local-space center/radius for each authored lava draw range.
         std::vector<glm::vec4> lavaLights;
 
         // Collision geometry (positions only, for floor raycasting)
-        std::vector<glm::vec3> collisionVertices;
-        std::vector<uint16_t> collisionIndices;
+        platform::CpuGeometryVector<glm::vec3> collisionVertices;
+        platform::CpuGeometryVector<uint16_t> collisionIndices;
 
         // 2D spatial grid for fast triangle lookup (built at load time).
         // Bins triangles by their XY bounding box into grid cells.
@@ -644,6 +662,7 @@ private:
 
         // Material flags (materialId -> flags; 0x01 = unlit)
         std::vector<uint32_t> materialFlags;
+        std::vector<uint32_t> materialShaders;
 
         // Portal visibility data
         std::vector<PortalData> portals;
@@ -757,7 +776,7 @@ private:
                                      const glm::vec3& viewerLocalPos,
                                      const Frustum& frustum,
                                      const glm::mat4& modelMatrix,
-                                     std::unordered_set<uint32_t>& outVisibleGroups) const;
+                                     WMOPortalScratch& visibility) const;
 
     /**
      * Test if a portal polygon is visible from a position through a frustum
@@ -825,7 +844,6 @@ private:
     VkPipelineLayout shadowPipelineLayout_ = VK_NULL_HANDLE;
     /// The set the shadow pass binds. Five separate members before,
     /// built and torn down here and in three other renderers.
-    ShadowParamsSet shadowParams_;
 
     // Descriptor set layouts
     VkDescriptorSetLayout materialSetLayout_ = VK_NULL_HANDLE;
@@ -927,9 +945,8 @@ private:
         uint32_t distanceCulled = 0;
         uint32_t frustumCulled = 0;
     };
-    std::vector<size_t> visibleInstances_;      // reused per frame
     std::vector<InstanceDrawList> drawLists_;    // reused per frame
-    std::unordered_set<uint32_t> portalVisibleGroupSet_; // reused per frame (portal culling scratch)
+    WMOPortalScratch portalScratch_; // sequential culling; retained dense flags and queue
 
     // Collision query profiling - atomic because getFloorHeight is dispatched
     // on async threads from camera_controller while the main thread reads these.

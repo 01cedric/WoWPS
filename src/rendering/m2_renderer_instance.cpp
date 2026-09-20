@@ -46,6 +46,8 @@ void M2Renderer::setInstancePosition(uint32_t instanceId, const glm::vec3& posit
     const glm::vec3 oldBoundsMin = inst.worldBoundsMin;
     const glm::vec3 oldBoundsMax = inst.worldBoundsMax;
 
+    shadowSnapshotDirty_ = true;
+    visibilityClusters_.invalidate(static_cast<uint32_t>(idxIt->second));
     inst.position = position;
     inst.updateModelMatrix();
     // Use cachedModel instead of a fresh models.find() - the pointer was set
@@ -140,6 +142,10 @@ void M2Renderer::setInstanceTransform(uint32_t instanceId, const glm::mat4& tran
     const glm::vec3 oldBoundsMax = inst.worldBoundsMax;
     const glm::vec3 oldPosition = inst.position;
 
+    if (inst.modelMatrix == transform) return;
+    shadowSnapshotDirty_ = true;
+    visibilityClusters_.invalidate(static_cast<uint32_t>(idxIt->second));
+
     // Update model matrix directly
     inst.modelMatrix = transform;
     inst.invModelMatrix = glm::inverse(transform);
@@ -213,7 +219,10 @@ void M2Renderer::removeInstance(uint32_t instanceId) {
     destroyInstanceBones(inst, /*defer=*/true);
 
     // Swap-remove: move last element to the hole and pop_back to avoid O(n) shift
+    localLightInstancesDirty_ = true;
     shadowInstanceOrder_.invalidate();
+    shadowSnapshotDirty_ = true;
+    visibilityClusters_.invalidate(static_cast<uint32_t>(idx));
     instanceIndexById.erase(instanceId);
     if (idx < instances.size() - 1) {
         uint32_t movedId = instances.back().id;
@@ -224,23 +233,29 @@ void M2Renderer::removeInstance(uint32_t instanceId) {
         instances.pop_back();
     }
 
-    // Rebuild the lightweight auxiliary index vectors (smoke, portal, etc.)
-    // These are small vectors of indices that are rebuilt cheaply.
-    smokeInstanceIndices_.clear();
-    portalInstanceIndices_.clear();
-    animatedInstanceIndices_.clear();
-    particleOnlyInstanceIndices_.clear();
-    particleInstanceIndices_.clear();
-    for (size_t i = 0; i < instances.size(); i++) {
-        auto& ri = instances[i];
-        if (ri.cachedIsSmoke) smokeInstanceIndices_.push_back(i);
-        if (ri.cachedIsInstancePortal) portalInstanceIndices_.push_back(i);
-        if (ri.cachedHasParticleEmitters) particleInstanceIndices_.push_back(i);
-        if (ri.cachedHasAnimation && !ri.cachedDisableAnimation)
-            animatedInstanceIndices_.push_back(i);
-        else if (ri.cachedHasParticleEmitters)
-            particleOnlyInstanceIndices_.push_back(i);
-    }
+    // Swap-removal changes only the removed index and the old tail. Repair
+    // compact index lists without rereading every large M2Instance on unload.
+    const size_t oldTail = instances.size();
+    const auto repair = [idx, oldTail](auto& indices) {
+        const auto removed = std::lower_bound(indices.begin(), indices.end(), idx);
+        if (removed != indices.end() && *removed == idx) indices.erase(removed);
+        if (idx != oldTail && !indices.empty() && indices.back() == oldTail) {
+            indices.pop_back();
+            // Keep the original instance-order iteration (particle budgets and
+            // animation groups can depend on it), not just membership.
+            indices.insert(std::lower_bound(indices.begin(), indices.end(), idx), idx);
+        }
+    };
+    repair(smokeInstanceIndices_);
+    repair(portalInstanceIndices_);
+    repair(animatedInstanceIndices_);
+    repair(particleOnlyInstanceIndices_);
+    repair(ribbonInstanceIndices_);
+    repair(waterVegetationInstanceIndices_);
+    // update() orders particle emitters by budget priority. The old rebuild
+    // restored index order on removal; restore it before the sorted repair.
+    std::sort(particleInstanceIndices_.begin(), particleInstanceIndices_.end());
+    repair(particleInstanceIndices_);
 }
 
 void M2Renderer::setInstanceIsGameObject(uint32_t instanceId, bool isGameObject) {
@@ -250,21 +265,15 @@ void M2Renderer::setInstanceIsGameObject(uint32_t instanceId, bool isGameObject)
 }
 
 void M2Renderer::setSkipCollision(uint32_t instanceId, bool skip) {
-    for (auto& inst : instances) {
-        if (inst.id == instanceId) {
-            inst.skipCollision = skip;
-            return;
-        }
-    }
+    const auto found = instanceIndexById.find(instanceId);
+    if (found != instanceIndexById.end() && found->second < instances.size())
+        instances[found->second].skipCollision = skip;
 }
 
 void M2Renderer::setSkipWallCollision(uint32_t instanceId, bool skip) {
-    for (auto& inst : instances) {
-        if (inst.id == instanceId) {
-            inst.skipWallCollision = skip;
-            return;
-        }
-    }
+    const auto found = instanceIndexById.find(instanceId);
+    if (found != instanceIndexById.end() && found->second < instances.size())
+        instances[found->second].skipWallCollision = skip;
 }
 
 void M2Renderer::removeInstances(const std::vector<uint32_t>& instanceIds) {
@@ -279,7 +288,10 @@ void M2Renderer::removeInstances(const std::vector<uint32_t>& instanceIds) {
             destroyInstanceBones(inst, /*defer=*/true);
         }
     }
+    localLightInstancesDirty_ = true;
     shadowInstanceOrder_.invalidate();
+    shadowSnapshotDirty_ = true;
+    visibilityClusters_.invalidateAll();
     instances.erase(std::remove_if(instances.begin(), instances.end(),
                    [&toRemove](const M2Instance& inst) {
                        return toRemove.find(inst.id) != toRemove.end();
@@ -375,7 +387,12 @@ void M2Renderer::clear() {
     }
     models.clear();
     pinnedModelIds_.clear();
+    localLightInstancesDirty_ = true;
+    std::vector<size_t>{}.swap(localLightInstanceIndices_);
     shadowInstanceOrder_.release();
+    shadowSnapshot_.release();
+    visibilityClusters_.release();
+    shadowSnapshotDirty_ = true;
     std::vector<const M2Instance*>{}.swap(shadowCasters_);
     instances.clear();
     spatialGrid.clear();
@@ -390,6 +407,8 @@ void M2Renderer::clear() {
     animatedInstanceIndices_.clear();
     particleOnlyInstanceIndices_.clear();
     particleInstanceIndices_.clear();
+    ribbonInstanceIndices_.clear();
+    waterVegetationInstanceIndices_.clear();
     smokeEmitAccum = 0.0f;
 
     // Session-only scratch includes raw texture pointers and descriptor handles.
@@ -419,6 +438,8 @@ void M2Renderer::clear() {
     decltype(animatedInstanceIndices_){}.swap(animatedInstanceIndices_);
     decltype(particleOnlyInstanceIndices_){}.swap(particleOnlyInstanceIndices_);
     decltype(particleInstanceIndices_){}.swap(particleInstanceIndices_);
+    decltype(ribbonInstanceIndices_){}.swap(ribbonInstanceIndices_);
+    decltype(waterVegetationInstanceIndices_){}.swap(waterVegetationInstanceIndices_);
     for (auto& ids : cullSubmittedIds_) std::vector<uint32_t>{}.swap(ids);
     for (auto& ids : cullReadableIds_) std::vector<uint32_t>{}.swap(ids);
     decltype(instanceIndexById){}.swap(instanceIndexById);
@@ -456,7 +477,12 @@ void M2Renderer::clear() {
 void M2Renderer::clearInstances() {
     if (vkCtx_) vkDeviceWaitIdle(vkCtx_->getDevice());
     for (auto& inst : instances) destroyInstanceBones(inst);
+    localLightInstancesDirty_ = true;
+    std::vector<size_t>{}.swap(localLightInstanceIndices_);
     shadowInstanceOrder_.release();
+    shadowSnapshot_.release();
+    visibilityClusters_.release();
+    shadowSnapshotDirty_ = true;
     shadowCasters_.clear();
     instances.clear();
     spatialGrid.clear();
@@ -470,6 +496,8 @@ void M2Renderer::clearInstances() {
     animatedInstanceIndices_.clear();
     particleOnlyInstanceIndices_.clear();
     particleInstanceIndices_.clear();
+    ribbonInstanceIndices_.clear();
+    waterVegetationInstanceIndices_.clear();
     smokeParticles.clear();
     smokeEmitAccum = 0.0f;
 }
@@ -484,6 +512,9 @@ void M2Renderer::resetQueryStats() {
 }
 
 void M2Renderer::rebuildSpatialIndex() {
+    visibilityClusters_.invalidateAll();
+    shadowSnapshotDirty_ = true;
+    localLightInstancesDirty_ = true;
     // The cells keep their vectors. clear() on the map frees every per-cell
     // buffer and the rebuild allocates them all again - with sixteen thousand
     // instances in a city that is tens of thousands of small malloc/free pairs
@@ -504,6 +535,8 @@ void M2Renderer::rebuildSpatialIndex() {
     animatedInstanceIndices_.clear();
     particleOnlyInstanceIndices_.clear();
     particleInstanceIndices_.clear();
+    ribbonInstanceIndices_.clear();
+    waterVegetationInstanceIndices_.clear();
 
     for (size_t i = 0; i < instances.size(); i++) {
         auto& inst = instances[i];
@@ -531,6 +564,8 @@ void M2Renderer::rebuildSpatialIndex() {
         if (inst.cachedHasParticleEmitters) {
             particleInstanceIndices_.push_back(i);
         }
+        if (inst.cachedModel && !inst.cachedModel->ribbonEmitters.empty()) ribbonInstanceIndices_.push_back(i);
+        if (inst.cachedModel && inst.cachedModel->isWaterVegetation) waterVegetationInstanceIndices_.push_back(i);
         if (inst.cachedHasAnimation && !inst.cachedDisableAnimation) {
             animatedInstanceIndices_.push_back(i);
         } else if (inst.cachedHasParticleEmitters) {
@@ -579,6 +614,12 @@ void M2Renderer::setModelPinned(uint32_t modelId, bool pinned) {
 }
 
 void M2Renderer::cleanupUnusedModels(const std::unordered_set<uint32_t>& preparing) {
+    if (!vkCtx_) return;
+    // Frame fences protect draw readers, but may predate an async upload to
+    // a newly cached model/texture. Keep upload destinations until the upload
+    // fences complete as well; retry this periodic cleanup without blocking.
+    vkCtx_->pollUploadBatches();
+    if (!vkCtx_->uploadsIdle()) return;
     // Build set of model IDs that are still referenced by instances
     std::unordered_set<uint32_t> usedModelIds;
     for (const auto& instance : instances) {
@@ -819,6 +860,28 @@ uint32_t M2Renderer::getTotalTriangleCount() const {
         }
     }
     return total;
+}
+
+bool M2Renderer::hasPotentialGroundBelow(const glm::vec3& feet) const {
+    // Rare void-recovery guard, deliberately independent of the local collision
+    // focus and camera visibility. A broad possible floor vetoes recovery;
+    // this is not a floor hit and must not snap the character onto the box.
+    for (const auto& instance : instances) {
+        if (!instance.cachedModel || instance.skipCollision || instance.scale <= 0.001f) continue;
+        const auto& model = *instance.cachedModel;
+        if ((model.collisionNoBlock && !model.collision.valid()) ||
+            model.isInvisibleTrap || model.isSpellEffect) continue;
+        const auto& minimum = instance.worldBoundsMin;
+        const auto& maximum = instance.worldBoundsMax;
+        for (int axis = 0; axis < 3; ++axis)
+            if (!std::isfinite(minimum[axis]) || !std::isfinite(maximum[axis]) ||
+                minimum[axis] > maximum[axis]) return true; // uncertain geometry must not trigger recovery
+        constexpr float padding = 2.0f; // same XY reach as getFloorHeight
+        if (feet.x >= minimum.x - padding && feet.x <= maximum.x + padding &&
+            feet.y >= minimum.y - padding && feet.y <= maximum.y + padding &&
+            minimum.z < feet.z - 0.1f) return true;
+    }
+    return false;
 }
 
 std::optional<float> M2Renderer::getFloorHeight(float glX, float glY, float glZ, float* outNormalZ) const {

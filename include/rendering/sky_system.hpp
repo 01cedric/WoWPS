@@ -24,6 +24,8 @@ struct SkyParams {
     glm::vec3 directionalDir{0.0f, -1.0f, 0.3f};
     glm::vec3 sunColor{1.0f, 1.0f, 0.9f};
     glm::vec3 cloudColor{0.85f};
+    glm::vec3 directionalColor{1.0f}; // resolved surface key color, before horizon fade
+    glm::vec3 ambientColor{0.5f};
 
     // Sky colors (for skybox tinting/blending)
     glm::vec3 skyTopColor{0.5f, 0.7f, 1.0f};
@@ -45,6 +47,7 @@ struct SkyParams {
     uint32_t skyboxModelId = 0;
     bool skyboxHasStars = false;  // Does loaded skybox include baked stars?
     bool originalSkyboxAllowsAtmosphere = false;
+    bool terrestrialCelestials = false; // Moving sun/moons above authored Azeroth sky layers
     bool useOriginalSkybox = false; // Original camera-centered client M2 is active
 };
 
@@ -78,7 +81,7 @@ public:
     void update(float deltaTime);
 
     /**
-     * Render complete sky.
+     * Render sky underlay and stars; call renderAtmosphere after authored sky M2.
      * @param cmd         Active Vulkan command buffer
      * @param perFrameSet Per-frame descriptor set (set 0, camera UBO)
      * @param camera      Camera for legacy sub-renderers (lens flare, etc.)
@@ -86,6 +89,10 @@ public:
      */
     void render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
                 const Camera& camera, const SkyParams& params);
+
+    // Draw after the authored sky and before world geometry, which occludes it.
+    void renderAtmosphere(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
+                          const Camera& camera, const SkyParams& params);
 
     /**
      * Enable/disable procedural stars (DEBUG/FALLBACK)

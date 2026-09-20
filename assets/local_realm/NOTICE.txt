@@ -17,6 +17,11 @@ The corresponding source distribution includes:
   tools/local_realm/vendor_source_sql.tar.gz  exact npc_vendor/conditions input
   tools/local_realm/import_vendor_catalog.py  per-NPC shop/price conversion
   tools/local_realm/VENDOR_IMPORT_REPORT.json merchant coverage and exclusions
+  tools/local_realm/melee_source_sql.tar.gz   exact class/race base-stat SQL
+  tools/local_realm/import_melee_catalog.py   compiled melee metadata conversion
+  tools/local_realm/import_resource_catalog.py compiled class/item pool conversion
+  docs/implementation_inventory/resource_source.json pool source counts/hashes
+  docs/implementation_inventory/melee_source.json source counts and hashes
 
 The conversion selects rows, bounds gameplay values, excludes unsupported
 objectives, and adapts eligible quest rewards. The converters document and
@@ -26,3 +31,15 @@ in the data and catalog manifest. See the root README.md for reproduction.
 No Blizzard client MPQ archives are included in this content pack. Client
 terrain, models, textures, sounds and DBC files are supplied separately by users.
 Upstream C++ and SmartAI encounter scripts are not executed by this catalog.
+
+Regeneration metadata: tools/local_realm/import_regeneration_catalog.py
+Source revisions and hashes: docs/implementation_inventory/regeneration_source.json
+
+Graveyard links: graveyard_links.json records provenance for
+704 graveyard_zone links from the same pinned revision. Exact source SQL is
+retained in tools/local_realm/graveyard_zone_source.sql; reproduce with
+tools/local_realm/import_graveyard_links.py. Actual coordinates come from the same pinned game_graveyard table; source
+is tools/local_realm/game_graveyard_source.sql, importer is
+tools/local_realm/import_graveyard_sites.py, and provenance is recorded in
+graveyard_sites.json. Team eligibility is zone-specific, not a global
+property of a safe-location ID. No client DBC is required for these sites.

@@ -1,5 +1,6 @@
 #pragma once
 #include "core/intro_stream_warmup.hpp"
+#include "core/local_world_entry_gate.hpp"
 #include "core/retained_guid_set.hpp"
 
 #include "core/window.hpp"
@@ -187,6 +188,10 @@ private:
     bool shutdownStarted_ = false;
     void processDeferredLogoutToLogin();
     void updateLocalRealm(float deltaTime);
+    /// Create the ten level-80 one-per-class test characters in the local save
+    /// directory, consume the marker file that asked for it, and return to the
+    /// character list. Reached only from a marker the user places by hand.
+    void seedLocalTestCharacters(const std::string& saveDirectory);
     /// Put the local realm's zeppelins and ships on screen, through the same
     /// TransportManager a real server drives in online play.
     void syncLocalRealmTransports(const game::LocalRealmPlayer& self);
@@ -280,6 +285,10 @@ private:
         // Start the realm only to create and save the character, then return
         // to the character list rather than entering the world.
         bool createOnly = false;
+        // Start the realm only to write the ten level-80 test characters the
+        // marker file asked for, then return to the character list. Never set
+        // from the interface: only from the marker.
+        bool seedTestCharacters = false;
         size_t playerLimit = 8;
         std::string realmName = "LAN Realm";
         uint16_t realmPort = 3725;
@@ -287,6 +296,7 @@ private:
     };
     std::optional<LocalRealmRequest> pendingLocalRealm_;
     bool localRealmEntered_ = false;
+    core::LocalWorldEntryGate localWorldEntryGate_;
     std::unique_ptr<CharacterIntro> characterIntro_;
     uint64_t introAttemptedGuid_ = 0;
     uint64_t introEligibilityGuid_ = 0;
@@ -294,6 +304,7 @@ private:
     bool introReturning_ = false;
     bool introCompleteOnReturn_ = false;
     bool introBuffering_ = false;
+    bool introSceneVisible_ = false;
     bool introSkipRequested_ = false;
     float introWaitSeconds_ = 0.0f;
     IntroStreamWarmup introWarmup_;
@@ -318,6 +329,10 @@ private:
     void localRealmStatus(const std::string& message, bool isError);
     RetainedGuidSet localRealmRemoteGuids_;
     RetainedGuidSet localRealmNpcGuids_;
+    /// Owned creatures on screen, kept apart from the spawn set above: the NPC
+    /// sweep despawns every guid it does not see in the catalog, and a summon
+    /// is never in it.
+    RetainedGuidSet localRealmPetGuids_;
     RetainedGuidSet localRealmPresentScratch_;
     RetainedGuidSet localRealmMeleeScratch_;
     std::shared_ptr<game::LocalRealmPlayer> localRealmPresentationSnapshot_;
@@ -485,6 +500,7 @@ private:
     game::Class playerClass_ = game::Class::WARRIOR;
     uint64_t spawnedPlayerGuid_ = 0;
     uint32_t spawnedAppearanceBytes_ = 0;
+    uint32_t spawnedFormDisplay_ = 0;
     uint8_t spawnedFacialFeatures_ = 0;
 
     // Static empty values for null-safe delegation

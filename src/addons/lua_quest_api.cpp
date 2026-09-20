@@ -2,6 +2,8 @@
 // Extracted from lua_engine.cpp as part of §5.1 (Tame LuaEngine).
 #include "core/local_time.hpp"
 #include "game/item_text.hpp"
+#include "game/local_realm.hpp"
+#include "game/local_talents.hpp"
 #include "addons/lua_api_helpers.hpp"
 #include "addons/lua_engine.hpp"
 #include "game/auction_filters.hpp"
@@ -1706,10 +1708,21 @@ const game::TalentEntry* talentAt(game::GameHandler* gh,
 
 /// Whether every prerequisite of a talent is satisfied, optionally counting
 /// points staged in the preview but not yet learned.
+static bool localTalentRankImplemented(game::GameHandler* gh,uint32_t id,int rank) {
+    if(!gh || !gh->isLocalExploration())return true;
+    const auto* realm=gh->localServiceRealm();
+    if(!realm || rank<1 || rank>5)return false;
+    const auto* spell=game::localTalentSpell(realm->content(),id,uint8_t(rank));
+    return spell && spell->unsupportedReason.empty();
+}
+
 static bool talentPrereqsMet(game::GameHandler* gh,
                              const game::GameHandler::TalentEntry* talent,
                              bool withPreview) {
     if (!gh || !talent) return false;
+    int nextRank=gh->getTalentRank(talent->talentId)+1;
+    if(withPreview)if(const auto staged=previewPoints().find(talent->talentId);staged!=previewPoints().end())nextRank+=staged->second;
+    if(!localTalentRankImplemented(gh,talent->talentId,std::min(nextRank,int(talent->maxRank))))return false;
     for (int p = 0; p < 3; ++p) {
         const uint32_t prereqId = talent->prereqTalent[p];
         if (prereqId == 0) continue;
@@ -2225,6 +2238,11 @@ static int lua_AddPreviewTalentPoints(lua_State* L) {
     // that goes past either is one the server will refuse, and the frame draws
     // straight from these numbers.
     int upper = static_cast<int>(maxRank) - have;
+    if(gh->isLocalExploration()) {
+        int implemented=0;
+        while(implemented<upper && localTalentRankImplemented(gh,id,int(have)+implemented+1))++implemented;
+        upper=implemented;
+    }
 
     // And bounded by the points the player actually has. This was missing, so
     // a preview could stage more than were available and go on staging them:

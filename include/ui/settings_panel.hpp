@@ -1,6 +1,9 @@
 #pragma once
 
 #include "ui/buff_bar_layout.hpp"
+#include "rendering/volumetric_intensity.hpp"
+#include "rendering/volumetric_fog_intensity.hpp"
+#include "rendering/bloom_settings.hpp"
 #include "ui/graphics_defaults.hpp"
 #include "ui/ui_services.hpp"
 #include <vulkan/vulkan.h>
@@ -181,7 +184,7 @@ public:
     int pendingGrassDensity = 100;   // 0-300
     int pendingGrassHeight = 100;    // 50-300
     int pendingGrassDistance = 150;  // 30-2000 yards; density thins past 45
-    int pendingAntiAliasing = 1;  // 0=Off, 1=2x, 2=4x, 3=8x
+    int pendingAntiAliasing = kDefaultAntiAliasing;  // 0=Off, 1=2x, 2=4x, 3=8x
     bool pendingFXAA = false;     // FXAA post-process (combinable with MSAA)
     bool pendingNormalMapping = true;   // on by default
     float pendingNormalMapStrength = 0.8f;  // 0.0-2.0
@@ -193,6 +196,14 @@ public:
     // from the renderer's own constants at construction rather than repeated
     // here, so the panel and the pass can never disagree about what shipped.
     int pendingShadowQuality = 2;       // 0 off, 1 terrain, 2+ everything
+    float pendingVolumetricIntensity = rendering::kDefaultVolumetricIntensity;
+    float pendingVolumetricFogIntensity = rendering::kDefaultVolumetricFogIntensity;
+    bool pendingVolumetricRaysEnabled = true;
+    bool pendingVolumetricFogEnabled = true;
+    bool pendingBloomEnabled = rendering::kDefaultBloomEnabled;
+    float pendingBloomIntensity = rendering::kDefaultBloomIntensity;
+    int pendingVolumetricDebug = 0; // Session-only: Normal, scene depth, shadow depth, scattering, surface shadow
+    int pendingVolumetricQuality = rendering::kDefaultVolumetricQuality;   // 0 off, 1 low, 2 high
 #if defined(WOWEE_PS4)
     bool pendingWaterReflections = false;
 #else

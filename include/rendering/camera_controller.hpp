@@ -1,4 +1,5 @@
 #pragma once
+#include "rendering/ground_recovery.hpp"
 
 #include "rendering/camera.hpp"
 #include "core/collision_height.hpp"
@@ -82,12 +83,20 @@ public:
     void setOnlineMode(bool online) { onlineMode = online; }
 
     // Last known safe position (grounded, not falling)
-    [[nodiscard]] bool hasLastSafePosition() const { return hasLastSafe_; }
-    [[nodiscard]] const glm::vec3& getLastSafePosition() const { return lastSafePos_; }
+    [[nodiscard]] bool hasLastSafePosition() const { return groundRecovery_.hasPosition(); }
+    [[nodiscard]] const glm::vec3& getLastSafePosition() const { return groundRecovery_.position(); }
     [[nodiscard]] float getContinuousFallTime() const { return continuousFallTime_; }
+    // Supply authoritative lifecycle context before movement. Ghosts earn
+    // their own checkpoint; corpse, transport and taxi motion are excluded.
+    void setGroundRecoveryContext(uint32_t mapId, bool eligible, bool ghost = false) {
+        groundRecovery_.setContext(mapId,eligible,ghost);
+    }
+    void resetGroundRecovery();
+    // Render coordinates, revalidated against currently loaded real geometry.
+    [[nodiscard]] std::optional<glm::vec3> getValidatedRecoveryPosition() const;
 
-    // Auto-unstuck callback (triggered when falling too long)
-    using AutoUnstuckCallback = std::function<void()>;
+    // Recovery callback (only confirmed unsupported void falls)
+    using AutoUnstuckCallback = std::function<bool()>;
     void setAutoUnstuckCallback(AutoUnstuckCallback cb) { autoUnstuckCallback_ = std::move(cb); }
     void startIntroPan(float durationSec = 2.8f, float orbitDegrees = 140.0f);
     void cancelIntroPan();
@@ -480,8 +489,6 @@ private:
     static constexpr float CROUCH_EYE_HEIGHT = 0.6f; // Crouching eye height
     float eyeHeight = STAND_EYE_HEIGHT;
     float lastGroundZ = 0.0f;  // Last known ground height (fallback when no terrain)
-    glm::vec3 lastGroundedPos_{0.0f};  // Last position that had ground under it (void recovery)
-    bool hasLastGroundedPos_ = false;
     static constexpr float GRAVITY = -30.0f;
     static constexpr float JUMP_VELOCITY = 15.0f;
     float jumpBufferTimer = 0.0f;   // Time since space was pressed
@@ -696,11 +703,10 @@ private:
     static constexpr float IDLE_TIMEOUT = 120.0f; // 2 minutes
 
     // Last known safe position (saved periodically when grounded on real geometry)
-    bool hasLastSafe_ = false;
-    glm::vec3 lastSafePos_ = glm::vec3(0.0f);
-    float safePosSaveTimer_ = 0.0f;
+    GroundRecovery groundRecovery_;
+    bool pendingGroundCrossingRecovery_ = false;
+    bool crossedConfirmedSupport(const glm::vec3& previous,const glm::vec3& current) const;
     bool hasRealGround_ = false; // True only when terrain/WMO/M2 floor is detected
-    static constexpr float SAFE_POS_SAVE_INTERVAL = 2.0f; // Save every 2 seconds
 
     // No-ground timer: after grace period, let the player fall instead of hovering
     float noGroundTimer_ = 0.0f;
@@ -716,7 +722,6 @@ private:
     float continuousFallTime_ = 0.0f;
     bool autoUnstuckFired_ = false;
     AutoUnstuckCallback autoUnstuckCallback_;
-    static constexpr float AUTO_UNSTUCK_FALL_TIME = 5.0f; // 5 seconds of falling
 
     // Collision query cache (skip expensive checks if position barely changed)
     glm::vec3 lastCollisionCheckPos_ = glm::vec3(0.0f);

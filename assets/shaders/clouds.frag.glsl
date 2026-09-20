@@ -4,6 +4,7 @@ layout(push_constant) uniform Push {
     vec4 cloudColor;      // xyz = DBC-derived base cloud color, w = unused
     vec4 sunDirDensity;   // xyz = sun direction, w = density
     vec4 windAndLight;    // x = windOffset, y = sunIntensity, z = ambient, w = unused
+    vec4 keyColor;        // authored/policy directional RGB for sun or primary moon
 } push;
 
 layout(location = 0) in vec3 vWorldDir;
@@ -99,16 +100,17 @@ void main() {
 
     vec3 baseColor = push.cloudColor.rgb;
     vec3 shadowColor = baseColor * ambient * 0.75;
-    vec3 litColor = baseColor * (ambient + sunIntensity * 0.85 * sunUp);
+    vec3 sourceColor = max(push.keyColor.rgb, vec3(0.0));
+    vec3 litColor = baseColor * (vec3(ambient) + sourceColor * sunIntensity * 0.85 * sunUp);
     vec3 cloudRgb = mix(shadowColor, litColor, shadow) * coreDarken;
 
-    // Forward scattering: thin cloud near the sun glows warm
+    // Forward scattering inherits the resolved sun/moon color.
     float scatter = pow(sunView, 6.0) * sunIntensity * sunUp;
-    cloudRgb += vec3(1.0, 0.92, 0.82) * (1.0 - cumulus) * scatter * 0.9;
+    cloudRgb += sourceColor * (1.0 - cumulus) * scatter * 0.9;
 
     // Silver lining on sunlit cloud edges
     float edge = smoothstep(0.0, 0.35, cloud) * (1.0 - smoothstep(0.35, 0.85, cloud));
-    cloudRgb += vec3(1.0, 0.95, 0.88) * edge * scatter * 0.6;
+    cloudRgb += sourceColor * edge * scatter * 0.6;
 
     // --- Edge softness for alpha ---
     float alpha = cloud * smoothstep(0.0, 0.25, cloud);

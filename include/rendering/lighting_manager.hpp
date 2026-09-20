@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <vector>
 #include <map>
 #include <memory>
@@ -166,7 +167,7 @@ public:
      * Update lighting for current time and player position
      * @param playerPos Player world position
      * @param mapId Current map ID
-     * @param gameTime Optional game time in seconds (use -1 for real time)
+     * @param gameTime Optional game time in hours (use -1 for real time)
      * @param isRaining Whether it's raining
      * @param isUnderwater Whether player is underwater
      *
@@ -203,7 +204,7 @@ public:
      */
     [[nodiscard]] float getTimeOfDay() const { return timeOfDay_; }
 
-    /** Time used by the visible sky, including persistent zone ambience. */
+    /** World time used by the visible sky; atmosphere does not alter the clock. */
     [[nodiscard]] float getVisualTimeOfDayHours() const { return visualTimeOfDayHours_; }
 
     /** Original client M2 sky selected by the dominant LightParams volume. */

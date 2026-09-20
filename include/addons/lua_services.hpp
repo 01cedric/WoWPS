@@ -276,7 +276,7 @@ struct LuaServices {
     /// unbound - the readiness report reads script bodies, not attributes.
     std::function<void()> barberApply;
 
-    /// Whether the camera is inside a WMO, for IsIndoors and IsOutdoors.
+    /// Whether the character is inside an interior WMO group, for IsIndoors and IsOutdoors.
     ///
     /// The renderer has tracked this all along and the macro conditionals
     /// [indoors] and [outdoors] already read it; only the Lua bindings were

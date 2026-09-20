@@ -1,11 +1,16 @@
 #include "core/future_wait_guard.hpp"
 #include "rendering/shadow_instances.hpp"
+#include "rendering/m2_shadow_slice.hpp"
+#include "rendering/m2_shadow_lod.hpp"
 #include "rendering/shadow_params.hpp"
 #include "rendering/m2_renderer.hpp"
 #include "rendering/m2_renderer_internal.h"
 #include "rendering/m2_blend_mode.hpp"
 #include "rendering/m2_glow_card.hpp"
 #include "rendering/m2_texture_transform.hpp"
+#include "rendering/m2_submission.hpp"
+#include "rendering/m2_shadow.hpp"
+#include "rendering/m2_shadow_cpu.hpp"
 #include "core/thread_pool.hpp"
 #include "core/memory_monitor.hpp"
 #ifdef WOWEE_PS4
@@ -99,6 +104,8 @@ uint32_t M2Renderer::commitInstance(M2Instance&& instance) {
     const bool smoke = instance.cachedIsSmoke;
     const bool portal = instance.cachedIsInstancePortal;
     const bool particles = instance.cachedHasParticleEmitters;
+    const bool ribbons = instance.cachedModel && !instance.cachedModel->ribbonEmitters.empty();
+    const bool waterVegetation = instance.cachedModel && instance.cachedModel->isWaterVegetation;
     const bool animated = instance.cachedHasAnimation && !instance.cachedDisableAnimation;
     const DedupKey key{.modelId = instance.modelId,
         .qx = static_cast<int32_t>(std::round(instance.position.x * 10.0f)),
@@ -107,11 +114,15 @@ uint32_t M2Renderer::commitInstance(M2Instance&& instance) {
     const auto room = [](auto& v) {
         if (v.size() == v.capacity()) v.reserve(std::max<size_t>(8, v.size() * 2));
     };
+    visibilityClusters_.invalidate(static_cast<uint32_t>(idx)); // append can replace an old tail at unchanged frame size
+    shadowSnapshotDirty_ = true; // reserve may move instance addresses even if a later allocation throws
     try {
         room(instances);
         if (smoke) room(smokeInstanceIndices_);
         if (portal) room(portalInstanceIndices_);
         if (particles) room(particleInstanceIndices_);
+        if (ribbons) room(ribbonInstanceIndices_);
+        if (waterVegetation) room(waterVegetationInstanceIndices_);
         if (animated) room(animatedInstanceIndices_);
         else if (particles) room(particleOnlyInstanceIndices_);
         // insertBounds may have filed only part of a large box on OOM. Roll
@@ -120,7 +131,9 @@ uint32_t M2Renderer::commitInstance(M2Instance&& instance) {
         instanceIndexById.emplace(id, idx);
         if (instance.participatesInPositionDedup) instanceDedupMap_.emplace(key, id);
         // Capacity is ready and M2Instance moves without allocating.
+        localLightInstancesDirty_ = true;
         shadowInstanceOrder_.invalidate();
+        shadowSnapshotDirty_ = true;
         instances.push_back(std::move(instance));
     } catch (...) {
         eraseBounds(spatialGrid, instance.worldBoundsMin, instance.worldBoundsMax, id);
@@ -134,6 +147,8 @@ uint32_t M2Renderer::commitInstance(M2Instance&& instance) {
     if (smoke) smokeInstanceIndices_.push_back(idx);
     if (portal) portalInstanceIndices_.push_back(idx);
     if (particles) particleInstanceIndices_.push_back(idx);
+    if (ribbons) ribbonInstanceIndices_.push_back(idx);
+    if (waterVegetation) waterVegetationInstanceIndices_.push_back(idx);
     if (animated) animatedInstanceIndices_.push_back(idx);
     else if (particles) particleOnlyInstanceIndices_.push_back(idx);
     return id;
@@ -1001,6 +1016,8 @@ bool M2Renderer::ensureInstanceCapacity(uint32_t frameIndex, uint64_t required) 
 }
 
 void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const Camera& camera) {
+    lastVisibilityTestCount_ = 0;
+    lastClusterSkippedCount_ = 0;
     if (instances.empty() || !opaquePipeline_) {
         return;
     }
@@ -1110,10 +1127,12 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
         }
     } else {
         // No GPU cull data - conservatively treat everything as visible.
+#ifndef WOWEE_PS4
         for (auto& inst : instances) {
             inst.lastCullVisible = 1;
             inst.hizPrevCulledFrames = 0;
         }
+#endif
     }
 
     // If GPU culling was not dispatched, fallback: compute distances on CPU
@@ -1234,10 +1253,32 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
     };
 
 #ifdef WOWEE_PS4
-    // Command recording is serial on PS4. Classify directly into persistent
-    // lists, without a new set of chunk vectors/futures for the first dense
-    // world frame. Every instance uses the same culling predicate below.
-    classifyRange(sortedVisible_, transparentVisible_, 0, totalInstances);
+    // Command recording is serial on PS4. Reuse placement-cluster bounds to
+    // reject whole offscreen blocks before touching individual instance state.
+    // Surviving blocks use the unchanged current-camera predicate above.
+    lastVisibilityTestCount_ = 0;
+    lastClusterSkippedCount_ = 0;
+    if (forceNoCull_) {
+        lastVisibilityTestCount_ = totalInstances;
+        classifyRange(sortedVisible_, transparentVisible_, 0, totalInstances);
+    } else {
+        visibilityClusters_.prepare(instances, [&](const glm::vec3& center, float radius) {
+            // Sphere semantics also match Frustum's deliberately unnormalized
+            // degenerate far plane (AABB culling would reject extra instances).
+            return frustum.intersectsSphere(center, radius);
+        });
+        uint32_t block = 0;
+        for (const auto& cluster : visibilityClusters_.clusters()) {
+            const uint32_t begin = block++ * M2VisibilityClusters::blockSize;
+            const uint32_t end = std::min(totalInstances, begin + M2VisibilityClusters::blockSize);
+            if (cluster.accepted) {
+                lastVisibilityTestCount_ += end - begin;
+                classifyRange(sortedVisible_, transparentVisible_, begin, end);
+            } else {
+                lastClusterSkippedCount_ += end - begin;
+            }
+        }
+    }
 #else
     struct VisibleChunk {
         std::vector<VisibleEntry> opaque;
@@ -1424,7 +1465,7 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
         const auto* model = instances[entry.index].cachedModel;
         if (!model) continue;
         for (const auto& batch : model->batches)
-            if ((batch.textureAnimIndex != 0xFFFF && model->hasTextureAnimation) || model->isLavaModel)
+            if (batch.hasNonIdentityTextureTransform || model->isLavaModel)
                 ++requiredSlots;
     }
     for (const auto& entry : transparentVisible_) {
@@ -1473,14 +1514,9 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
     // same batch set.  Per-instance data (model matrix, fade, bones) is
     // written to the instance SSBO; the shader reads it via gl_InstanceIndex.
     {
-        struct PendingInstance {
-            uint32_t instanceIdx;
-            float fadeAlpha;
-            bool useBones;
-            uint16_t targetLOD;
-        };
-        std::vector<PendingInstance> pending;
-        pending.reserve(128);
+        // Renderer-owned scratch survives frames and sequential reflection/main
+        // calls; each model group clears its logical contents before reuse.
+        auto& pending = pendingOpaque_;
 
         size_t visStart = 0;
         while (visStart < sortedVisible_.size()) {
@@ -1560,9 +1596,8 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
 
             if (pending.empty()) { visStart = groupEnd; continue; }
 
-            // Sort by targetLOD so each sub-group occupies a contiguous SSBO range
-            std::sort(pending.begin(), pending.end(),
-                      [](const PendingInstance& a, const PendingInstance& b) { return a.targetLOD < b.targetLOD; });
+            // Four stable LOD buckets give contiguous SSBO ranges in linear time.
+            m2GroupOpaqueLods(pending, pendingOpaqueScratch_);
 
             // Bind vertex/index buffers once per model group
             VkDeviceSize vbOffset = 0;
@@ -1767,7 +1802,7 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
 
                     // Handle texture animation: if this batch has per-instance uvOffset,
                     // write a separate SSBO range with the correct offsets.
-                    bool hasBatchTexAnim = (batch.textureAnimIndex != 0xFFFF && model.hasTextureAnimation)
+                    bool hasBatchTexAnim = batch.hasNonIdentityTextureTransform
                                            || model.isLavaModel;
                     uint32_t drawOffset = groupSSBOOffset;
                     if (hasBatchTexAnim && instanceDataCount_ + groupSize <= instanceCapacity_[frameIndex]) {
@@ -1842,7 +1877,10 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
 
                     VkPipeline desiredPipeline;
                     if (forceCutout) {
-                        desiredPipeline = opaquePipeline_;
+                        // Fractional cutout coverage needs an actual coverage
+                        // pipeline. Single-sample targets use a hard shader gate.
+                        desiredPipeline = vkCtx_->getMsaaSamples() == VK_SAMPLE_COUNT_1_BIT
+                            ? opaquePipeline_ : alphaTestPipeline_;
                     } else {
                         switch (effectiveBlendMode) {
                             case 0: desiredPipeline = opaquePipeline_; break;
@@ -1865,10 +1903,13 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
                         mat->interiorDarken = 0.0f;
                         if (batch.colorKeyBlack)
                             mat->colorKeyThreshold = (effectiveBlendMode == 4 || effectiveBlendMode == 5) ? 0.7f : 0.08f;
-                        if (forceCutout) {
-                            mat->alphaTest = model.isGroundDetail ? 3 : (foliageCutout ? 2 : 1);
-                            if (model.isGroundDetail) mat->unlit = 0;
-                        }
+                        const int alphaMode = forceCutout
+                            ? (model.isGroundDetail ? 3 : (foliageCutout ? 2 : 1))
+                            : (m2BatchNeedsAlphaTest(batch.blendMode, batch.hasAlpha) ? 1 : 0);
+                        mat->alphaTest = m2EncodeAlphaTest(alphaMode,
+                            vkCtx_->getMsaaSamples() == VK_SAMPLE_COUNT_1_BIT);
+                        mat->unlit = model.isGroundDetail && forceCutout
+                            ? 0 : ((batch.materialFlags & 0x01) ? 1 : 0);
                     }
 
                     // Bind material descriptor set (set 1)
@@ -1905,8 +1946,8 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
     // Pass 2: Transparent/additive batches - back-to-front per instance
     // =====================================================================
     // Transparent geometry must be drawn individually per instance in back-to-
-    // front order for correct alpha compositing.  Each draw writes one
-    // M2InstanceGPU entry and issues a single-instance indexed draw.
+    // front order for correct alpha compositing. Each batch issues its own
+    // indexed draw; equal UV transforms within an instance share an SSBO entry.
     std::sort(transparentVisible_.begin(), transparentVisible_.end(),
               [](const VisibleEntry& a, const VisibleEntry& b) { return a.distSq > b.distSq; });
 
@@ -1914,7 +1955,7 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
     currentModelId = UINT32_MAX;
     currentModel = nullptr;
     currentModelValid = false;
-    currentPipeline = opaquePipeline_;
+    currentPipeline = VK_NULL_HANDLE; // force the first transparent draw to bind its actual pipeline
     currentMaterialSet = VK_NULL_HANDLE;
 
     for (const auto& entry : transparentVisible_) {
@@ -1975,6 +2016,7 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
         const bool particleDominantEffect = model.isSpellEffect && !model.isInstancePortal &&
             !model.particleEmitters.empty() && model.batches.size() <= 2;
 
+        M2TransparentRecordReuse recordReuse;
         for (const auto& batch : model.batches) {
             if (batch.indexCount == 0) continue;
             if (!model.isGroundDetail && !model.isInstancePortal && !model.isSpellEffect && batch.submeshLevel != targetLOD) continue;
@@ -2036,7 +2078,7 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
                 std::getenv("WOWEE_SKY_M2_NO_TEXANIM") != nullptr;
             M2UvTransform uv;
             glm::vec2 uvOffset(0.0f);
-            if (batch.textureAnimIndex != 0xFFFF && model.hasTextureAnimation &&
+            if (batch.hasNonIdentityTextureTransform &&
                 !(skyMode_ && skyNoTexAnim)) {
                 uint16_t lookupIdx = batch.textureAnimIndex;
                 if (lookupIdx < model.textureTransformLookup.size()) {
@@ -2054,19 +2096,25 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
                                      -lavaAnimSeconds * 0.08f);
             }
 
-            // Write single instance entry to SSBO
-            if (instanceDataCount_ >= instanceCapacity_[frameIndex]) continue;
-            uint32_t drawOffset = instanceDataCount_;
-            auto& e = instSSBO[instanceDataCount_];
-            e.model = instance.modelMatrix;
-            e.uvOffset = uvOffset;
-            e.uvLinear = uv.linear;
-            e.fadeAlpha = instanceFadeAlpha;
-            e.useBones = (needsBones && !kM2NoSkinning) ? 1 : 0;
-            e.boneBase = needsBones ? static_cast<int32_t>(instance.megaBoneOffset) : 0;
-            e.boneCount = static_cast<int32_t>(instance.boneMatrices.size());
-            std::memset(e._pad, 0, sizeof(e._pad));
-            instanceDataCount_++;
+            // Layers of this instance often have identical UV transforms. Reuse
+            // their immutable record while retaining every batch's draw order,
+            // material, blend state and texture-coordinate push constant.
+            uint32_t drawOffset;
+            if (!recordReuse.find(uvOffset, uv.linear, drawOffset)) {
+                if (instanceDataCount_ >= instanceCapacity_[frameIndex]) continue;
+                drawOffset = instanceDataCount_;
+                auto& e = instSSBO[instanceDataCount_];
+                e.model = instance.modelMatrix;
+                e.uvOffset = uvOffset;
+                e.uvLinear = uv.linear;
+                e.fadeAlpha = instanceFadeAlpha;
+                e.useBones = (needsBones && !kM2NoSkinning) ? 1 : 0;
+                e.boneBase = needsBones ? static_cast<int32_t>(instance.megaBoneOffset) : 0;
+                e.boneCount = static_cast<int32_t>(instance.boneMatrices.size());
+                std::memset(e._pad, 0, sizeof(e._pad));
+                instanceDataCount_++;
+                recordReuse.remember(uvOffset, uv.linear, drawOffset);
+            }
 
             // Pipeline selection
             uint8_t effectiveBlendMode = batch.blendMode;
@@ -2090,6 +2138,10 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
             if (batch.materialUBOMapped) {
                 auto* mat = static_cast<M2MaterialUBO*>(batch.materialUBOMapped);
                 mat->interiorDarken = 0.0f;
+                mat->alphaTest = m2EncodeAlphaTest(
+                    m2BatchNeedsAlphaTest(batch.blendMode, batch.hasAlpha) ? 1 : 0,
+                    vkCtx_->getMsaaSamples() == VK_SAMPLE_COUNT_1_BIT);
+                mat->unlit = (batch.materialFlags & 0x01) ? 1 : 0;
                 if (batch.colorKeyBlack)
                     mat->colorKeyThreshold = (effectiveBlendMode == 4 || effectiveBlendMode == 5) ? 0.7f : 0.08f;
 
@@ -2214,32 +2266,14 @@ bool M2Renderer::initializeShadow(VkRenderPass shadowRenderPass) {
                                    "M2 foliage shadow", foliage)) return false;
     }
 
-    // Per-frame pools for foliage shadow texture sets (one per frame-in-flight, reused after its fence)
-    {
-        VkDescriptorPoolSize texPoolSizes[2]{};
-        texPoolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        texPoolSizes[0].descriptorCount = 256;
-        texPoolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        texPoolSizes[1].descriptorCount = 256;
-        VkDescriptorPoolCreateInfo texPoolCI{};
-        texPoolCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        texPoolCI.maxSets = 256;
-        texPoolCI.poolSizeCount = 2;
-        texPoolCI.pPoolSizes = texPoolSizes;
-        for (uint32_t f = 0; f < kShadowTexPoolFrames; ++f) {
-            if (vkCreateDescriptorPool(device, &texPoolCI, nullptr, &shadowTexPool_[f]) != VK_SUCCESS) {
-                LOG_ERROR("M2Renderer: failed to create shadow texture pool ", f);
-                return false;
-            }
-        }
-    }
-
-    // Create shadow pipeline layout: set 1 = shadowParams_.layout, push constants = 128 bytes
+    // The scene's material descriptor supplies the exact texture and sampler.
+    // Push bytes are immutable per draw and shared by vertex/fragment stages.
     VkPushConstantRange pc{};
-    pc.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    pc.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     pc.offset = 0;
-    pc.size = 128;  // lightSpaceMatrix (64) + model (64)
-    shadowPipelineLayout_ = createPipelineLayout(device, {shadowParams_.layout}, {pc});
+    pc.size = sizeof(M2ShadowPush);
+    shadowPipelineLayout_ = createPipelineLayout(device,
+        {shadowParams_.layout, materialSetLayout_}, {pc});
     if (!shadowPipelineLayout_) {
         LOG_ERROR("M2Renderer: failed to create shadow pipeline layout");
         return false;
@@ -2247,20 +2281,17 @@ bool M2Renderer::initializeShadow(VkRenderPass shadowRenderPass) {
 
     // Load shadow shaders
     VkShaderModule vertShader, fragShader;
-    if (!vertShader.loadFromFile(device, "assets/shaders/shadow.vert.spv")) {
+    if (!vertShader.loadFromFile(device, "assets/shaders/m2_shadow.vert.spv")) {
         LOG_ERROR("M2Renderer: failed to load shadow vertex shader");
         return false;
     }
-    if (!fragShader.loadFromFile(device, "assets/shaders/shadow.frag.spv")) {
+    if (!fragShader.loadFromFile(device, "assets/shaders/m2_shadow.frag.spv")) {
         LOG_ERROR("M2Renderer: failed to load shadow fragment shader");
         return false;
     }
 
-    // M2 vertex layout: 18 floats = 72 bytes stride
-    // loc0=pos(off0), loc1=normal(off12), loc2=texCoord0(off24), loc5=texCoord1(off32),
-    // loc3=boneWeights(off40), loc4=boneIndices(off56)
-    // Shadow shader locations: 0=aPos, 1=aTexCoord, 2=aBoneWeights, 3=aBoneIndicesF
-    // useBones=0 so locations 2,3 are never used
+    // The model VBO has 20 floats: position, normal, both UVs, padding,
+    // weights and bone indices. Existing rigid shadow geometry is unchanged.
     VkVertexInputBindingDescription vertBind{};
     vertBind.binding = 0;
     vertBind.stride = 20 * sizeof(float);   // the model VBO's layout, see M2Renderer::loadModel
@@ -2268,8 +2299,7 @@ bool M2Renderer::initializeShadow(VkRenderPass shadowRenderPass) {
     std::vector<VkVertexInputAttributeDescription> vertAttrs = {
         {.location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT,    .offset = 0},                     // aPos       -> position
         {.location = 1, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT,       .offset = 6 * sizeof(float)},     // aTexCoord  -> texCoord0
-        {.location = 2, .binding = 0, .format = VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 12 * sizeof(float)},    // aBoneWeights
-        {.location = 3, .binding = 0, .format = VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 16 * sizeof(float)},    // aBoneIndicesF
+        {.location = 4, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT,       .offset = 8 * sizeof(float)},     // aTexCoord1
     };
 
     shadowPipeline_ = buildShadowPipeline(
@@ -2331,7 +2361,8 @@ bool M2Renderer::initializeShadowInstancing(VkRenderPass renderPass,
     pool.poolSizeCount = 1;
     pool.pPoolSizes = &size;
     if (vkCreateDescriptorPool(device, &pool, nullptr, &shadowInstancePool_) != VK_SUCCESS) return false;
-    constexpr VkDeviceSize bytes = MAX_SHADOW_INSTANCE_DATA * sizeof(glm::mat4);
+    constexpr VkDeviceSize bytes = M2ShadowSlice::bufferBytes;
+    static_assert(MAX_SHADOW_INSTANCE_DATA == M2ShadowSlice::capacity);
     static_assert(sizeof(glm::mat4) == 64, "Shadow matrix must match std430 mat4");
     for (uint32_t frame = 0; frame < 2; ++frame) {
         VkBufferCreateInfo buffer{.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
@@ -2361,14 +2392,14 @@ bool M2Renderer::initializeShadowInstancing(VkRenderPass renderPass,
         vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
     }
     VkPushConstantRange push{};
-    push.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-    push.size = 128;
+    push.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    push.size = sizeof(M2ShadowInstancedPush);
     shadowInstancedLayout_ = createPipelineLayout(device,
-        {shadowParams_.layout, shadowInstanceSetLayout_}, {push});
+        {shadowParams_.layout, materialSetLayout_, shadowInstanceSetLayout_}, {push});
     if (!shadowInstancedLayout_) return false;
     VkShaderModule vertex, fragment;
-    if (!vertex.loadFromFile(device, "assets/shaders/shadow_instanced.vert.spv") ||
-        !fragment.loadFromFile(device, "assets/shaders/shadow.frag.spv")) return false;
+    if (!vertex.loadFromFile(device, "assets/shaders/m2_shadow_instanced.vert.spv") ||
+        !fragment.loadFromFile(device, "assets/shaders/m2_shadow.frag.spv")) return false;
     shadowInstancedPipeline_ = buildShadowPipeline(device, vkCtx_->getPipelineCache(),
         vertex.stageInfo(VK_SHADER_STAGE_VERTEX_BIT), fragment.stageInfo(VK_SHADER_STAGE_FRAGMENT_BIT),
         binding, attributes, shadowInstancedLayout_, renderPass);
@@ -2376,39 +2407,40 @@ bool M2Renderer::initializeShadowInstancing(VkRenderPass renderPass,
     fragment.destroy();
     if (!shadowInstancedPipeline_) return false;
     LOG_INFO("[SHADOW_INSTANCING] M2 capacity=", MAX_SHADOW_INSTANCE_DATA,
-             " bytesPerFrame=", bytes, " frames=2 sameCasterCoverage=1");
+             " bytesPerFrame=", bytes, " frames=2 passes=2 sameCasterCoverage=1");
     return true;
 }
 
+void M2Renderer::beginShadowFrame() {
+    const auto& order = shadowInstanceOrder_.prepare(static_cast<uint32_t>(instances.size()),
+        [&](uint32_t index) { return instances[index].modelId; });
+    // Keep the compact placement snapshot until membership/model/transform
+    // changes. Camera/light culling and animated material sampling remain fresh
+    // each frame; snapshot pointers are invalidated before vector reallocation.
+    // Sparse scenes retain the direct gather.
+    if (instances.size() >= 4096) {
+        if (shadowSnapshotDirty_) {
+            shadowSnapshot_.prepare(instances, order);
+            shadowSnapshotDirty_ = false;
+        }
+        shadowSnapshot_.active = true;
+    } else { shadowSnapshot_.finish(); shadowSnapshot_.active = true; }
+}
+
 void M2Renderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMatrix, float globalTime,
-                              const glm::vec3& /*shadowCenter*/, float shadowRadius) {
+                              const glm::vec3& /*shadowCenter*/, float shadowRadius, uint32_t shadowPassIndex,
+                              float minCasterDiameter, const ShadowReceiverHull* receiverHull) {
     if (!shadowPipeline_ || !shadowParams_.set) return;
     if (instances.empty() || models.empty()) return;
 
     const uint32_t frameIdx = vkCtx_->getCurrentFrame();
-    if (frameIdx >= kShadowTexPoolFrames || !shadowFoliageParams_[frameIdx].set) return;
+    if (frameIdx >= 2 || !shadowFoliageParams_[frameIdx].set) return;
     const auto& foliageSet = shadowFoliageParams_[frameIdx];
-    shadowTextureCache_.beginFrameSlot(frameIdx);
-    auto getTexDescSet = [&](VkTexture* tex) -> VkDescriptorSet {
-        if (!tex || !tex->isValid()) return foliageSet.set;
-        return shadowTextureCache_.get(vkCtx_->getDevice(), frameIdx,
-            shadowTexPool_[frameIdx], shadowParams_.layout, foliageSet.ubo,
-            sizeof(ShadowParamsUBO), tex->getImageView(), tex->getSampler(),
-            foliageSet.set);
-    };
-    if ((++shadowPerfFrames_ % 300u) == 1u) {
-        LOG_INFO("[SHADOW_CACHE] M2 allocations=", shadowTextureCache_.allocations(),
-                 " reused=", shadowTextureCache_.reuses(),
-                 " hits=", shadowTextureCache_.hits(),
-                 " fallback=", shadowTextureCache_.fallbacks(), " poolReset=0");
-    }
-
+    ++shadowPerfFrames_;
     ShadowParamsUBO foliage{};
     foliage.foliageSway = 1;
     foliage.windTime = globalTime;
     foliage.foliageMotionDamp = 1.0f;
-    foliage.useTexture = 1;
-    foliage.alphaTest = 1;
     VmaAllocationInfo foliageInfo{};
     vmaGetAllocationInfo(vkCtx_->getAllocator(), foliageSet.alloc, &foliageInfo);
     std::memcpy(foliageInfo.pMappedData, &foliage, sizeof(foliage));
@@ -2416,153 +2448,218 @@ void M2Renderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMa
     // Thousands of stable doodads need the same model grouping each frame.
     // Rebuild it only for membership changes; still test this frame's light
     // matrix and current instance bounds/transform for every caster.
-    const bool profileShadow = shadowPerfFrames_ % 300u == 1u;
+    const bool profileShadow = shadowPerfFrames_ % 300u == 1u || shadowPerfFrames_ % 300u == 2u;
     const auto gatherStart = profileShadow ? std::chrono::steady_clock::now()
         : std::chrono::steady_clock::time_point{};
-    const auto& casterOrder = shadowInstanceOrder_.prepare(static_cast<uint32_t>(instances.size()),
-        [&](uint32_t index) { return instances[index].modelId; });
+    // Standalone callers still get a fresh snapshot; the atlas owner explicitly
+    // shares one only while both passes see immutable instance/model state.
+    const bool standaloneSnapshot = !shadowSnapshot_.active;
+    if (standaloneSnapshot) beginShadowFrame();
     shadowCasters_.clear();
-    for (uint32_t index : casterOrder) {
-        const auto& instance = instances[index];
-        // Use cached flags to skip early without hash lookup
-        if (!instance.cachedIsValid || instance.cachedIsSmoke || instance.cachedIsInvisibleTrap) continue;
-
-        if (!instance.cachedModel) continue;
+    uint32_t subtexelCulled = 0, farNormTests = 0, receiverCulled = 0;
+    const auto addCaster = [&](const M2Instance& instance) {
         const M2ModelGPU& model = *instance.cachedModel;
+        float normSquared = -1.0f;
+        if (receiverHull && model.shadowVertexRadius >= 0.0f) {
+            // Measured vertex extent plus ALL shader wind motion; the
+            // Frobenius norm bounds arbitrary affine scale/shear, unlike
+            // the authored scalar scale/bounding sphere used by old culling.
+            normSquared = instance.cachedShadowNormSquared;
+            const float radius = (model.shadowVertexRadius +
+                (model.shadowWindFoliage ? 0.70f : 0.0f))*instance.cachedShadowNorm;
+            if (!receiverHull->intersects(glm::vec3(instance.modelMatrix[3]),radius)) {
+                ++receiverCulled;
+                return;
+            }
+        }
 
-        // Cull casters against the light-space ortho footprint, not a
-        // world-space sphere around the player. The shadow frustum extends
-        // ~2000 units toward the sun, so a distant tree can legitimately
-        // cast across the whole view while sitting far outside any player
-        // sphere - sphere culling made such shadows pop on/off at the cull
-        // boundary as the player moved (large-area flicker at low sun).
-        {
-            const glm::vec4 clip = lightSpaceMatrix * glm::vec4(instance.position, 1.0f);
-            // Orthographic projection: w == 1, NDC directly comparable.
-            // Inflate by the model's bounding sphere converted to NDC
-            // (shadowRadius ≈ frustum half-extent; overshoot is harmless).
-            const float margin = (model.boundRadius * instance.scale) / shadowRadius * 1.5f;
-            if (std::abs(clip.x) > 1.0f + margin || std::abs(clip.y) > 1.0f + margin) continue;
-            if (clip.z < -margin || clip.z > 1.0f + margin) continue;
+        // Evaluate the expensive far-map norm only after rejecting outside
+        // the unchanged light footprint. The intersection of both tests is
+        // identical; subtexelCulled now counts footprint survivors only.
+        if (shadowPassIndex == 1 && minCasterDiameter > 0.0f) {
+            ++farNormTests;
+            if (normSquared < 0.0f) {
+                normSquared = instance.cachedShadowNormSquared;
+            }
+            if (m2FarShadowSubtexel(shadowPassIndex, minCasterDiameter,
+                                   model.shadowVertexRadius, normSquared, model.shadowWindFoliage)) {
+                ++subtexelCulled;
+                return;
+            }
         }
 
         shadowCasters_.push_back(&instance);
+    };
+    if (instances.size() >= 4096) {
+        for (const auto& entry : shadowSnapshot_.entries)
+            if (M2ShadowSnapshot<M2Instance>::intersects(entry, lightSpaceMatrix, shadowRadius))
+                addCaster(*entry.instance);
+    } else {
+        const auto& order = shadowInstanceOrder_.prepare(static_cast<uint32_t>(instances.size()),
+            [&](uint32_t index) { return instances[index].modelId; });
+        for (auto index : order) {
+            const auto& instance = instances[index];
+            if (!instance.cachedIsValid || instance.cachedIsSmoke || instance.cachedIsInvisibleTrap ||
+                !instance.cachedModel || instance.cachedModel->shadowBatches.empty()) continue;
+            const M2ShadowSnapshot<M2Instance>::Entry entry{&instance, instance.position,
+                instance.cachedModel->boundRadius * instance.scale};
+            if (M2ShadowSnapshot<M2Instance>::intersects(entry, lightSpaceMatrix, shadowRadius)) addCaster(instance);
+        }
     }
+    if (standaloneSnapshot) shadowSnapshot_.active = false;
     if (profileShadow) {
         const double gatherMs = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - gatherStart).count();
         LOG_INFO("[SHADOW_GATHER] M2 instances=", instances.size(), " casters=", shadowCasters_.size(),
-                 " modelOrderRebuilds=", shadowInstanceOrder_.rebuilds(), " gatherMs=", gatherMs);
+                 " modelOrderRebuilds=", shadowInstanceOrder_.rebuilds(), " gatherMs=", gatherMs,
+                 " pass=", shadowPassIndex, " subtexelCulled=", subtexelCulled,
+                 " receiverCulled=", receiverCulled, " farNormTests=", farNormTests, " subtexelScope=footprint compactSnapshot=", instances.size() >= 4096);
     }
 
     // The buffer is separate from the main pass, which resets and rewrites its
     // instance SSBO later in this same command buffer. This slot's fence was
     // waited in beginFrame; no recorded draw is allowed to observe a rewrite.
-    bool useInstancing = shadowInstancedPipeline_ && shadowInstanceMapped_[frameIdx] &&
-        shadowInstanceSet_[frameIdx] && shadowInstanceStorageFits(shadowCasters_.size(), MAX_SHADOW_INSTANCE_DATA);
+    // Near and far calls are recorded before either executes: never rewrite
+    // the first pass's models while gathering the second pass's casters.
+    const auto slice = m2ShadowSlice(shadowPassIndex, shadowCasters_.size());
+    bool useInstancing = slice.valid && shadowInstancedPipeline_ && shadowInstanceMapped_[frameIdx] &&
+        shadowInstanceSet_[frameIdx];
     if (useInstancing) {
-        auto* matrices = static_cast<glm::mat4*>(shadowInstanceMapped_[frameIdx]);
+        auto* matrices = static_cast<glm::mat4*>(shadowInstanceMapped_[frameIdx]) + slice.matrixOffset;
         for (size_t i = 0; i < shadowCasters_.size(); ++i) matrices[i] = shadowCasters_[i]->modelMatrix;
-        useInstancing = vmaFlushAllocation(vkCtx_->getAllocator(), shadowInstanceAlloc_[frameIdx], 0,
-                           shadowCasters_.size() * sizeof(glm::mat4)) == VK_SUCCESS;
+        useInstancing = slice.byteSize == 0 ||
+            vmaFlushAllocation(vkCtx_->getAllocator(), shadowInstanceAlloc_[frameIdx],
+                               slice.byteOffset, slice.byteSize) == VK_SUCCESS;
     }
+    // Resolve animated UVs from the exact main-pass sampler and clocks.
+    const float lavaAnimSeconds = std::chrono::duration<float>(
+        std::chrono::steady_clock::now() - kLavaAnimStart).count();
+    constexpr auto pushStages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     if (useInstancing) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowInstancedPipeline_);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowInstancedLayout_,
-            1, 1, &shadowInstanceSet_[frameIdx], 0, nullptr);
-        struct InstancedPush { glm::mat4 lightSpaceMatrix; uint32_t instanceDataOffset; };
-        static_assert(offsetof(InstancedPush, instanceDataOffset) == 64);
-        uint32_t draws = 0, individualDraws = 0;
-        VkDescriptorSet currentSet = VK_NULL_HANDLE;
+            2, 1, &shadowInstanceSet_[frameIdx], 0, nullptr);
+        uint32_t draws = 0, individualDraws = 0, animatedUvDraws = 0, animatedUvInstances = 0;
+        uint32_t uvSamples = 0, uvReused = 0;
+        VkDescriptorSet currentSet = VK_NULL_HANDLE, currentMaterial = VK_NULL_HANDLE;
         for (size_t begin = 0; begin < shadowCasters_.size();) {
             const size_t end = shadowInstanceGroupEnd(begin, shadowCasters_.size(),
                 [&](size_t index) { return shadowCasters_[index]->modelId; });
             const auto& model = *shadowCasters_[begin]->cachedModel;
-            const uint32_t count = static_cast<uint32_t>(end - begin);
             VkDeviceSize offset = 0;
             vkCmdBindVertexBuffers(cmd, 0, 1, &model.vertexBuffer, &offset);
             vkCmdBindIndexBuffer(cmd, model.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
-            InstancedPush push{lightSpaceMatrix, static_cast<uint32_t>(begin)};
-            vkCmdPushConstants(cmd, shadowInstancedLayout_, VK_SHADER_STAGE_VERTEX_BIT,
-                               0, sizeof(push), &push);
+            const VkDescriptorSet set = model.shadowWindFoliage ? foliageSet.set : shadowParams_.set;
+            if (set != currentSet) {
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowInstancedLayout_,
+                    0, 1, &set, 0, nullptr);
+                currentSet = set;
+            }
             for (const auto& batch : model.shadowBatches) {
-                VkDescriptorSet set = model.shadowWindFoliage
-                    ? (batch.texture ? getTexDescSet(batch.texture) : foliageSet.set)
-                    : shadowParams_.set;
-                if (set != currentSet) {
+                const auto& material = model.batches[batch.materialBatch];
+                if (material.materialSet != currentMaterial) {
                     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowInstancedLayout_,
-                        0, 1, &set, 0, nullptr);
-                    currentSet = set;
+                        1, 1, &material.materialSet, 0, nullptr);
+                    currentMaterial = material.materialSet;
                 }
-                for (const auto& range : batch.ranges) {
-                    vkCmdDrawIndexed(cmd, range.indexCount, count, range.firstIndex, 0, 0);
-                    ++draws;
-                    individualDraws += count;
-                }
+                // A skin commonly supplies texture-animation index zero even
+                // when its lookup resolves to no transform. Such a batch has
+                // identical UVs for every instance: do not walk thousands of
+                // unrelated animation clocks merely to rediscover identity.
+                const bool resolvedTransform = material.textureAnimIndex < model.textureTransformLookup.size() &&
+                    model.textureTransformLookup[material.textureAnimIndex] < model.textureTransforms.size();
+                const bool perInstanceUv = material.hasNonIdentityTextureTransform && resolvedTransform && m2ShadowNeedsPerInstanceUv(batch.maskMode,
+                    model.hasTextureAnimation, material.textureAnimIndex);
+                // This cache cannot outlive this model/material/pass or its
+                // lava clock. Equal exact inputs reuse an identical transform;
+                // the existing six-component run grouping remains unchanged.
+                M2ShadowUvClockCache uvCache;
+                forEachM2ShadowUvRun(begin, end, perInstanceUv,
+                    [&](size_t index) {
+                        return uvCache.sample(*shadowCasters_[index], [&] {
+                            return sampleM2ShadowUv(model, batch, *shadowCasters_[index], lavaAnimSeconds);
+                        });
+                    }, [&](size_t index, size_t step, const M2UvTransform& uv) {
+                    M2ShadowInstancedPush push{};
+                    m2ShadowAffineRows(lightSpaceMatrix, push.lightRows);
+                    push.instanceDataOffset = slice.matrixOffset + static_cast<uint32_t>(index);
+                    push.uvLinear = uv.linear;
+                    push.uvOffset = uv.offset;
+                    push.texCoordSet = material.textureUnit;
+                    push.maskMode = batch.maskMode;
+                    vkCmdPushConstants(cmd, shadowInstancedLayout_, pushStages, 0, sizeof(push), &push);
+                    for (const auto& range : batch.ranges) {
+                        vkCmdDrawIndexed(cmd, range.indexCount, static_cast<uint32_t>(step), range.firstIndex, 0, 0);
+                        ++draws;
+                        individualDraws += static_cast<uint32_t>(step);
+                        if (perInstanceUv) {
+                            ++animatedUvDraws;
+                            animatedUvInstances += static_cast<uint32_t>(step);
+                        }
+                    }
+                });
+                uvSamples += uvCache.samples();
+                uvReused += uvCache.reused();
             }
             begin = end;
         }
-        if (shadowPerfFrames_ % 300u == 1u)
+        if (profileShadow)
             LOG_INFO("[SHADOW_SUBMIT] M2 casters=", shadowCasters_.size(), " draws=", draws,
-                     " uninstanced=", individualDraws, " instanced=1 matrixBytes=",
-                     shadowCasters_.size() * sizeof(glm::mat4));
+                     " uninstanced=", individualDraws, " animatedUvDraws=", animatedUvDraws,
+                     " animatedUvInstances=", animatedUvInstances,
+                     " uvSamples=", uvSamples, " uvReused=", uvReused,
+                     " instanced=1 matrixBytes=", shadowCasters_.size() * sizeof(glm::mat4),
+                     " materialDescriptorsReused=1 pass=", shadowPassIndex,
+                     " subtexelCulled=", subtexelCulled);
         return;
     }
 
-    uint32_t mergedDraws=0, originalDraws=0;
-    auto drawPass = [&](bool foliagePass) {
-        VkDescriptorSet baseSet = foliagePass ? foliageSet.set : shadowParams_.set;
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline_);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout_,
-            0, 1, &baseSet, 0, nullptr);
-        VkDescriptorSet currentTexSet = baseSet;
-        uint32_t currentModelId = UINT32_MAX;
-        const M2ModelGPU* currentModel = nullptr;
-
-        for (const auto* caster : shadowCasters_) {
-            const auto& instance = *caster;
-            const auto& model = *instance.cachedModel;
-            if (model.shadowWindFoliage != foliagePass) continue;
-            // Bind vertex/index buffers when model changes
-            if (instance.modelId != currentModelId) {
-                currentModelId = instance.modelId;
-                currentModel = &model;
-                VkDeviceSize offset = 0;
-                vkCmdBindVertexBuffers(cmd, 0, 1, &currentModel->vertexBuffer, &offset);
-                vkCmdBindIndexBuffer(cmd, currentModel->indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+    uint32_t mergedDraws = 0, originalDraws = 0;
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline_);
+    VkDescriptorSet currentSet = VK_NULL_HANDLE, currentMaterial = VK_NULL_HANDLE;
+    uint32_t currentModelId = UINT32_MAX;
+    for (const auto* caster : shadowCasters_) {
+        const auto& instance = *caster;
+        const auto& model = *instance.cachedModel;
+        if (instance.modelId != currentModelId) {
+            currentModelId = instance.modelId;
+            VkDeviceSize offset = 0;
+            vkCmdBindVertexBuffers(cmd, 0, 1, &model.vertexBuffer, &offset);
+            vkCmdBindIndexBuffer(cmd, model.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+        }
+        const VkDescriptorSet set = model.shadowWindFoliage ? foliageSet.set : shadowParams_.set;
+        if (set != currentSet) {
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout_,
+                0, 1, &set, 0, nullptr);
+            currentSet = set;
+        }
+        if (profileShadow)
+            for (const auto& b : model.batches) if (b.submeshLevel == 0 && b.indexCount) ++originalDraws;
+        for (const auto& batch : model.shadowBatches) {
+            const auto& material = model.batches[batch.materialBatch];
+            if (material.materialSet != currentMaterial) {
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout_,
+                    1, 1, &material.materialSet, 0, nullptr);
+                currentMaterial = material.materialSet;
             }
-
-            ShadowPush push{.lightSpaceMatrix = lightSpaceMatrix, .model = instance.modelMatrix};
-            vkCmdPushConstants(cmd, shadowPipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT,
-                               0, 128, &push);
-
-            if (shadowPerfFrames_ % 300u == 1u)
-                for (const auto& b : model.batches) if (b.submeshLevel == 0 && b.indexCount) ++originalDraws;
-            for (const auto& batch : model.shadowBatches) {
-                // For foliage: bind per-batch texture for alpha-tested shadows
-                if (foliagePass) {
-                    VkDescriptorSet texSet = batch.texture
-                        ? getTexDescSet(batch.texture) : foliageSet.set;
-                    if (texSet != currentTexSet) {
-                        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            shadowPipelineLayout_, 0, 1, &texSet, 0, nullptr);
-                        currentTexSet = texSet;
-                    }
-                }
-                for (const auto& range : batch.ranges) {
-                    vkCmdDrawIndexed(cmd, range.indexCount, 1, range.firstIndex, 0, 0);
-                    ++mergedDraws;
-                }
+            M2ShadowPush push{};
+            m2ShadowAffineRows(lightSpaceMatrix, push.lightRows);
+            m2ShadowAffineRows(instance.modelMatrix, push.modelRows);
+            const auto uv = sampleM2ShadowUv(model, batch, instance, lavaAnimSeconds);
+            push.uvLinear = uv.linear;
+            push.uvOffset = uv.offset;
+            push.texCoordSet = material.textureUnit;
+            push.maskMode = batch.maskMode;
+            vkCmdPushConstants(cmd, shadowPipelineLayout_, pushStages, 0, sizeof(push), &push);
+            for (const auto& range : batch.ranges) {
+                vkCmdDrawIndexed(cmd, range.indexCount, 1, range.firstIndex, 0, 0);
+                ++mergedDraws;
             }
         }
-    };
-
-    // Pass 1: non-foliage (no wind displacement)
-    drawPass(false);
-    // Pass 2: foliage (wind displacement enabled, per-batch alpha-tested textures)
-    drawPass(true);
-    if (shadowPerfFrames_ % 300u == 1u)
-        LOG_INFO("[SHADOW_SUBMIT] M2 casters=", shadowCasters_.size(), " draws=", mergedDraws, " unmerged=", originalDraws, " instanced=0");
+    }
+    if (profileShadow)
+        LOG_INFO("[SHADOW_SUBMIT] M2 casters=", shadowCasters_.size(), " draws=", mergedDraws,
+                 " unmerged=", originalDraws, " instanced=0 materialDescriptorsReused=1");
 }
 
 } // namespace rendering

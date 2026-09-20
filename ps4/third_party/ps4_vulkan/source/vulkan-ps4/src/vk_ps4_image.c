@@ -10,8 +10,97 @@
 #include "vk_ps4_internal.h"
 #include "vk_ps4_texture_address.h"
 #include "vk_ps4_subresource.h"
+#include "vk_ps4.h"
+#include "gpuaddr.h"
 
 #include <string.h>
+#include <math.h>
+
+VKAPI_ATTR VkResult VKAPI_CALL
+vk_ps4_InspectRetiredDepthImage(VkDevice device, VkImage image,
+    const VkRect2D *region, VkPs4DepthInspection *result) {
+    if (!result) return VK_ERROR_INITIALIZATION_FAILED;
+    memset(result, 0, sizeof(*result));
+    result->memoryTypeIndex = UINT32_MAX;
+    if (!device || !image || !region) {
+        result->rejectionReason = VK_PS4_DEPTH_REJECT_ARGUMENT;
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    const VkPs4Image *img = (const VkPs4Image *)image;
+    const VkImageCreateInfo *ci = &img->create_info;
+    if (img->device != (VkPs4Device *)device)
+        result->rejectionReason |= VK_PS4_DEPTH_REJECT_DEVICE;
+    if (!img->is_depth_target || ci->format != VK_FORMAT_D32_SFLOAT)
+        result->rejectionReason |= VK_PS4_DEPTH_REJECT_FORMAT;
+    if (ci->imageType != VK_IMAGE_TYPE_2D || ci->mipLevels != 1 ||
+        ci->arrayLayers != 1 || ci->extent.depth != 1)
+        result->rejectionReason |= VK_PS4_DEPTH_REJECT_SHAPE;
+    if (ci->samples != VK_SAMPLE_COUNT_1_BIT)
+        result->rejectionReason |= VK_PS4_DEPTH_REJECT_SAMPLES;
+    if (img->gnm_drt.zinfo.tilesurfaceenable || img->gnm_drt.htiledatabase256b)
+        result->rejectionReason |= VK_PS4_DEPTH_REJECT_HTILE;
+    if (!img->memory) result->rejectionReason |= VK_PS4_DEPTH_REJECT_MEMORY;
+    else {
+        result->memoryTypeIndex = img->memory->memory_type_index;
+        if (!img->memory->gnm_mem.mapped)
+            result->rejectionReason |= VK_PS4_DEPTH_REJECT_MAPPING;
+        if (img->memory->memory_type_index != VK_PS4_MEMORY_TYPE_GARLIC)
+            result->rejectionReason |= VK_PS4_DEPTH_REJECT_MEMORY_TYPE;
+    }
+    if (result->rejectionReason) return VK_ERROR_FEATURE_NOT_PRESENT;
+    if (region->offset.x < 0 || region->offset.y < 0 ||
+        !region->extent.width || !region->extent.height ||
+        (uint32_t)region->offset.x >= ci->extent.width ||
+        (uint32_t)region->offset.y >= ci->extent.height ||
+        region->extent.width > ci->extent.width - (uint32_t)region->offset.x ||
+        region->extent.height > ci->extent.height - (uint32_t)region->offset.y) {
+        result->rejectionReason = VK_PS4_DEPTH_REJECT_REGION;
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    const GpaTextureInfo info = sceGnmTexBuildInfo(&img->gnm_texture);
+    GpaTilingParams tp;
+    GpaSurfaceContext context;
+    uint64_t surfaceSize = 0, surfaceOffset = 0;
+    if (sceGpaComputeSurfaceSizeOffset(&surfaceSize, &surfaceOffset, &info, 0, 0) != GPA_ERR_OK ||
+        surfaceOffset != 0 || surfaceSize < sizeof(float) ||
+        img->memory_offset > img->memory->size ||
+        surfaceSize > img->memory->size - img->memory_offset ||
+        sceGpaTpInit(&tp, &info, 0, 0) != GPA_ERR_OK ||
+        sceGpaInitSurfaceContext(&context, surfaceSize, &tp) != GPA_ERR_OK) {
+        result->rejectionReason = VK_PS4_DEPTH_REJECT_LAYOUT;
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    const uint32_t nx = region->extent.width < 32u ? region->extent.width : 32u;
+    const uint32_t ny = region->extent.height < 32u ? region->extent.height : 32u;
+    const unsigned char *base = (const unsigned char *)img->memory->gnm_mem.mapped + img->memory_offset;
+    for (uint32_t iy = 0; iy < ny; ++iy) {
+        for (uint32_t ix = 0; ix < nx; ++ix) {
+            const uint32_t x = (uint32_t)region->offset.x +
+                (uint32_t)(((uint64_t)ix * 2u + 1u) * region->extent.width / (2u * nx));
+            const uint32_t y = (uint32_t)region->offset.y +
+                (uint32_t)(((uint64_t)iy * 2u + 1u) * region->extent.height / (2u * ny));
+            uint64_t offset = 0, bitOffset = 0;
+            if (sceGpaComputeSurfaceCoord(&offset, &bitOffset, &context, x, y, 0, 0) != GPA_ERR_OK ||
+                bitOffset != 0 || offset > surfaceSize - sizeof(float)) {
+                result->rejectionReason = VK_PS4_DEPTH_REJECT_COORD;
+                return VK_ERROR_INITIALIZATION_FAILED;
+            }
+            float depth;
+            memcpy(&depth, base + offset, sizeof(depth));
+            ++result->sampleCount;
+            if (!isfinite(depth)) { ++result->invalidCount; continue; }
+            if (!result->finiteCount) result->minDepth = result->maxDepth = depth;
+            else {
+                if (depth < result->minDepth) result->minDepth = depth;
+                if (depth > result->maxDepth) result->maxDepth = depth;
+            }
+            ++result->finiteCount;
+            if (depth < 0.0f || depth > 1.0f) ++result->invalidCount;
+            else if (depth < 1.0f) ++result->nonClearCount;
+        }
+    }
+    return VK_SUCCESS;
+}
 
 static GnmTextureType vk_image_type_to_gnm(VkImageType type) {
     switch (type) {
@@ -448,7 +537,10 @@ vk_ps4_CreateImageView(VkDevice device, const VkImageViewCreateInfo *pCreateInfo
     } else {
         const GnmRenderTarget *rt = &view->image->gnm_rt;
         GnmTextureCreateInfo ti = {0};
-        ti.format = sceGnmRtGetFormat(rt);
+        /* RT registers do not retain every texture channel selector: the
+         * native R16 roundtrip yields R000 instead of Vulkan's R001. The
+         * validated view VkFormat supplies the authoritative sampled swizzle. */
+        ti.format = vk_ps4_vk_format_to_gnm(pCreateInfo->format);
         ti.texturetype = ci->arrayLayers > 1 ? GNM_TEXTURE_2D_ARRAY : GNM_TEXTURE_2D;
         ti.width = ci->extent.width;
         ti.height = ci->extent.height;

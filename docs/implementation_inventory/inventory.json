@@ -1,0 +1,84 @@
+{
+  "buildVersion": "the implementation",
+  "catalogCounts": {
+    "cells": 5743,
+    "destinations": 276,
+    "instanceTemplates": 85,
+    "items": 46096,
+    "maps": 120,
+    "mapsWithBaselineCreatures": 107,
+    "npcs": 14496,
+    "profiles": 62,
+    "quests": 919,
+    "questsWithChoices": 139,
+    "questsWithMultipleFixedRewards": 18,
+    "runtimeBytes": 16623277,
+    "spawns": 112946
+  },
+  "catalogReproduction": {
+    "cells.idx": {
+      "identical": true,
+      "sha256": "26c7f01c2caa118c6467672409acbc0a88576f33ab1e2c81fb8709be04be7e35"
+    },
+    "contacts.pack": {
+      "identical": true,
+      "sha256": "c7e5f2f1e2f4fb5b4b2e77c4650b112b35c8bcf0be15b6999d2ed935e10ff96e"
+    },
+    "items.pack": {
+      "identical": true,
+      "sha256": "3ac7586f8c9c8d4141962af6379e85819b9f6bd4b3238c0f476981ec73f9bbf7"
+    },
+    "manifest.json": {
+      "identical": true,
+      "sha256": "e1bba40af37709a34b7401a41a03ab5412dc61405ebfb9c56d40b6fd6b592a27"
+    },
+    "npcs.pack": {
+      "identical": true,
+      "sha256": "5e8cd2d8ddcacb4cc11d497f33b851b3b568b852a0900224a09836e2b055b1ca"
+    },
+    "quests.pack": {
+      "identical": true,
+      "sha256": "b906362a84766a79f9e830ced409b16f8eaaa4a2b6a9e75dca488f5868c792c3"
+    },
+    "spawns.pack": {
+      "identical": true,
+      "sha256": "48fcd57a6370a8b5717a2a6d8d5e279a9879ea4e853499fe5b8ed0f1d4cf3c98"
+    }
+  },
+  "finalExcludedQuestCount": 8545,
+  "installedClientSpellCoverage": null,
+  "installedClientTalentCoverage": null,
+  "limitations": [
+    "Quest count denominator is this pinned SQL snapshot, not all retail content.",
+    "Adapted catalog entry is not original quest/script parity or new gameplay verification.",
+    "Exclusion reasons are the first importer rejection, not an exhaustive list of blockers.",
+    "This project-only stage does not consume DBC tables; consult the companion client inventory.",
+    "No console or connected-server test was performed by this inventory tool.",
+    "Source inventory completion is tracked separately from full gameplay support."
+  ],
+  "overallCompletionPercent": null,
+  "questExclusions": {
+    "empty definition": 55,
+    "exclusive/group prerequisite": 348,
+    "gameobject objective": 36,
+    "item lacks direct baseline drop": 808,
+    "money payment": 29,
+    "no baseline creature starter/ender": 3251,
+    "prerequisite excluded": 773,
+    "repeat/script/exploration": 782,
+    "skill/spell/reputation/mail condition": 233,
+    "spell/start-item/title requirement": 1665,
+    "timed/PvP objective": 32,
+    "unsupported faction/extra objective": 119,
+    "unsupported/nonattackable kill target": 414
+  },
+  "readmeStatusCounts": {
+    "✅": 19,
+    "⚠️": 49,
+    "❌": 13
+  },
+  "schemaVersion": 1,
+  "sourceCommit": "4e80596cdaa21fa31830522f6f2d7ed8750bfffd",
+  "sourceQuestCount": 9464,
+  "catalogReproductionVersion": "the implementation"
+}

@@ -42,6 +42,8 @@ for _, s in ipairs(list) do byKey[s.key] = s end
 
 local kCategoryHost = {
     ["Graphics"]     = "video",
+    ["Effects"]      = "video",
+    ["Lighting"]     = "video",
     ["Grass"]        = "video",
     ["Upscaling"]    = "video",
     ["Display"]      = "video",
@@ -298,8 +300,15 @@ local function addSlider(layout, panel, setting)
     local high = templateRegion(name, "High")
                  or ownLabel(panel, slider, "GameFontHighlightSmall",
                              "TOPRIGHT", "BOTTOMRIGHT", 0, 2)
-    low:SetText(num(setting.min))
-    high:SetText(num(setting.max))
+    local function displayed(value)
+        if setting.key == "volumetricfogintensity" then
+            if value <= 0 then return "Off" end
+            return tostring(math.floor(value * 100 + 0.5)) .. "%"
+        end
+        return num(value)
+    end
+    low:SetText(displayed(setting.min))
+    high:SetText(displayed(setting.max))
     local valueText = templateRegion(name, "Text")
                       or ownLabel(panel, slider, "GameFontHighlight",
                                   "BOTTOMLEFT", "TOPLEFT", 0, 2)
@@ -308,7 +317,7 @@ local function addSlider(layout, panel, setting)
     -- template has nowhere to put a moving label, and a slider whose number is
     -- only in a tooltip is a slider nobody can set to a particular value.
     local function showValue(value)
-        valueText:SetText(setting.label .. ":  " .. num(value))
+        valueText:SetText(setting.label .. ":  " .. displayed(value))
     end
     slider:SetScript("OnValueChanged", function(self, value)
         showValue(value)

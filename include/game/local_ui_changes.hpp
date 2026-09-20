@@ -4,12 +4,13 @@ namespace wowee::game {
 // Input to the local FrameXML bridge. Avoid synthetic BAG/QUEST notifications
 // on every polling tick: those handlers rebuild entire retail panels.
 struct LocalUiChanges {
-    enum : unsigned { Life=1, Power=2, Experience=4, Money=8, Bags=16, Quests=32, Spells=64, Cooldowns=128, Target=256, Mounts=512, Bank=1024, Professions=2048, Travel=4096 };
+    enum : unsigned { Life=1, Power=2, Experience=4, Money=8, Bags=16, Quests=32, Spells=64, Cooldowns=128, Target=256, Mounts=512, Bank=1024, Professions=2048, Travel=4096, Combo=8192 };
     bool initialized=false;
     uint32_t health=0,maxHealth=0,power=0,maxPower=0,xp=0,xpMax=0,money=0;
     uint8_t level=0,resource=0;
-    bool dead=false;
+    bool dead=false,ghost=false,corpseValid=false,reclaimable=false;
     uint64_t target=0;
+    uint64_t comboTarget=0;uint8_t comboPoints=0;
     uint32_t targetHealth=0,targetMaxHealth=0,gcd=0,mountSpell=0;
     size_t rewarded=0;
     std::vector<LocalItemStack> bags;
@@ -23,9 +24,13 @@ struct LocalUiChanges {
     std::vector<LocalQuestProgress> quests;
     std::vector<uint32_t> spells;
     std::vector<LocalCooldown> cooldowns;
+    std::vector<LocalCategoryCooldown> categoryCooldowns;
     unsigned observe(const LocalRealmPlayer& p,uint64_t t,uint32_t hp,uint32_t maxHp) {
-        unsigned out=initialized?0u:8191u;
-        if(health!=p.health || maxHealth!=p.maxHealth || dead!=p.dead) out|=Life;
+        unsigned out=initialized?0u:16383u;
+        if(comboTarget!=p.comboTarget||comboPoints!=p.comboPoints)out|=Combo;
+        const bool canReclaim=localCanReclaimCorpse(p);
+        if(health!=p.health || maxHealth!=p.maxHealth || dead!=p.dead || ghost!=p.ghost ||
+           corpseValid!=p.corpseValid || reclaimable!=canReclaim) out|=Life;
         if(power!=p.mana || maxPower!=p.maxMana || resource!=uint8_t(p.resourceType)) out|=Power;
         if(xp!=p.xp || xpMax!=p.xpToLevel || level!=p.level) out|=Experience;
         if(money!=p.money) out|=Money;
@@ -44,10 +49,14 @@ struct LocalUiChanges {
         if(mountSpell!=p.mountSpellId)out|=Mounts;
         same=gcd==p.globalCooldownMs && cooldowns.size()==p.cooldowns.size();
         for(size_t i=0;same && i<cooldowns.size();++i) same=cooldowns[i].spellId==p.cooldowns[i].spellId && cooldowns[i].remainingMs==p.cooldowns[i].remainingMs;
+        if(same)same=categoryCooldowns.size()==p.categoryCooldowns.size();
+        for(size_t i=0;same&&i<categoryCooldowns.size();++i)same=categoryCooldowns[i].category==p.categoryCooldowns[i].category&&categoryCooldowns[i].family==p.categoryCooldowns[i].family&&categoryCooldowns[i].remainingMs==p.categoryCooldowns[i].remainingMs;
         if(!same) out|=Cooldowns;
         if(target!=t || targetHealth!=hp || targetMaxHealth!=maxHp) out|=Target;
         initialized=true;
-        health=p.health;maxHealth=p.maxHealth;dead=p.dead;
+        comboTarget=p.comboTarget;comboPoints=p.comboPoints;
+        health=p.health;maxHealth=p.maxHealth;dead=p.dead;ghost=p.ghost;
+        corpseValid=p.corpseValid;reclaimable=canReclaim;
         power=p.mana;maxPower=p.maxMana;resource=uint8_t(p.resourceType);
         xp=p.xp;xpMax=p.xpToLevel;level=p.level;money=p.money;
         if(out&Bags){bags=p.inventory;equipment=p.equipment;}
@@ -56,7 +65,7 @@ struct LocalUiChanges {
         if(out&Travel){taxiNodes=p.knownTaxiNodes;onTaxi=p.flight.active;}
         if(out&Quests){quests=p.quests;rewarded=p.completedQuestIds.size();}
         if(out&Spells)spells=p.knownSpells;
-        if(out&Cooldowns){cooldowns=p.cooldowns;gcd=p.globalCooldownMs;}
+        if(out&Cooldowns){cooldowns=p.cooldowns;categoryCooldowns=p.categoryCooldowns;gcd=p.globalCooldownMs;}
         mountSpell=p.mountSpellId;
         target=t;targetHealth=hp;targetMaxHealth=maxHp;
         return out;

@@ -1,4 +1,6 @@
 #include "ui/game_screen.hpp"
+#include "game/local_forms.hpp"
+#include "game/local_realm.hpp"
 #include "ui/sight_cache.hpp"
 #include "addons/lua_api_registrations.hpp"
 #include "ui/ui_texture_load.hpp"
@@ -79,6 +81,7 @@ namespace wowee { namespace ui {
 
 
 void GameScreen::updateCharacterGeosets(game::Inventory& inventory) {
+    if(auto* gh=core::Application::getInstance().getGameHandler())if(auto* r=gh->localServiceRealm())if(const auto* p=r->localPlayer())if(game::localFormDisplay(*p))return;
     auto& app = core::Application::getInstance();
     auto* renderer = app.getRenderer();
     if (!renderer) return;
@@ -343,6 +346,7 @@ void GameScreen::updateCharacterGeosets(game::Inventory& inventory) {
 }
 
 void GameScreen::updateCharacterTextures(game::Inventory& inventory) {
+    if(auto* gh=core::Application::getInstance().getGameHandler())if(auto* r=gh->localServiceRealm())if(const auto* p=r->localPlayer())if(game::localFormDisplay(*p))return;
     auto& app = core::Application::getInstance();
     auto* renderer = app.getRenderer();
     if (!renderer) return;

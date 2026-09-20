@@ -28,6 +28,7 @@ prefix = r'''
 #include <random>
 using namespace wowee::rendering;
 namespace pipeline = wowee::pipeline;
+namespace platform = wowee::platform;
 static long failAfter = -1;
 void* operator new(size_t n) {
     if (failAfter == 0) throw std::bad_alloc();
@@ -171,12 +172,14 @@ int main() {
         resource.vertexBuffer=11;resource.vertexAlloc=1011;resource.indexBuffer=12;resource.indexAlloc=1012;
         resource.mergedBatches.resize(2);
         for(unsigned i=0;i<2;++i){auto& b=resource.mergedBatches[i];b.materialSet=21+i;b.materialUBO=31+i;b.materialUBOAlloc=1031+i;}
+        resource.opaqueShadowSet=21;resource.cutoutShadowBatches.push_back(1);
         failAfter=fail;bool success=false;
         try {renderer.destroyGroupGPU(resource,true);success=true;}catch(const std::bad_alloc&){++retirementFailures;}
         failAfter=-1;
-        if(!success){assert(resource.vertexBuffer==11&&resource.indexBuffer==12&&resource.mergedBatches[1].materialUBO==32);assert(ctx.queues[0].empty()&&ctx.queues[1].empty());renderer.destroyGroupGPU(resource,true);}
+        if(!success){assert(resource.opaqueShadowSet==21&&resource.cutoutShadowBatches.size()==1);assert(resource.vertexBuffer==11&&resource.indexBuffer==12&&resource.mergedBatches[1].materialUBO==32);assert(ctx.queues[0].empty()&&ctx.queues[1].empty());renderer.destroyGroupGPU(resource,true);}
         assert(!resource.vertexBuffer&&!resource.indexBuffer&&!resource.mergedBatches[1].materialUBO);
-        ctx.finish(1);assert(!releasedBuffers[11]);ctx.finish(0);
+        assert(!resource.opaqueShadowSet&&resource.cutoutShadowBatches.empty());
+        ctx.finish(1);assert(!releasedBuffers[11]&&!releasedSets[21]&&!releasedSets[22]);ctx.finish(0);
         assert(releasedBuffers[11]==1&&releasedBuffers[12]==1&&releasedBuffers[31]==1&&releasedBuffers[32]==1&&releasedSets[21]==1&&releasedSets[22]==1);
     }
     assert(retirementFailures>=4);

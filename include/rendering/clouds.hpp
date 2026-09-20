@@ -19,7 +19,7 @@ struct SkyParams;
  *
  * Pipeline layout:
  *   set 0 = perFrameLayout  (camera UBO - view, projection, etc.)
- *   push  = CloudPush       (3 x vec4 = 48 bytes)
+ *   push  = CloudPush       (4 x vec4 = 64 bytes)
  */
 class Clouds {
 public:
@@ -64,8 +64,9 @@ private:
         glm::vec4 cloudColor;     // xyz = DBC-derived base cloud color, w = unused
         glm::vec4 sunDirDensity;  // xyz = sun direction, w = density
         glm::vec4 windAndLight;   // x = windOffset, y = sunIntensity, z = ambient, w = unused
+        glm::vec4 keyColor;      // resolved directional RGB
     };
-    static_assert(sizeof(CloudPush) == 48, "CloudPush size mismatch");
+    static_assert(sizeof(CloudPush) == 64, "CloudPush size mismatch");
 
     void generateMesh();
     void createBuffers();

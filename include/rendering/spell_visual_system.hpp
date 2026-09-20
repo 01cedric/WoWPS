@@ -61,6 +61,9 @@ public:
     // Remove all active precast visual instances (cast canceled/interrupted).
     void cancelAllPrecastVisuals();
 
+    // Keep an existing local cast effect alive through authority pushback; no replay.
+    void synchronizePrecastRemaining(uint32_t attachInstanceId, uint32_t remainingMs);
+
     // Remove all active spell visual instances and reset caches.
     // Called on map change / combat reset.
     void reset();

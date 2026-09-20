@@ -14,6 +14,9 @@ EXTRA_TABLES = ['areatrigger_teleport', 'instance_template']
 ALL_TABLES = TABLES + EXTRA_TABLES
 MAGIC = b'WPCAT01\0'
 CELL = 256
+# ObjectDefines.h:44 - the reach a creature gets when creature_model_info has no
+# row for its display id, or its CombatReach column is not positive.
+DEFAULT_WORLD_OBJECT_SIZE = 0.388999998569489
 
 def encode(value): return json.dumps(value, ensure_ascii=False, separators=(',', ':'), sort_keys=True).encode()
 def record_pack(path, values):
@@ -59,7 +62,8 @@ def compile_catalog(sql_dir, output, baseline=None):
     stats = {(r['level'],r['class']): r for r in rows['creature_classlevelstats']}
     models = {}
     for r in sorted(rows['creature_template_model'], key=lambda r: r['idx']):
-        if r['creaturedisplayid']: models.setdefault(r['creatureid'],r['creaturedisplayid'])
+        if r['creaturedisplayid']: models.setdefault(r['creatureid'],r)
+    model_info = {r['displayid']: r for r in rows['creature_model_info']}
     events = {r['guid'] for r in rows['game_event_creature'] if r['evententry'] > 0}
     pool_first, pool = {}, {}
     for r in sorted(rows['pool_creature'],key=lambda r:r['guid']):
@@ -165,6 +169,18 @@ def compile_catalog(sql_dir, output, baseline=None):
           'mana':40 if i['entry']==159 else 0,'value':max(0,i['sellprice'])}
     for e in npc_loot: npc_loot[e]=[s for s in npc_loot[e] if s['itemId'] in items]
     questgivers={q[k] for q in quests.values() for k in ['giverEntry','turnInEntry']}
+    # P04 creature immunity sets (SpellMgr::LoadCreatureImmunities reads all
+    # seven columns; only SchoolMask and MechanicsMask intersect any spell this
+    # realm casts - docs/CURRENT_IMPLEMENTATION.md section 6.5 - so
+    # only those two are emitted, by name, and only on a creature that points
+    # at a set; a dangling CreatureImmunitiesId is an error, not a zero) and
+    # creature_template_resistance rows in UNIT_FIELD_RESISTANCES order 1..6,
+    # negative values clamped to zero as the runtime's std::max does.
+    immunities={r['id']:r for r in rows['creature_immunities']}
+    resistances=collections.defaultdict(lambda:[0]*6)
+    for r in rows['creature_template_resistance']:
+        if not 1<=r['school']<=6:raise ValueError(f"creature_template_resistance school out of range: {r}")
+        resistances[r['creatureid']][r['school']-1]=max(0,min(65535,r['resistance'] or 0))
     respawn={}
     for s in spawns:respawn[s['id1']]=min(respawn.get(s['id1'],300),max(15,s['spawntimesecs']))
     npcs={}
@@ -173,7 +189,7 @@ def compile_catalog(sql_dir, output, baseline=None):
         st=stats.get((level,t['unit_class']),stats.get((level,1)))
         if not st:raise ValueError(f'Missing level stats: {e}/{level}')
         expansion=min(2,max(0,t['exp']))
-        npcs[e]={'id':e,'name':clean(t['name']) or 'Unnamed creature','displayId':models[e],'level':level,'faction':t['faction'],
+        npcs[e]={'id':e,'name':clean(t['name']) or 'Unnamed creature','displayId':models[e]['creaturedisplayid'],'level':level,'faction':t['faction'],
           'unitFlags':t['unit_flags'], 'health':min(1000000000,max(1,round(st[f'basehp{expansion}']*t['healthmodifier']))),
           'damage':max(1,round((st['damage_base']+st['attackpower']/14)*2*t['damagemodifier'])),
           'armor':max(0,round(st['basearmor']*t['armormodifier']/20)),'hostile':e in attackable,
@@ -182,6 +198,28 @@ def compile_catalog(sql_dir, output, baseline=None):
           'loot':npc_loot[e], 'xp':max(10,round((level*5+45)*t['experiencemodifier'])),
           'money':max(0,round((t['mingold']+t['maxgold'])/2)),
           'upstreamAI':t['ainame'],'upstreamScript':t['scriptname']}
+        if t['creatureimmunitiesid']:
+            immunity=immunities.get(t['creatureimmunitiesid'])
+            if immunity is None:raise ValueError(f"creature {e} names a missing creature_immunities set {t['creatureimmunitiesid']}")
+            if not 0<=immunity['schoolmask']<=127 or not 0<=immunity['mechanicsmask']<2**64:raise ValueError(f'invalid immunity set {immunity}')
+            if immunity['schoolmask']:npcs[e]['immuneSchoolMask']=immunity['schoolmask']
+            if immunity['mechanicsmask']:npcs[e]['immuneMechanicsMask']=immunity['mechanicsmask']
+        if e in resistances and any(resistances[e]):npcs[e]['resistances']=list(resistances[e])
+        # P05 combat reach and bounding radius, exactly as Creature::SetObjectScale
+        # derives UNIT_FIELD_COMBATREACH and UNIT_FIELD_BOUNDINGRADIUS
+        # (Creature.cpp:3536-3550): creature_model_info for the chosen display id,
+        # DEFAULT_WORLD_OBJECT_SIZE 0.389 when the row is missing or its
+        # CombatReach is not positive (ObjectDefines.h:44), the whole multiplied
+        # by that model row's DisplayScale (GetNativeObjectScale, Creature.cpp:3528).
+        # The model chosen is the same first-by-idx row `displayId` already uses.
+        info=model_info.get(models[e]['creaturedisplayid'])
+        scale=models[e]['displayscale']
+        if not 0<scale<=100:raise ValueError(f'creature {e} has an unusable DisplayScale {scale}')
+        reach=(info['combatreach'] if info and info['combatreach']>0 else DEFAULT_WORLD_OBJECT_SIZE)*scale
+        radius=(info['boundingradius'] if info and info['boundingradius']>0 else 0.0)*scale
+        if not 0<reach<=1000 or not 0<=radius<=1000:raise ValueError(f'creature {e} has an unusable reach/radius {reach}/{radius}')
+        npcs[e]['combatReach']=round(reach,4)
+        if radius:npcs[e]['boundingRadius']=round(radius,4)
     # Preserve the shipped starter's previously validated adaptation verbatim.
     if baseline:
         starter=json.loads(baseline.read_text())
@@ -220,7 +258,9 @@ def compile_catalog(sql_dir, output, baseline=None):
     # invalidates LAN joins even if the NPC/quest files are identical.
     manifest['fingerprint']=int.from_bytes(hashlib.sha256(encode(manifest)).digest()[:4],'little') or 1
     (output/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n')
-    report['coverage']={'maps':len(allmaps),'mapsWithBaselineCreatures':len(mapcounts),'spawns':len(spawns),'cells':len(cells),'npcs':len(npcs),'items':len(items),'quests':len(quests),'questsWithChoices':sum(bool(q.get('rewardChoices')) for q in quests.values()),'questsWithMultipleFixedRewards':sum(bool(q.get('additionalRewards')) for q in quests.values()),'profiles':len(manifest['starts']),'destinations':len(manifest['destinations']),'instanceTemplates':len(instances),'runtimeBytes':sum(v['bytes'] for v in manifest['files'].values())}
+    report['coverage']={'npcsWithCombatReachAboveDefault':sum(1 for n in npcs.values() if n.get('combatReach',0)>1.5),
+      'npcsWithImmunitySet':sum(1 for n in npcs.values() if 'immuneSchoolMask' in n or 'immuneMechanicsMask' in n),
+      'npcsWithResistance':sum(1 for n in npcs.values() if 'resistances' in n),'maps':len(allmaps),'mapsWithBaselineCreatures':len(mapcounts),'spawns':len(spawns),'cells':len(cells),'npcs':len(npcs),'items':len(items),'quests':len(quests),'questsWithChoices':sum(bool(q.get('rewardChoices')) for q in quests.values()),'questsWithMultipleFixedRewards':sum(bool(q.get('additionalRewards')) for q in quests.values()),'profiles':len(manifest['starts']),'destinations':len(manifest['destinations']),'instanceTemplates':len(instances),'runtimeBytes':sum(v['bytes'] for v in manifest['files'].values())}
     report['limits']=['Normal difficulty + baseline phase only; positive events and alternative pool members excluded.',
       'Each spawn uses id1 and first source model; randomized id2/id3 and appearance probabilities are not simulated.',
       'SQL source IDs, names, positions, item displays and objective IDs/counts retained; combat stats use local formulas.',

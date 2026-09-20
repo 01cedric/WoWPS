@@ -8,6 +8,7 @@
 
 #include "game/local_gameplay.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <map>
 #include <utility>
@@ -163,5 +164,31 @@ bool localRecipeHasTools(const LocalRecipe& recipe, const LocalRealmPlayer& play
 /// worth saving for.
 inline constexpr uint32_t kLocalTrainerCostPerLevel = 100;
 uint32_t localTrainerSpellCost(const LocalSpellDefinition& spell);
+
+/// The level at which this realm makes an ability available.
+///
+/// The reference takes this from `trainer_spell.ReqLevel` (ObjectMgr.cpp:9950,
+/// :9965) - a world-database column, not a client one - so like the price above
+/// this is a documented local stand-in built from the client's own data:
+/// max(BaseLevel, SpellLevel), floored at 1 because Spell.dbc leaves both
+/// columns at zero for a great many rows and those are available from the start
+/// rather than never, and capped at the realm's level ceiling. Since the implementation it is
+/// the single definition of "available at" that the trainer list, the trainer
+/// price and the trainer window all read, so the gate and the number beside it
+/// can no longer disagree.
+///
+/// the implementation read BaseLevel alone and recorded, correctly at the time, that moving
+/// to SpellLevel was "measured identical" over the 990 accepted definitions -
+/// every one whose columns differed was BaseLevel 0 against SpellLevel 1, which
+/// the floor at 1 absorbs. the implementation's census admits one definition for which that
+/// is no longer true: Stance Mastery 12678 is BaseLevel **0** against SpellLevel
+/// **20**, and reading BaseLevel alone would offer a level-1 warrior a spell the
+/// game teaches at 20. The subtrahend SpellEffectInfo::CalcValue itself uses
+/// (SpellInfo.cpp:428) is max(BaseLevel, SpellLevel), which is the level below
+/// which the spell has no meaning, so that is what this reads. Measured over the
+/// 1,004: exactly one definition's unlock level moves, and it is that one.
+inline uint8_t localSpellUnlockLevel(const LocalSpellDefinition& d) {
+    return uint8_t(std::clamp<uint32_t>(std::max<uint32_t>(d.baseLevel, d.spellLevel), 1, 80));
+}
 
 } // namespace wowee::game

@@ -1,3 +1,6 @@
+#include "rendering/stream_load_timing.hpp"
+#include "rendering/shadow_caster_bounds.hpp"
+#include "rendering/wmo_lighting.hpp"
 #include "rendering/collision_geometry.hpp"
 #include "rendering/pom_quality.hpp"
 #include "rendering/placement_transform.hpp"
@@ -5,6 +8,7 @@
 #include "rendering/wmo_vertex.hpp"
 #include "rendering/shadow_params.hpp"
 #include "rendering/wmo_renderer.hpp"
+#include "rendering/ordered_triangle_range.hpp"
 #include "pipeline/wmo_geometry_residency.hpp"
 #include "core/collision_height.hpp"
 #include "rendering/wmo_material_class.hpp"
@@ -384,7 +388,6 @@ void WMORenderer::shutdown() {
     // Destroy shadow resources
     destroy(device, shadowPipeline_);
     destroy(device, shadowPipelineLayout_);
-    destroyShadowParamsSet(device, allocator, shadowParams_);
 
     vkCtx_ = nullptr;
     initialized_ = false;
@@ -402,6 +405,7 @@ bool WMORenderer::loadModel(const pipeline::WMOModel& model, uint32_t id) {
 
 WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
         const pipeline::WMOModel& model, uint32_t id, float budgetMs, bool terrainManaged) {
+    StreamLoadDiagnostic loadDiagnostic("WMO_MODEL", id, budgetMs);
     if (!model.isValid()) {
         core::Logger::getInstance().error("Cannot load invalid WMO model");
         return ModelLoadResult::Failed;
@@ -501,6 +505,10 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
     vkCtx_->beginUploadBatch();
 
     const auto loadStepStart = std::chrono::steady_clock::now();
+    const auto finishUploads = [&] {
+        StreamLoadStageScope timing(activeStreamLoadTiming, StreamLoadStage::UploadSubmit);
+        vkCtx_->endUploadBatch();
+    };
     // Textures and materials are model-level and done once; a resumed call has
     // them already and goes straight to the remaining groups.
     if (!modelData.setupDone) {
@@ -521,7 +529,7 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
                     std::chrono::steady_clock::now() - texStart).count();
                 if (spent >= budgetMs) {
                     modelData.nextTextureIndex = i;
-                    vkCtx_->endUploadBatch();
+                    finishUploads();
                     return ModelLoadResult::InProgress;  // resume at this texture
                 }
             }
@@ -561,6 +569,7 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
     modelData.materialTextureIndices.resize(model.materials.size());
     modelData.materialBlendModes.resize(model.materials.size());
     modelData.materialFlags.resize(model.materials.size());
+    modelData.materialShaders.resize(model.materials.size());
     for (size_t i = 0; i < model.materials.size(); i++) {
         const auto& mat = model.materials[i];
         uint32_t texIndex = 0;  // Default to first texture
@@ -594,6 +603,7 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
         modelData.materialTextureIndices[i] = texIndex;
         modelData.materialBlendModes[i] = mat.blendMode;
         modelData.materialFlags[i] = mat.flags;
+        modelData.materialShaders[i] = mat.shader;
 
     }
 
@@ -632,10 +642,11 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
                 // the building - the interior floors past a doorway in
                 // Stormwind, on a model big enough to break several times.
                 modelData.nextGroupIndex = gi;
-                vkCtx_->endUploadBatch();
+                finishUploads();
                 return ModelLoadResult::InProgress;
             }
         }
+        StreamLoadStageScope groupTiming(activeStreamLoadTiming, StreamLoadStage::Geometry);
         const auto& wmoGroup = model.groups[gi];
         // Skip empty groups
         if (wmoGroup.vertices.empty() || wmoGroup.indices.empty()) {
@@ -691,7 +702,7 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
 
     if (modelData.loadedGroups == 0) {
         core::Logger::getInstance().warning("No valid groups loaded for WMO ", id);
-        vkCtx_->endUploadBatch();
+        finishUploads();
         loadingModels_.erase(id);
         return ModelLoadResult::Failed;
     }
@@ -704,9 +715,10 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
          materialGroup < modelData.groups.size(); ++materialGroup) {
         if (budgetMs > 0.0f && std::chrono::duration<float, std::milli>(
                 std::chrono::steady_clock::now() - loadStepStart).count() >= budgetMs) {
-            vkCtx_->endUploadBatch();
+            finishUploads();
             return ModelLoadResult::InProgress;
         }
+        StreamLoadStageScope materialTiming(activeStreamLoadTiming, StreamLoadStage::Materials);
         auto& groupRes = modelData.groups[materialGroup];
         if (!groupRes.materialBatchesPrepared) {
         // Use pointer value as key for batching
@@ -715,12 +727,15 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
             uint32_t blendMode;
             bool alphaTest;
             bool unlit;
+            bool unfogged;
+            bool specular;
             bool isWindow;
             bool isLava;
             uint8_t emissiveLevel;
             bool operator==(const BatchKey& o) const {
                 return texPtr == o.texPtr && blendMode == o.blendMode &&
                        alphaTest == o.alphaTest && unlit == o.unlit &&
+                       unfogged == o.unfogged && specular == o.specular &&
                        isWindow == o.isWindow && isLava == o.isLava &&
                        emissiveLevel == o.emissiveLevel;
             }
@@ -731,6 +746,8 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
                        (std::hash<uint32_t>()(k.blendMode) << 6) ^
                        (std::hash<bool>()(k.alphaTest) << 1) ^
                        (std::hash<bool>()(k.unlit) << 2) ^
+                       (std::hash<bool>()(k.unfogged) << 7) ^
+                       (std::hash<bool>()(k.specular) << 8) ^
                        (std::hash<bool>()(k.isWindow) << 3) ^
                        (std::hash<bool>()(k.isLava) << 5) ^
                        (std::hash<uint8_t>()(k.emissiveLevel) << 4);
@@ -773,6 +790,10 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
                 unlit = (matFlags & 0x01) != 0;
             }
 
+            const bool unfogged = (matFlags & 0x02u) != 0;
+            const bool specular = batch.materialId < modelData.materialShaders.size() &&
+                wmoMaterialSpecularIntensity(modelData.materialShaders[batch.materialId]) > 0.0f;
+
             // Window texture atlases can include whole opaque walls. Preserve
             // authored opacity before considering the optional glass effect.
             bool isWindow = false;
@@ -802,6 +823,7 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
 
             BatchKey key{ .texPtr = reinterpret_cast<uintptr_t>(tex),
                           .blendMode = blendMode, .alphaTest = alphaTest, .unlit = unlit,
+                          .unfogged = unfogged, .specular = specular,
                           .isWindow = isWindow, .isLava = isLava,
                           .emissiveLevel = emissiveLevel };
             auto& mb = batchMap[key];
@@ -810,6 +832,8 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
                 mb.hasTexture = hasTexture;
                 mb.alphaTest = alphaTest;
                 mb.unlit = unlit;
+                mb.unfogged = unfogged;
+                mb.specularIntensity = specular ? 0.5f : 0.0f;
                 mb.isTransparent = (blendMode >= 2);
                 mb.isWindow = isWindow;
                 mb.isLava = isLava;
@@ -828,6 +852,9 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
             GroupResources::MergedBatch::DrawRange dr;
             dr.firstIndex = batch.startIndex;
             dr.indexCount = batch.indexCount;
+            dr.bounds = wmoDrawBounds(groupRes.collisionVertices,
+                                      groupRes.collisionIndices,
+                                      dr.firstIndex, dr.indexCount);
             mb.draws.push_back(dr);
         }
 
@@ -842,7 +869,7 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
         // Entries stay owned across attempts. A failure after one material
         // commits resumes at the next without appending duplicate draws/UBOs.
         bool anyTextured = false;
-        bool isInterior = (groupRes.groupFlags & 0x2000) != 0;
+        bool isInterior = wmoUsesBakedInteriorLighting(groupRes.groupFlags, groupRes.hasVertexColors);
         groupRes.lavaLights.clear();
         for (auto& mb : groupRes.mergedBatches) {
             if (mb.hasTexture) anyTextured = true;
@@ -863,7 +890,8 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
             matData.alphaTest = mb.alphaTest ? 1 : 0;
             matData.unlit = mb.unlit ? 1 : 0;
             matData.isInterior = isInterior ? 1 : 0;
-            matData.specularIntensity = 0.5f;
+            matData.specularIntensity = mb.specularIntensity;
+            matData.unfogged = mb.unfogged ? 1 : 0;
             matData.isWindow = mb.isWindow ? (wmoOnlyMap_ ? 2 : 1) : 0;
             matData.enableNormalMap = normalMappingEnabled_ ? 1 : 0;
             matData.enablePOM = pomEnabled_ ? 1 : 0;
@@ -968,14 +996,36 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
 
         }
         groupRes.shadowRanges.clear();
-        for (const auto& batch : groupRes.mergedBatches) for (const auto& draw : batch.draws)
-            groupRes.shadowRanges.push_back({draw.firstIndex, draw.indexCount});
+        groupRes.opaqueShadowSet = VK_NULL_HANDLE;
+        groupRes.cutoutShadowBatches.clear();
+        for (uint32_t bi = 0; bi < groupRes.mergedBatches.size(); ++bi) {
+            const auto& batch = groupRes.mergedBatches[bi];
+            if (!batch.materialSet) continue; // main pass also cannot draw this material
+            switch (wmoShadowMaterial(batch.alphaTest, batch.isTransparent)) {
+            case WMOShadowMaterial::Opaque:
+                groupRes.opaqueShadowSet = batch.materialSet;
+                for (const auto& draw : batch.draws)
+                    groupRes.shadowRanges.push_back({draw.firstIndex, draw.indexCount});
+                break;
+            case WMOShadowMaterial::Cutout:
+                groupRes.cutoutShadowBatches.push_back(bi);
+                break;
+            case WMOShadowMaterial::None:
+                break;
+            }
+        }
         coalesceShadowRanges(groupRes.shadowRanges);
+        groupRes.shadowRangeBounds.clear();
+        groupRes.shadowRangeBounds.reserve(groupRes.shadowRanges.size());
+        for (const auto& draw : groupRes.shadowRanges)
+            groupRes.shadowRangeBounds.push_back(wmoDrawBounds(
+                groupRes.collisionVertices, groupRes.collisionIndices,
+                draw.firstIndex, draw.indexCount));
         groupRes.allUntextured = !anyTextured && !groupRes.mergedBatches.empty();
         modelData.nextMaterialGroupIndex = materialGroup + 1;
     }
 
-    vkCtx_->endUploadBatch();
+    finishUploads();
 
     // This CPU-only metadata is rebuilt after a failed final commit. Never
     // append the same portal references or doodad templates a second time.
@@ -1082,7 +1132,11 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
     size_t drawableGroups = 0, opaqueBatches = 0, blendedBatches = 0;
     size_t collisionIndexBytes = 0;
     size_t glassBatches = 0, missingMaterialSets = 0;
+    size_t bakedInteriorGroups = 0, exteriorLitIndoorGroups = 0, indoorGroupsWithoutMocv = 0;
     for (const auto& g : modelData.groups) {
+        if (wmoUsesBakedInteriorLighting(g.groupFlags,g.hasVertexColors)) ++bakedInteriorGroups;
+        if ((g.groupFlags & 0x2000u) && (g.groupFlags & 0x48u)) ++exteriorLitIndoorGroups;
+        if ((g.groupFlags & 0x2000u) && !g.hasVertexColors) ++indoorGroupsWithoutMocv;
         collisionIndexBytes += g.cellTriangles.storageBytes() + g.cellFloorTriangles.storageBytes() +
             g.cellWallTriangles.storageBytes();
         if (g.vertexBuffer && g.indexBuffer) ++drawableGroups;
@@ -1098,6 +1152,9 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
              " uploadedGroups=", modelData.groups.size(), " drawableGroups=", drawableGroups,
              " opaqueBatches=", opaqueBatches, " blendedBatches=", blendedBatches,
              " glassBatches=", glassBatches, " missingMaterialSets=", missingMaterialSets,
+             " bakedInteriorGroups=", bakedInteriorGroups,
+             " exteriorLitIndoorGroups=", exteriorLitIndoorGroups,
+             " indoorGroupsWithoutMocv=", indoorGroupsWithoutMocv,
              " collisionIndexBytes=", collisionIndexBytes);
 
     // Read before the move: the log line below reports what was stored, and
@@ -1149,6 +1206,12 @@ void WMORenderer::unloadModel(uint32_t id) {
 }
 
 void WMORenderer::cleanupUnusedModels(const std::unordered_set<uint32_t>& pendingModelIds) {
+    // A canceled incremental upload can lose its finalizing owner before its
+    // copy submission completes. Old graphics frame fences do not prove that
+    // newer upload is finished. Retry this periodic cleanup without blocking.
+    if (!vkCtx_) return;
+    vkCtx_->pollUploadBatches();
+    if (!vkCtx_->uploadsIdle()) return;
     // Build set of model IDs that are still referenced by instances
     std::unordered_set<uint32_t> usedModelIds;
     for (const auto& instance : instances) {
@@ -1731,16 +1794,6 @@ void WMORenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const
     lastFrustumCulledGroups = 0;
 
     // ── Phase 1: Visibility culling ──────────────────────────
-    // Was loadedModels.count(modelId) per instance - but cullInstance below
-    // already does loadedModels.find() and bails on miss, so this pre-filter
-    // was a redundant hashmap lookup per instance every frame. Just include
-    // every instance; the cull step prunes unloaded ones.
-    visibleInstances_.clear();
-    visibleInstances_.reserve(instances.size());
-    for (size_t i = 0; i < instances.size(); ++i) {
-        visibleInstances_.push_back(i);
-    }
-
     glm::vec3 camPos = camera.getPosition();
     // Portal culling seeds from both the camera and the character. Either one
     // alone has a way to be wrong - a third-person camera can end up inside a
@@ -1772,49 +1825,10 @@ void WMORenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const
 
         // Portal-based visibility - reuse member scratch buffer (avoid per-frame alloc)
         bool usePortalCulling = doPortalCull && !model.portals.empty() && !model.portalRefs.empty();
-        const glm::vec3 localRealCam =
-            glm::vec3(instance.invModelMatrix * glm::vec4(camPos, 1.0f));
         if (usePortalCulling) {
-            // If the camera is outside all groups, skip portal culling entirely.
-            // This is what makes it safe for the traversal below to start from
-            // the camera: an orbiting third-person camera that has left the
-            // building never reaches the walk at all.
-            int camGroup = findContainingGroup(model, localRealCam);
-            if (camGroup < 0) {
-                usePortalCulling = false;
-            } else {
-                // Entranceways and awnings: the best-fit AABB often claims an
-                // interior group while the camera is visually outside (interior
-                // boxes spill past the doorway). Only trust portal traversal
-                // when the camera group is interior-only - the same rule
-                // getVisibleGroupsViaPortals applies to the viewer position.
-                constexpr uint32_t WMO_GROUP_FLAG_OUTDOOR = 0x8;
-                constexpr uint32_t WMO_GROUP_FLAG_INDOOR = 0x2000;
-                const uint32_t gFlags = model.groups[camGroup].groupFlags;
-                const bool isIndoor = (gFlags & WMO_GROUP_FLAG_INDOOR) != 0;
-                const bool isOutdoor = (gFlags & WMO_GROUP_FLAG_OUTDOOR) != 0;
-                if (!isIndoor || isOutdoor) {
-                    usePortalCulling = false;
-                } else {
-                    // Doorway thresholds sit inside both the interior box and
-                    // an outdoor street group's box - treat those as outdoors
-                    // too (second half of the viewer-side rule).
-                    for (size_t gi = 0; gi < model.groups.size(); ++gi) {
-                        if (static_cast<int>(gi) == camGroup) continue;
-                        const auto& g = model.groups[gi];
-                        if (!(g.groupFlags & WMO_GROUP_FLAG_OUTDOOR)) continue;
-                        if (localRealCam.x >= g.boundingBoxMin.x && localRealCam.x <= g.boundingBoxMax.x &&
-                            localRealCam.y >= g.boundingBoxMin.y && localRealCam.y <= g.boundingBoxMax.y &&
-                            localRealCam.z >= g.boundingBoxMin.z && localRealCam.z <= g.boundingBoxMax.z) {
-                            usePortalCulling = false;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        if (usePortalCulling) {
-            portalVisibleGroupSet_.clear();
+            portalScratch_.reset(model.groups.size());
+            const glm::vec3 localRealCam =
+                glm::vec3(instance.invModelMatrix * glm::vec4(camPos, 1.0f));
             // Both viewpoints seed the walk. The frustum belongs to the camera,
             // so its group is the principled start - but at a doorway or in a
             // hallway the camera and the character stand in different groups,
@@ -1830,10 +1844,7 @@ void WMORenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const
             const glm::vec3 localViewer =
                 glm::vec3(instance.invModelMatrix * glm::vec4(portalViewerPos, 1.0f));
             getVisibleGroupsViaPortals(model, localRealCam, localViewer, frustum,
-                                       instance.modelMatrix, portalVisibleGroupSet_);
-            // Use the unordered_set directly - was copying into portalVisibleGroups_,
-            // sorting it, and binary-searching per group. The set lookup is O(1)
-            // per group and skips the per-instance copy + sort.
+                                       instance.modelMatrix, portalScratch_);
         }
 
         for (size_t gi = 0; gi < model.groups.size(); ++gi) {
@@ -1849,7 +1860,7 @@ void WMORenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const
                 }
             }
             if (usePortalCulling &&
-                portalVisibleGroupSet_.find(static_cast<uint32_t>(gi)) == portalVisibleGroupSet_.end()) {
+                !portalScratch_.visible(static_cast<uint32_t>(gi))) {
                 result.portalCulled++;
                 continue;
             }
@@ -1882,11 +1893,11 @@ void WMORenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const
     };
 
     // Resize drawLists to match (reuses previous capacity)
-    drawLists_.resize(visibleInstances_.size());
+    drawLists_.resize(instances.size());
 
     // Sequential culling (parallel dispatch overhead > savings for typical instance counts)
-    for (size_t j = 0; j < visibleInstances_.size(); ++j) {
-        cullInstance(visibleInstances_[j], drawLists_[j]);
+    for (size_t j = 0; j < instances.size(); ++j) {
+        cullInstance(j, drawLists_[j]);
     }
 
     // ── Phase 2: Vulkan draw ────────────────────────────────
@@ -1900,13 +1911,32 @@ void WMORenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const
 
     // Track which pipeline is currently bound: 0=opaque, 1=transparent, 2=glass
     int currentPipelineKind = 0;
+    VkDescriptorSet currentMaterialSet = VK_NULL_HANDLE;
+    uint32_t rangeCandidates = 0, rangeCulled = 0, rangesCoalesced = 0;
+    uint64_t rangeIndicesCulled = 0;
 
     for (const auto& dl : drawLists_) {
         lastFrustumCulledGroups += dl.frustumCulled;
         if (dl.instanceIndex >= instances.size() || dl.model == nullptr || dl.visibleGroups.empty()) continue;
         const auto& instance = instances[dl.instanceIndex];
         const ModelData& model = *dl.model;
-
+        // City groups can span multiple streets. Group visibility alone sent
+        // every material range to the GPU even when the range was behind us.
+        // Transform the six planes once, not every range's eight corners.
+        Frustum localFrustum;
+        if (frustumCulling)
+            localFrustum.extractFromMatrix(viewProj * instance.modelMatrix);
+        const auto rangeVisible = [&](const auto& dr) {
+            if (!dr.indexCount) return false;
+            ++rangeCandidates;
+            if (frustumCulling && dr.bounds.valid &&
+                !localFrustum.intersectsAABB(dr.bounds.low, dr.bounds.high)) {
+                ++rangeCulled;
+                rangeIndicesCulled += dr.indexCount;
+                return false;
+            }
+            return true;
+        };
 
         // Push model matrix
         GPUPushConstants push{};
@@ -1943,6 +1973,8 @@ void WMORenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const
             // Render each merged batch
             for (const auto& mb : group.mergedBatches) {
                 if (!mb.materialSet) continue;
+                const auto firstVisible = std::find_if(mb.draws.begin(), mb.draws.end(), rangeVisible);
+                if (firstVisible == mb.draws.end()) continue;
 
                 // Determine which pipeline this batch needs
                 int neededPipeline = 0; // opaque
@@ -1965,40 +1997,64 @@ void WMORenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const
                 }
 
                 // Bind material descriptor set (set 1)
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_,
-                                         1, 1, &mb.materialSet, 0, nullptr);
-
-                // Issue draw calls for each range in this merged batch
-                for (const auto& dr : mb.draws) {
-                    if (dr.indexCount == 0) continue;
-                    vkCmdDrawIndexed(cmd, dr.indexCount, 1, dr.firstIndex, 0, 0);
-                    lastDrawCalls++;
+                // All three WMO pipelines share this layout. Model constants
+                // and buffer binds do not invalidate set 1; retain the exact
+                // descriptor identity (never merge different material values).
+                if (mb.materialSet != currentMaterialSet) {
+                    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_,
+                                             1, 1, &mb.materialSet, 0, nullptr);
+                    currentMaterialSet = mb.materialSet;
                 }
+
+                // Append only adjacent visible triangle lists. Keep exact
+                // order, duplicates and material boundaries, including glass.
+                // Range culling remains granular before packet coalescing.
+                uint32_t pendingFirst = 0, pendingCount = 0;
+                const auto flushRange = [&]() {
+                    if (!pendingCount) return;
+                    vkCmdDrawIndexed(cmd, pendingCount, 1, pendingFirst, 0, 0);
+                    ++lastDrawCalls;
+                    pendingCount = 0;
+                };
+                for (auto it = firstVisible; it != mb.draws.end(); ++it) {
+                    const auto& dr = *it;
+                    if (it != firstVisible && !rangeVisible(dr)) continue;
+                    if (appendOrderedTriangleRange(pendingFirst, pendingCount,
+                                                    dr.firstIndex, dr.indexCount)) {
+                        ++rangesCoalesced;
+                        continue;
+                    }
+                    flushRange();
+                    pendingFirst = dr.firstIndex;
+                    pendingCount = dr.indexCount;
+                }
+                flushRange();
             }
         }
 
         lastPortalCulledGroups += dl.portalCulled;
         lastDistanceCulledGroups += dl.distanceCulled;
     }
+    static uint32_t rangeReportFrame = 0;
+    if ((++rangeReportFrame % 300u) == 1u)
+        LOG_INFO("[WMO_RANGE_CULL] candidates=", rangeCandidates,
+                 " culled=", rangeCulled, " indicesAvoided=", rangeIndicesCulled,
+                 " submitted=", lastDrawCalls," rangesCoalesced=",rangesCoalesced);
 }
 
 bool WMORenderer::initializeShadow(VkRenderPass shadowRenderPass) {
     if (!vkCtx_ || shadowRenderPass == VK_NULL_HANDLE) return false;
     VkDevice device = vkCtx_->getDevice();
 
-    // The set the shadow pass binds, built the same way for all four renderers.
-    if (!createShadowParamsSet(device, vkCtx_->getAllocator(), sizeof(ShadowParamsUBO),
-                               whiteTexture_->getImageView(),
-                              whiteTexture_->getSampler(), "WMORenderer", shadowParams_)) {
-        return false;
-    }
-
-    // Create shadow pipeline layout: set 1 = shadowParams_.layout, push constants = 128 bytes
+    // Reuse the exact main-pass material descriptors: diffuse image/sampler
+    // and the hasTexture/alphaTest UBO prefix. No mutable shadow params or
+    // separately owned per-texture descriptors are necessary.
+    if (!materialSetLayout_) return false;
     VkPushConstantRange pc{};
     pc.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
     pc.offset = 0;
     pc.size = 128;  // lightSpaceMatrix (64) + model (64)
-    shadowPipelineLayout_ = createPipelineLayout(device, {shadowParams_.layout}, {pc});
+    shadowPipelineLayout_ = createPipelineLayout(device, {materialSetLayout_}, {pc});
     if (!shadowPipelineLayout_) {
         core::Logger::getInstance().error("WMORenderer: failed to create shadow pipeline layout");
         return false;
@@ -2006,18 +2062,17 @@ bool WMORenderer::initializeShadow(VkRenderPass shadowRenderPass) {
 
     // Load shadow shaders
     VkShaderModule vertShader, fragShader;
-    if (!vertShader.loadFromFile(device, "assets/shaders/shadow.vert.spv")) {
+    if (!vertShader.loadFromFile(device, "assets/shaders/wmo_shadow.vert.spv")) {
         core::Logger::getInstance().error("WMORenderer: failed to load shadow vertex shader");
         return false;
     }
-    if (!fragShader.loadFromFile(device, "assets/shaders/shadow.frag.spv")) {
+    if (!fragShader.loadFromFile(device, "assets/shaders/wmo_shadow.frag.spv")) {
         core::Logger::getInstance().error("WMORenderer: failed to load shadow fragment shader");
         return false;
     }
 
-    // The shadow shader is shared with the skinned renderers, so it declares
-    // bone inputs this geometry has none of; kWmoShadowVertexAttributes says
-    // where they point and why.
+    // The dedicated shader reads the same imported position and base UV as
+    // the visible mesh, without the shared skinned shader's dummy bone inputs.
     const VkVertexInputBindingDescription vertBind = perVertexBinding(sizeof(WMOVertex));
     const std::vector<VkVertexInputAttributeDescription> vertAttrs =
         toVkAttributes(kWmoShadowVertexAttributes);
@@ -2040,34 +2095,47 @@ bool WMORenderer::initializeShadow(VkRenderPass shadowRenderPass) {
 }
 
 void WMORenderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMatrix,
-                               const glm::vec3& shadowCenter, float shadowRadius) {
-    if (!shadowPipeline_ || !shadowParams_.set) return;
+                               const glm::vec3& /*shadowCenter*/, float /*shadowRadius*/, uint32_t shadowPassIndex,
+                               const ShadowReceiverHull* receiverHull) {
+    if (!shadowPipeline_) return;
     if (instances.empty() || loadedModels.empty()) return;
 
-    static uint32_t frames = 0;
-    const bool report = (++frames % 300u) == 1u;
-    uint32_t draws = 0, originalDraws = 0;
+    static uint32_t frames[2] = {};
+    const bool report = (++frames[std::min(shadowPassIndex, 1u)] % 300u) == 1u;
+    uint32_t draws = 0, originalDraws = 0, rangeCulled = 0, receiverCulled = 0;
+    const auto affectsReceiver = [receiverHull](const glm::vec3& low, const glm::vec3& high) {
+        return !receiverHull || receiverHull->intersectsBounds(low, high);
+    };
+    uint32_t transports = 0, transportLightCulled = 0, transportSubmitted = 0, transportDraws = 0;
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline_);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout_,
-        0, 1, &shadowParams_.set, 0, nullptr);
+    VkDescriptorSet currentShadowSet = VK_NULL_HANDLE;
+    const auto bindShadowMaterial = [&](VkDescriptorSet set) {
+        if (set == currentShadowSet) return;
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout_,
+            0, 1, &set, 0, nullptr);
+        currentShadowSet = set;
+    };
 
-    // WMO shadow cull uses the ortho half-extent (shadow map coverage) rather than
-    // the proximity radius so that distant buildings whose shadows reach the player
-    // are still rendered into the shadow map.
-    const float wmoCullRadius = std::max(shadowRadius, 180.0f);
-    const float wmoCullRadiusSq = wmoCullRadius * wmoCullRadius;
-
+    // Use the finite light volume, not a world sphere: at low sun an upstream
+    // building can cast into the view while its geometry lies outside that sphere.
     for (const auto& instance : instances) {
-        // Distance cull using world bounding box - WMO origins can be far from
-        // their geometry, so point-based culling misses large buildings.
-        glm::vec3 closest = glm::clamp(shadowCenter, instance.worldBoundsMin, instance.worldBoundsMax);
-        glm::vec3 diff = closest - shadowCenter;
-        if (glm::dot(diff, diff) > wmoCullRadiusSq) continue;
+        if (instance.isTransport) ++transports;
+        if (!shadowIntersectsWorldBounds(lightSpaceMatrix,
+                instance.worldBoundsMin, instance.worldBoundsMax)) {
+            if (instance.isTransport) ++transportLightCulled;
+            continue;
+        }
+        if (!affectsReceiver(instance.worldBoundsMin, instance.worldBoundsMax)) {
+            ++receiverCulled;
+            continue;
+        }
         auto modelIt = loadedModels.find(instance.modelId);
         if (modelIt == loadedModels.end()) continue;
         const ModelData& model = modelIt->second;
+        const uint32_t drawsBeforeInstance = draws;
 
         ShadowPush push{.lightSpaceMatrix = lightSpaceMatrix, .model = instance.modelMatrix};
+        const glm::mat4 localLightSpace = lightSpaceMatrix * instance.modelMatrix;
         vkCmdPushConstants(cmd, shadowPipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT,
                            0, 128, &push);
 
@@ -2084,9 +2152,8 @@ void WMORenderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceM
             // Per-group AABB cull against shadow frustum
             if (gi < instance.worldGroupBounds.size()) {
                 const auto& [gMin, gMax] = instance.worldGroupBounds[gi];
-                glm::vec3 gClosest = glm::clamp(shadowCenter, gMin, gMax);
-                glm::vec3 gDiff = gClosest - shadowCenter;
-                if (glm::dot(gDiff, gDiff) > wmoCullRadiusSq) continue;
+                if (!shadowIntersectsWorldBounds(lightSpaceMatrix, gMin, gMax)) continue;
+                if (!affectsReceiver(gMin, gMax)) { ++receiverCulled; continue; }
             }
 
             VkDeviceSize offset = 0;
@@ -2094,13 +2161,51 @@ void WMORenderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceM
             vkCmdBindIndexBuffer(cmd, group.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
 
             if (report) for (const auto& mb : group.mergedBatches) originalDraws += mb.draws.size();
-            for (const auto& dr : group.shadowRanges) {
-                vkCmdDrawIndexed(cmd, dr.indexCount, 1, dr.firstIndex, 0, 0);
-                ++draws;
+            if (group.opaqueShadowSet && !group.shadowRanges.empty()) {
+                bindShadowMaterial(group.opaqueShadowSet);
+                for (size_t ri = 0; ri < group.shadowRanges.size(); ++ri) {
+                    const auto& dr = group.shadowRanges[ri];
+                    if (ri < group.shadowRangeBounds.size()) {
+                        const auto& bounds = group.shadowRangeBounds[ri];
+                        if (bounds.valid && (!shadowIntersectsWorldBounds(
+                                localLightSpace, bounds.low, bounds.high) ||
+                                (receiverHull && !receiverHull->intersectsTransformedBounds(
+                                    bounds.low, bounds.high, instance.modelMatrix)))) {
+                            ++rangeCulled;
+                            continue;
+                        }
+                    }
+                    vkCmdDrawIndexed(cmd, dr.indexCount, 1, dr.firstIndex, 0, 0);
+                    ++draws;
+                }
+            }
+            for (uint32_t bi : group.cutoutShadowBatches) {
+                const auto& batch = group.mergedBatches[bi];
+                bindShadowMaterial(batch.materialSet);
+                for (const auto& dr : batch.draws) {
+                    if (!dr.indexCount) continue;
+                    if (dr.bounds.valid && (!shadowIntersectsWorldBounds(
+                            localLightSpace, dr.bounds.low, dr.bounds.high) ||
+                            (receiverHull && !receiverHull->intersectsTransformedBounds(
+                                dr.bounds.low, dr.bounds.high, instance.modelMatrix)))) {
+                        ++rangeCulled;
+                        continue;
+                    }
+                    vkCmdDrawIndexed(cmd, dr.indexCount, 1, dr.firstIndex, 0, 0);
+                    ++draws;
+                }
             }
         }
+        if (instance.isTransport && draws != drawsBeforeInstance) {
+            ++transportSubmitted;
+            transportDraws += draws - drawsBeforeInstance;
+        }
     }
-    if (report) LOG_INFO("[SHADOW_SUBMIT] WMO draws=", draws, " unmerged=", originalDraws);
+    if (report) LOG_INFO("[SHADOW_SUBMIT] WMO draws=", draws, " unmerged=", originalDraws,
+                         " rangeCulled=", rangeCulled, " receiverCulled=", receiverCulled, " pass=", shadowPassIndex,
+                         " transports=", transports, " transportLightCulled=", transportLightCulled,
+                         " transportSubmitted=", transportSubmitted, " transportDraws=", transportDraws,
+                         "; CPU submissions, not GPU coverage");
 }
 
 uint32_t WMORenderer::getTotalTriangleCount() const {
@@ -2133,13 +2238,14 @@ bool WMORenderer::createGroupResources(const pipeline::WMOGroup& group, GroupRes
     }
 
     resources.groupFlags = groupFlags;
+    resources.hasVertexColors = group.hasVertexColors;
 
     resources.vertexCount = group.vertices.size();
     resources.indexCount = group.indices.size();
     resources.boundingBoxMin = group.boundingBoxMin;
     resources.boundingBoxMax = group.boundingBoxMax;
 
-    std::vector<WMOVertex> vertices;
+    platform::CpuGeometryVector<WMOVertex> vertices;
     vertices.reserve(group.vertices.size());
 
     for (const auto& v : group.vertices) {
@@ -2154,8 +2260,8 @@ bool WMORenderer::createGroupResources(const pipeline::WMOGroup& group, GroupRes
 
     // Compute tangents using Lengyel's method
     {
-        std::vector<glm::vec3> tan1(vertices.size(), glm::vec3(0.0f));
-        std::vector<glm::vec3> tan2(vertices.size(), glm::vec3(0.0f));
+        platform::CpuGeometryVector<glm::vec3> tan1(vertices.size(), glm::vec3(0.0f));
+        platform::CpuGeometryVector<glm::vec3> tan2(vertices.size(), glm::vec3(0.0f));
 
         const auto& indices = group.indices;
         for (size_t i = 0; i + 2 < indices.size(); i += 3) {
@@ -2376,6 +2482,10 @@ void WMORenderer::destroyGroupGPU(GroupResources& group, bool defer) {
             mb.materialUBOAlloc = VK_NULL_HANDLE;
         }
     }
+    // Non-owning shadow aliases follow the same two-fence retirement above.
+    group.opaqueShadowSet = VK_NULL_HANDLE;
+    group.cutoutShadowBatches.clear();
+
 }
 
 VkDescriptorSet WMORenderer::allocateMaterialSet() {
@@ -2490,7 +2600,7 @@ void WMORenderer::getVisibleGroupsViaPortals(const ModelData& model,
                                               const glm::vec3& viewerLocalPos,
                                               const Frustum& frustum,
                                               const glm::mat4& modelMatrix,
-                                              std::unordered_set<uint32_t>& outVisibleGroups) const {
+                                              WMOPortalScratch& visibility) const {
     constexpr uint32_t WMO_GROUP_FLAG_OUTDOOR = 0x8;
     constexpr uint32_t WMO_GROUP_FLAG_INDOOR = 0x2000;
 
@@ -2502,7 +2612,7 @@ void WMORenderer::getVisibleGroupsViaPortals(const ModelData& model,
         // Camera outside WMO - mark all groups as potentially visible
         // (will still be frustum culled in render)
         for (size_t gi = 0; gi < model.groups.size(); gi++) {
-            outVisibleGroups.insert(static_cast<uint32_t>(gi));
+            visibility.show(static_cast<uint32_t>(gi));
         }
         return;
     }
@@ -2516,7 +2626,7 @@ void WMORenderer::getVisibleGroupsViaPortals(const ModelData& model,
         const bool isOutdoor = (gFlags & WMO_GROUP_FLAG_OUTDOOR) != 0;
         if (!isIndoor || isOutdoor) {
             for (size_t gi = 0; gi < model.groups.size(); gi++) {
-                outVisibleGroups.insert(static_cast<uint32_t>(gi));
+                visibility.show(static_cast<uint32_t>(gi));
             }
             return;
         }
@@ -2532,7 +2642,7 @@ void WMORenderer::getVisibleGroupsViaPortals(const ModelData& model,
                 cameraLocalPos.y >= g.boundingBoxMin.y && cameraLocalPos.y <= g.boundingBoxMax.y &&
                 cameraLocalPos.z >= g.boundingBoxMin.z && cameraLocalPos.z <= g.boundingBoxMax.z) {
                 for (size_t gj = 0; gj < model.groups.size(); gj++) {
-                    outVisibleGroups.insert(static_cast<uint32_t>(gj));
+                    visibility.show(static_cast<uint32_t>(gj));
                 }
                 return;
             }
@@ -2545,7 +2655,7 @@ void WMORenderer::getVisibleGroupsViaPortals(const ModelData& model,
         auto [portalStart, portalCount] = model.groupPortalRefs[cameraGroup];
         if (portalCount == 0) {
             for (size_t gi = 0; gi < model.groups.size(); gi++) {
-                outVisibleGroups.insert(static_cast<uint32_t>(gi));
+                visibility.show(static_cast<uint32_t>(gi));
             }
             return;
         }
@@ -2560,7 +2670,7 @@ void WMORenderer::getVisibleGroupsViaPortals(const ModelData& model,
     for (size_t gi = 0; gi < model.groups.size(); ++gi) {
         const uint32_t f = model.groups[gi].groupFlags;
         if (!(f & WMO_GROUP_FLAG_INDOOR) || (f & WMO_GROUP_FLAG_OUTDOOR))
-            outVisibleGroups.insert(static_cast<uint32_t>(gi));
+            visibility.show(static_cast<uint32_t>(gi));
     }
 
     // BFS through portals from both viewpoints' groups plus every always-visible
@@ -2572,27 +2682,19 @@ void WMORenderer::getVisibleGroupsViaPortals(const ModelData& model,
     // of them, while judging every door against the camera's frustum, is what
     // emptied Ironforge. A second seed can only add groups, never remove any,
     // and drawing a room too many is the failure this should have.
-    std::vector<bool> visited(model.groups.size(), false);
-    std::vector<uint32_t> queue;
-    queue.reserve(model.groups.size());
+    auto& queue = visibility.queue;
 
     auto seed = [&](int gi) {
         if (gi < 0 || gi >= static_cast<int>(model.groups.size())) return;
-        if (visited[gi]) return;
-        visited[gi] = true;
-        queue.push_back(static_cast<uint32_t>(gi));
-        outVisibleGroups.insert(static_cast<uint32_t>(gi));
+        visibility.enqueue(static_cast<uint32_t>(gi));
     };
     seed(cameraGroup);
     seed(findContainingGroup(model, viewerLocalPos));
 
     // Exterior groups were inserted above without being queued; they are portals
     // into the interior too.
-    for (uint32_t gi : outVisibleGroups) {
-        if (!visited[gi]) {
-            visited[gi] = true;
-            queue.push_back(gi);
-        }
+    for (uint32_t gi = 0; gi < model.groups.size(); ++gi) {
+        if (visibility.visible(gi)) visibility.enqueue(gi);
     }
 
     size_t queueIdx = 0;
@@ -2611,13 +2713,11 @@ void WMORenderer::getVisibleGroupsViaPortals(const ModelData& model,
             uint32_t targetGroup = ref.groupIndex;
 
             if (targetGroup >= model.groups.size()) continue;
-            if (visited[targetGroup]) continue;
+            if (visibility.visited(targetGroup)) continue;
 
             // Check if portal is visible from camera
             if (isPortalVisible(model, ref.portalIndex, cameraLocalPos, frustum, modelMatrix)) {
-                visited[targetGroup] = true;
-                outVisibleGroups.insert(targetGroup);
-                queue.push_back(targetGroup);
+                visibility.enqueue(targetGroup);
             }
         }
     }
@@ -2653,9 +2753,15 @@ pipeline::BLPImage WMORenderer::generateNormalHeightMapPixels(
 std::unique_ptr<VkTexture> WMORenderer::generateNormalHeightMap(
         const uint8_t* pixels, uint32_t width, uint32_t height, float& outVariance) {
     if (!vkCtx_) return nullptr;
-    auto normalPixels = generateNormalHeightMapPixels(pixels, width, height, outVariance);
+    pipeline::BLPImage normalPixels;
+    {
+        StreamLoadStageScope normalTiming(activeStreamLoadTiming, StreamLoadStage::NormalGenerate);
+        if (activeStreamLoadTiming) ++activeStreamLoadTiming->generatedNormals;
+        normalPixels = generateNormalHeightMapPixels(pixels, width, height, outVariance);
+    }
     if (!normalPixels.isValid()) return nullptr;
 
+    StreamLoadStageScope normalUploadTiming(activeStreamLoadTiming, StreamLoadStage::NormalUpload);
     // Upload the CPU-generated pixels to the GPU with mipmaps.
     auto tex = std::make_unique<VkTexture>();
     if (!tex->upload(*vkCtx_, normalPixels.data.data(), width, height,
@@ -2668,6 +2774,7 @@ std::unique_ptr<VkTexture> WMORenderer::generateNormalHeightMap(
 }
 
 VkTexture* WMORenderer::loadTexture(const std::string& path) {
+    StreamLoadStageScope lookupTiming(activeStreamLoadTiming, StreamLoadStage::TextureLookup);
     constexpr uint64_t kFailedTextureRetryLookups = 512;
     if (!assetManager || !vkCtx_) {
         return whiteTexture_.get();
@@ -2740,6 +2847,7 @@ VkTexture* WMORenderer::loadTexture(const std::string& path) {
         auto it = textureCache.find(c);
         if (it != textureCache.end()) {
             it->second.lastUse = ++textureCacheCounter_;
+            if (activeStreamLoadTiming) ++activeStreamLoadTiming->textureHits;
             return it->second.texture.get();
         }
     }
@@ -2769,6 +2877,7 @@ VkTexture* WMORenderer::loadTexture(const std::string& path) {
                 blp = std::move(pit->second);
                 predecodedBLPCache_->erase(pit);
                 resolvedKey = c;
+                if (activeStreamLoadTiming) ++activeStreamLoadTiming->preparedTextures;
                 break;
             }
         }
@@ -2777,7 +2886,11 @@ VkTexture* WMORenderer::loadTexture(const std::string& path) {
         for (const auto& c : attemptedCandidates) {
             // Blocks. The diffuse is only ever sampled; the normal map
             // below needs pixels and decodes them from these when it runs.
-            blp = assetManager->loadTexture(c, true);
+            {
+                StreamLoadStageScope readTiming(activeStreamLoadTiming, StreamLoadStage::TextureRead);
+                if (activeStreamLoadTiming) ++activeStreamLoadTiming->syncTextures;
+                blp = assetManager->loadTexture(c, true);
+            }
             if (blp.isValid()) {
                 resolvedKey = c;
                 break;
@@ -2818,7 +2931,12 @@ VkTexture* WMORenderer::loadTexture(const std::string& path) {
 
     // Create Vulkan texture
     auto texture = std::make_unique<VkTexture>();
-    if (!texture->uploadBLP(*vkCtx_, blp)) {
+    bool diffuseUploaded;
+    {
+        StreamLoadStageScope uploadTiming(activeStreamLoadTiming, StreamLoadStage::DiffuseUpload);
+        diffuseUploaded = texture->uploadBLP(*vkCtx_, blp);
+    }
+    if (!diffuseUploaded) {
         core::Logger::getInstance().warning("WMO: Failed to upload texture to GPU: ", path);
         return whiteTexture_.get();
     }
@@ -2835,6 +2953,8 @@ VkTexture* WMORenderer::loadTexture(const std::string& path) {
         if (predecodedNormalMapCache_ && !resolvedKey.empty()) {
             auto normalIt = predecodedNormalMapCache_->find(resolvedKey);
             if (normalIt != predecodedNormalMapCache_->end()) {
+                StreamLoadStageScope normalUploadTiming(activeStreamLoadTiming, StreamLoadStage::NormalUpload);
+                if (activeStreamLoadTiming) ++activeStreamLoadTiming->preparedNormals;
                 auto& normalPixels = normalIt->second;
                 auto uploaded = std::make_unique<VkTexture>();
                 if (normalPixels.isValid() &&
@@ -2860,9 +2980,11 @@ VkTexture* WMORenderer::loadTexture(const std::string& path) {
             // Decoded here and thrown away, rather than kept and uploaded.
             // The Sobel pass has always needed pixels; what changes is that
             // the texture itself no longer has to be RGBA8 to provide them.
-            const std::vector<uint8_t> decoded =
-                blp.isBlockCompressed() ? pipeline::BLPLoader::decodeBaseLevel(blp)
-                                        : blp.data;
+            std::vector<uint8_t> decoded;
+            {
+                StreamLoadStageScope decodeTiming(activeStreamLoadTiming, StreamLoadStage::NormalDecode);
+                decoded = blp.isBlockCompressed() ? pipeline::BLPLoader::decodeBaseLevel(blp) : blp.data;
+            }
             if (!decoded.empty()) {
                 nhMap = generateNormalHeightMap(decoded.data(), blp.width, blp.height,
                                                 nhVariance);
@@ -4188,6 +4310,26 @@ bool WMORenderer::isInsideWMO(float glX, float glY, float glZ, uint32_t* outMode
 
 bool WMORenderer::isInsideInteriorWMO(float glX, float glY, float glZ) const {
     return isInsideWMOGroups(glX, glY, glZ, /*interiorOnly=*/true, nullptr);
+}
+
+bool WMORenderer::hasPotentialGroundBelow(const glm::vec3& feet) const {
+    for (unsigned axis=0;axis<3;++axis)
+        if (!std::isfinite(feet[axis])) return true;
+    for (const auto& instance : instances) {
+        // Do not apply collision-focus or camera culling: lower dungeon floors
+        // can be far below a legitimate drop and still prevent void recovery.
+        for (const auto& bounds : instance.worldGroupBounds) {
+            const auto& [low,high]=bounds;
+            // Unknown/corrupt bounds cannot certify that the world is empty.
+            for (unsigned axis=0;axis<3;++axis)
+                if (!std::isfinite(low[axis]) || !std::isfinite(high[axis]) || low[axis]>high[axis])
+                    return true;
+            if (feet.x>=low.x-0.5f && feet.x<=high.x+0.5f &&
+                feet.y>=low.y-0.5f && feet.y<=high.y+0.5f && low.z<feet.z-0.1f)
+                return true;
+        }
+    }
+    return false;
 }
 
 float WMORenderer::raycastBoundingBoxes(const glm::vec3& origin, const glm::vec3& direction, float maxDistance) const {

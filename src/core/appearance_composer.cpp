@@ -1,4 +1,6 @@
 #include "core/appearance_composer.hpp"
+#include "game/local_forms.hpp"
+#include "game/local_realm.hpp"
 #include "core/geoset_rules.hpp"
 #include "pipeline/item_textures.hpp"
 #include "pipeline/m2_asset_loader.hpp"
@@ -438,6 +440,7 @@ void AppearanceComposer::loadEquippedHelm(game::Inventory& inventory) {
 }
 
 void AppearanceComposer::loadEquippedWeapons() {
+    if(gameHandler_)if(auto* r=gameHandler_->localServiceRealm())if(const auto* p=r->localPlayer())if(game::localFormDisplay(*p))return;
     // Equipment refreshes can arrive during a gather cast. Keep the temporary
     // tool authoritative until the cast-end callback restores real equipment.
     const uint32_t currentInstanceId = renderer_ ? renderer_->getCharacterInstanceId() : 0;
