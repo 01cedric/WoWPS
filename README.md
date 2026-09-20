@@ -90,9 +90,9 @@ The client contains login, realm/character selection, movement, combat, quest, i
 
 ## Install and upgrade
 
-1. **Back up your saves first:** `/data/wow\_ps/saves/local\_realm/`. Keep the complete directory, including identity and backup files; retain your configuration/action-bar files as well.
+1. **Back up your saves first:** `/data/wow_ps/saves/local_realm/`. Keep the complete directory, including identity and backup files; retain your configuration/action-bar files as well.
 2. Install the **WoWPS 2.00** PKG on a compatible homebrew-enabled PS4. The title remains **WoWPS**, title ID **WOWE00001**.
-3. Copy your original WotLK client `Data` directory to `/data/wow\_ps/Data/`, retaining locale subdirectories and MPQ layout. Launch WoWPS.
+3. Copy your original WotLK client `Data` directory to `/data/wow_ps/Data/`, retaining locale subdirectories and MPQ layout. Launch WoWPS.
 
 For solo play choose **Single Player**. For LAN, one console chooses **Host LAN**, the others **Join LAN**. All participants must use **2.00** with matching content. External realms use the connected-client/server setup.
 
@@ -100,7 +100,7 @@ For solo play choose **Single Player**. For LAN, one console chooses **Host LAN*
 
 **Optional collision data:** the local line-of-sight rule supports collision data extracted from your own MPQs. No extracted collision pack is supplied. Without one, that visibility query defaults to visible and cannot prevent casting through walls. A host and its guests must use matching collision content.
 
-Runtime logs are written below `/data/wow\_ps/wowps/logs/`. Keep `boot`, `wowps` and `vulkan\_icd` logs together when reporting a fault.
+Runtime logs are written below `/data/wow_ps/wowps/logs/`. Keep `boot`, `wowps` and `vulkan_icd` logs together when reporting a fault.
 
 ## Controller
 
