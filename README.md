@@ -2,7 +2,7 @@
   <img src="ps4/sce_sys/icon0.png" alt="WoWPS" width="160">
 </p>
 
-<h1 align="center">WoWPS 2.00</h1>
+<h1 align="center">WoWPS</h1>
 <p align="center"><em>World of Warcraft, running natively on PlayStation 4.</em></p>
 <p align="center">
   <img alt="Release" src="https://img.shields.io/badge/release-2.00-blue">
