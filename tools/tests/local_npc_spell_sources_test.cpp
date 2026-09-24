@@ -64,11 +64,14 @@ int main(int argc,char** argv){
     assert(importLocalNpcSpells(t,retained)==0&&retained.size()==2); // No duplicates or replacement.
     retained[0].npcOnly=false;assert(importLocalNpcSpells(t,retained)==0&&!retained[0].npcOnly);
     t.ready=false;retained.clear();assert(importLocalNpcSpells(t,retained)==0&&retained.empty());
-    assert(localNpcSpellProfile(4008)->spellId==5401&&localNpcSpellProfile(4323)->spellId==11985&&localNpcSpellProfile(5858)->spellId==11985);
+    assert(localNpcSpellProfile(4008)->spellId()==5401&&localNpcSpellProfile(4323)->spellId()==11985&&localNpcSpellProfile(5858)->spellId()==11985);
     assert(!localNpcSpellProfile(0)&&!localNpcSpellProfile(4009)&&!localNpcSpellProfile(UINT32_MAX));
-    assert(localNpcSpellDamageScale(4323,20,11985)==1.f&&localNpcSpellDamageScale(4323,39,11985)>1.f);
-    assert(localNpcSpellDamageScale(5858,47,11985)>localNpcSpellDamageScale(4323,39,11985));
-    assert(localNpcSpellDamageScale(4008,15,5401)==1.f&&!localNpcSpellDamageScale(4008,15,11985));
-    assert(!localNpcSpellDamageScale(5858,0,11985)&&!localNpcSpellDamageScale(5858,84,11985));
+    // SCALES_WITH_CREATURE_LEVEL and SpellLevel now travel with the definition
+    // (a triggered spell has no row); the owner's first row supplies class and
+    // expansion. Fireball 11985: spell level 20; Lizard Bolt 5401: none.
+    assert(localNpcSpellDamageScale(4323,20,true,20)==1.f&&localNpcSpellDamageScale(4323,39,true,20)>1.f);
+    assert(localNpcSpellDamageScale(5858,47,true,20)>localNpcSpellDamageScale(4323,39,true,20));
+    assert(localNpcSpellDamageScale(4008,15,false,0)==1.f&&localNpcSpellDamageScale(4008,15,true,20)!=1.f);
+    assert(!localNpcSpellDamageScale(5858,0,true,20)&&!localNpcSpellDamageScale(5858,84,true,20)&&!localNpcSpellDamageScale(4009,20,true,20));
     std::cout<<"PASS NPC whole-profile source admission, "<<rejected<<" rejected source mutations, internal isolation\n";
 }

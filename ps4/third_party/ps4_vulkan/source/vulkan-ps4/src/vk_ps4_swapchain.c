@@ -828,6 +828,10 @@ vk_ps4_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
     for (uint32_t s = 0; s < pPresentInfo->waitSemaphoreCount; s++) {
         VkPs4Semaphore *sem = (VkPs4Semaphore *)pPresentInfo->pWaitSemaphores[s];
         if (sem) {
+            if (!vk_ps4_sync_validate_semaphore(sem)) {
+                vk_ps4_log("QueuePresent: rejected stale/corrupt wait semaphore %u", s);
+                return VK_ERROR_DEVICE_LOST;
+            }
             if (sem->pending.slot_index != 0 && sem->device) {
                 if (!vk_ps4_queue_ticket_wait(sem->device, &sem->pending)) {
                     vk_ps4_log("QueuePresent: render completion TIMEOUT sem=%u", s);

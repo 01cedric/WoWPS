@@ -462,7 +462,7 @@ void renderItemTooltip(const game::ItemDef& item, const game::Inventory* invento
             // Gem sockets
             {
                 // Get socket gem enchant IDs for this item (filled from item update fields)
-                std::array<uint32_t, 3> sockGems{};
+                std::array<uint32_t, 3> sockGems = item.socketEnchantIds;
                 if (itemGuid != 0 && gameHandler)
                     sockGems = gameHandler->getItemSocketEnchantIds(itemGuid);
 
@@ -573,9 +573,16 @@ void renderItemTooltip(const game::ItemDef& item, const game::Inventory* invento
         }
     }
 
-    // Weapon/armor enchant display for equipped items (reads from item update fields)
-    if (itemGuid != 0 && gameHandler) {
-        auto [permId, tempId] = gameHandler->getItemEnchantIds(itemGuid);
+    // Weapon/armor enchant display. Prefer the live object map when available,
+    // but the ItemDef now carries a complete instance snapshot as a fallback.
+    {
+        uint32_t permId = item.permanentEnchantId;
+        uint32_t tempId = item.temporaryEnchantId;
+        if (itemGuid != 0 && gameHandler) {
+            auto live = gameHandler->getItemEnchantIds(itemGuid);
+            permId = live.first;
+            tempId = live.second;
+        }
         if (permId != 0) {
             auto it2 = s_enchLookupB.find(permId);
             const char* ename = (it2 != s_enchLookupB.end()) ? it2->second.c_str() : nullptr;

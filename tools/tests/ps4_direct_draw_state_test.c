@@ -53,24 +53,49 @@ int main(void) {
     vk_ps4_CmdDrawIndexed((VkCommandBuffer)c,3,2,0,-3,0);
     assert((size_t)(c->gnm_cmd.cmdptr-start)==first_words);
     assert(c->direct_draw_instances==2 && c->direct_draw_vertex_offset==(uint32_t)-3);
-    vk_ps4_reset_user_data_state(c); assert(!c->direct_draw_state_valid);
+
+    /* Pipeline-relative base/start user-data: the first draw emits it, an
+     * identical draw reuses it, firstInstance or pipeline changes re-emit. */
+    pipe.has_base_vertex_reg=true; pipe.has_start_instance_reg=true;
+    pipe.vs_base_vertex_reg=5; pipe.vs_start_instance_reg=6;
+    c->direct_draw_state_valid=false; c->direct_draw_userdata_valid=false;
+    start=c->gnm_cmd.cmdptr;
+    vk_ps4_CmdDrawIndexed((VkCommandBuffer)c,3,1,0,0,0);
+    size_t userdata_first=(size_t)(c->gnm_cmd.cmdptr-start);
+    start=c->gnm_cmd.cmdptr;
+    vk_ps4_CmdDrawIndexed((VkCommandBuffer)c,3,1,0,0,0);
+    size_t userdata_repeated=(size_t)(c->gnm_cmd.cmdptr-start);
+    assert(userdata_first==userdata_repeated+9 && userdata_repeated==10);
+    start=c->gnm_cmd.cmdptr;
+    vk_ps4_CmdDrawIndexed((VkCommandBuffer)c,3,1,0,0,7);
+    assert((size_t)(c->gnm_cmd.cmdptr-start)==userdata_repeated+4);
+    VkPs4Pipeline pipe2=pipe; c->current_pipeline=&pipe2;
+    start=c->gnm_cmd.cmdptr;
+    vk_ps4_CmdDrawIndexed((VkCommandBuffer)c,3,1,0,0,7);
+    assert((size_t)(c->gnm_cmd.cmdptr-start)==userdata_repeated+4);
+    c->current_pipeline=&pipe;
+    assert(c->recording_perf.direct_userdata_reuses>=1);
+    assert(c->recording_perf.direct_userdata_writes>=3);
+
+    vk_ps4_reset_user_data_state(c); assert(!c->direct_draw_state_valid && !c->direct_draw_userdata_valid);
     start=c->gnm_cmd.cmdptr;
     vk_ps4_CmdDrawIndexed((VkCommandBuffer)c,3,2,0,-3,0);
-    assert((size_t)(c->gnm_cmd.cmdptr-start)==first_words);
-    printf("PASS production indexed state reuse: first=%zu repeated=%zu PM4 dwords; instance/base changes and reset restore both registers\n",first_words,repeated_words);
+    assert((size_t)(c->gnm_cmd.cmdptr-start)==userdata_first);
+    printf("PASS production indexed state reuse: base first=%zu repeated=%zu; shader-userdata first=%zu repeated=%zu PM4 dwords\n",
+           first_words,repeated_words,userdata_first,userdata_repeated);
     c->current_pipeline=NULL;
     vk_ps4_CmdDrawIndirect((VkCommandBuffer)c,(VkBuffer)&ib,0,1,16);
-    assert(!c->direct_draw_state_valid);
-    c->direct_draw_state_valid=true;
+    assert(!c->direct_draw_state_valid && !c->direct_draw_userdata_valid);
+    c->direct_draw_state_valid=true; c->direct_draw_userdata_valid=true;
     vk_ps4_CmdDrawIndexedIndirect((VkCommandBuffer)c,(VkBuffer)&ib,0,1,20);
-    assert(!c->direct_draw_state_valid);
+    assert(!c->direct_draw_state_valid && !c->direct_draw_userdata_valid);
     VkPs4CommandBuffer *secondary=calloc(1,sizeof(*secondary)); assert(secondary);
     secondary->level=VK_COMMAND_BUFFER_LEVEL_SECONDARY;
     secondary->gnm_cmd.beginptr=secondary->gnm_cmd.cmdptr=words;
     VkCommandBuffer secondary_handle=(VkCommandBuffer)secondary;
-    c->direct_draw_state_valid=true;
+    c->direct_draw_state_valid=true; c->direct_draw_userdata_valid=true;
     vk_ps4_CmdExecuteCommands((VkCommandBuffer)c,1,&secondary_handle);
-    assert(!c->direct_draw_state_valid);free(secondary);
+    assert(!c->direct_draw_state_valid && !c->direct_draw_userdata_valid);free(secondary);
     puts("PASS indirect and secondary execution invalidate direct draw register shadow");
     for(unsigned i=2;i<=601;++i) {vk_ps4_depth_draw_receipt_begin(c);vk_ps4_depth_draw_receipt_end(c);}
     assert(logs==5); /* first 3, 300 and 600 per command buffer */

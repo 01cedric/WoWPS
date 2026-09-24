@@ -143,6 +143,9 @@ int main() {
         auto p=petOwner();p.level=1;std::string result;
         assert(game.execute(p,{LocalAction::CastSpell,0,2},{&p},result));
         auto enemy=engagedNpc();enemy.level=1;enemy.health=enemy.maxHealth=1;
+        // 2.39 Creature::IsDamageEnoughForLootingAndReward: the owner struck
+        // the enemy before (a pet-only kill rewards nobody at the pin).
+        enemy.npcPlayerDamage=1;enemy.npcDamagedByPlayer=true;
         game.setRemoteNpcs({enemy});p.attackTarget=enemy.guid;p.attackTimer=1000;
         const auto petGuid=game.pets()[0].guid;
         const auto xpBefore=p.xp;

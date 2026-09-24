@@ -1,6 +1,7 @@
 #pragma once
 
 #include "game/local_gameplay.hpp"
+#include "game/local_quest_eligibility.hpp"
 #include "game/quest_giver_status.hpp"
 #include <algorithm>
 
@@ -33,10 +34,7 @@ inline QuestGiverStatus localQuestMarkerStatus(const LocalRealmPlayer& player,
             continue;
         }
 
-        if (quest.giverEntry != npc.entry || player.level < quest.minLevel || quest.requiredSkill ||
-            (quest.allowableRaces && !(quest.allowableRaces & (1u << (player.race - 1)))) ||
-            (quest.allowableClasses && !(quest.allowableClasses & (1u << (player.classId - 1)))) ||
-            (quest.prerequisite && !rewarded(quest.prerequisite))) continue;
+        if (quest.giverEntry != npc.entry || localQuestAcceptanceError(player,quest)) continue;
         available = true;
     }
 

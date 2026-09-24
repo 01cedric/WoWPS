@@ -19,6 +19,7 @@ prefix = r'''
 #include "rendering/spatial_grid.hpp"
 #include "rendering/shadow_ranges.hpp"
 #include "rendering/wmo_vertex.hpp"
+#include "rendering/wmo_draw_bounds.hpp"
 #include "rendering/deferred_cleanup.hpp"
 #include "pipeline/wmo_geometry_residency.hpp"
 #include <cassert>
@@ -59,6 +60,8 @@ struct FakeVkContext {
     VkDevice getDevice() const { return 1; }
     VmaAllocator getAllocator() const { return 2; }
     unsigned deferCalls=0,failDefer=0;
+    void pollUploadBatches() {}
+    bool uploadsIdle() const { return true; }
     void deferAfterAllFrameFences(std::function<void()>&& fn) { if(++deferCalls==failDefer)throw std::bad_alloc();enqueueAfterAllFences(queues, std::move(fn)); }
     void finish(unsigned f) { auto q = std::move(queues[f]); for (auto& fn : q) fn(); }
 };

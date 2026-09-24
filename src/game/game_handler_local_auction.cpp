@@ -21,6 +21,10 @@ const ItemSlot* GameHandler::localBagSlot(int index, uint64_t* guid) {
     cacheLocalAuctionItem(stack.itemId);
     auto& item=localBagSlots_[size_t(index)].item;
     item.itemId=stack.itemId;item.stackCount=stack.count;
+    item.instanceFlags=stack.instance.instanceFlags;item.permanentEnchantId=stack.instance.permanentEnchantId;
+    item.temporaryEnchantId=stack.instance.temporaryEnchantId;item.socketEnchantIds=stack.instance.socketEnchantIds;
+    item.curDurability=stack.instance.curDurability;item.maxDurability=stack.instance.maxDurability;
+    item.randomPropertyId=stack.instance.randomPropertyId;item.suffixFactor=stack.instance.suffixFactor;item.soulbound=stack.instance.soulbound;
     item.name=definition->name;item.maxStack=definition->stack;
     item.inventoryType=definition->inventoryType;item.displayInfoId=definition->displayId;
     item.sellPrice=definition->value;item.armor=definition->armor;
@@ -102,6 +106,7 @@ void GameHandler::refreshLocalAuctions(bool force) {
         const auto* item=getItemInfo(a.itemId); if (!item) continue;
         AuctionEntry entry;
         entry.auctionId=a.id;entry.itemEntry=a.itemId;entry.stackCount=a.count;entry.ownerGuid=a.seller;
+        entry.enchantId=a.instance.permanentEnchantId;entry.randomPropertyId=uint32_t(a.instance.randomPropertyId);entry.suffixFactor=a.instance.suffixFactor;
         entry.startBid=a.bid;entry.minBidIncrement=std::max(1u,a.highestBid/20);
         entry.buyoutPrice=a.buyout;entry.currentBid=a.highestBid;entry.bidderGuid=a.highestBidder;
         entry.timeLeftMs=uint32_t(std::clamp(double(a.remainingSeconds)*1000.0,0.0,172800000.0));

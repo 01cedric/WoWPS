@@ -410,6 +410,18 @@ private:
 #if defined(__ORBIS__) || defined(PS4) || defined(WOWEE_PS4)
     uint32_t swapchainRebuildFailures_ = 0;
     std::chrono::steady_clock::time_point swapchainRebuildRetryAt_{};
+
+    // Three-buffer PS4 presentation can keep one completed/submitted image
+    // waiting for presentation while the CPU records the next frame. This
+    // removes the render-completion wait from the same frame's endFrame path
+    // without ever reusing a scanout image early. Two-buffer VideoOut keeps
+    // the synchronous present path because it has no spare image for this.
+    bool deferredPresentPrimed_ = false;
+    bool deferredPresentValid_ = false;
+    uint32_t deferredPresentImageIndex_ = 0;
+    VkSemaphore deferredPresentSemaphore_ = VK_NULL_HANDLE;
+    VkSwapchainKHR deferredPresentSwapchain_ = VK_NULL_HANDLE;
+    VkResult flushDeferredPresent();
 #endif
 
 #if defined(__ORBIS__) || defined(PS4) || defined(WOWEE_PS4)
@@ -520,8 +532,13 @@ private:
         /// Plainly-allocated staging, which has to outlive the submit just as
         /// the allocator's does.
         std::vector<RawStaging> rawStaging;
+        // Cached once when the batch is submitted. Runtime streaming opens an
+        // upload batch every frame; re-walking every staging allocation of all
+        // outstanding batches just to enforce the byte watermark was avoidable.
+        VkDeviceSize stagingBytes = 0;
     };
     std::vector<InFlightBatch> inFlightBatches_;
+    VkDeviceSize inFlightUploadBytes_ = 0;
     void finishUploadBatch(bool synchronous);
 
     void runDeferredCleanup(uint32_t frameIndex);

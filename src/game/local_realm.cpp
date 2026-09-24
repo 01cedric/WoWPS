@@ -1,4 +1,5 @@
 #include "game/local_realm.hpp"
+#include "game/local_vehicle_projectile.hpp"
 #include "game/local_forms.hpp"
 #include "game/local_combo.hpp"
 #include "game/local_npc_auras.hpp"
@@ -61,13 +62,26 @@ bool readLocalClockHours(float& hours) {
 #endif
     return std::isfinite(hours) && hours >= 0 && hours < 24;
 }
+bool readLocalCalendar(LocalCalendarTime& value) {
+#ifdef WOWEE_PS4
+    struct alignas(8) CalendarStorage { TimeTable value; uint8_t tail[32]; } rtc{};
+    if(sceRtcGetCurrentClockLocalTime(&rtc.value)!=0)return false;
+    value={int(rtc.value.year),unsigned(rtc.value.month),unsigned(rtc.value.day),unsigned(rtc.value.hour),unsigned(rtc.value.minute),unsigned(rtc.value.second)};
+#else
+    const auto raw=std::time(nullptr);if(raw==std::time_t(-1))return false;
+    const auto local=core::localTime(raw);
+    value={local.tm_year+1900,unsigned(local.tm_mon+1),unsigned(local.tm_mday),unsigned(local.tm_hour),unsigned(local.tm_min),unsigned(local.tm_sec)};
+#endif
+    return validLocalCalendarTime(value);
+}
 constexpr uint32_t WireMagic = 0x57504c52; // WPLR
 constexpr uint32_t SaveMagic = 0x57505253; // WPRS
 constexpr uint32_t IdentityMagic = 0x57504944; // WPID
-constexpr uint8_t Version = lan::GameplayVersion; // Selected merchant stock and owner buyback.
-constexpr uint8_t SaveVersion = 32;  // Ghost/corpse state; reads 1-31.
+constexpr uint8_t Version = lan::GameplayVersion; // LAN103 creature periodic-damage views in the owner snapshot.
+constexpr uint8_t SaveVersion = 45;  // Pooled object dormancy and interval events; reads 1-45 with schedule-ID/object migration.
 constexpr size_t HeaderSize = 20, MaxPacket = 1400, MaxSavedPlayers = 128;
-constexpr size_t PublicPlayerBytes = 4 + 49 + 34 + 4 * kLocalEquipmentSlotCount + 6 + 4 + 30;
+constexpr size_t VehicleWireBytes = 14;
+constexpr size_t PublicPlayerBytes = 4 + 49 + 34 + 4 * kLocalEquipmentSlotCount + 6 + 4 + 30 + VehicleWireBytes;
 constexpr size_t PlayersPerPage = 6;
 static_assert(LocalRealm::MaxPlayers<=kLocalMaxNpcThreat,"Threat capacity must cover all local players");
 // Worst case for one creature on the wire, term by term against writeNpc:
@@ -77,10 +91,26 @@ static_assert(LocalRealm::MaxPlayers<=kLocalMaxNpcThreat,"Threat capacity must c
 // full creature by 204 bytes and the page count derived from it was wrong. The
 // consequence was never fragmentation - send() refuses an oversized datagram -
 // but a silently dropped NPC page, which is worse.
-constexpr size_t NpcWireBytes = 114 + 4
+constexpr size_t NpcWireBytes = 114 + 4 + 6 + 32 + 24
     + 16 * kLocalMaxNpcSnares + 21 * kLocalMaxNpcDamageAuras
-    + 17 * kLocalMaxNpcStormstrikeAuras + 17 * kLocalMaxNpcControls;
-constexpr size_t NpcsPerPage = 2;
+    + 17 * kLocalMaxNpcStormstrikeAuras + 17 * kLocalMaxNpcControls
+    // LAN107: one count byte and 22 bytes per creature buff.
+    + 1 + 22 * kLocalMaxNpcBuffs;
+// LAN107: the creature buff block pushed one creature past half a datagram,
+// so a page carries one creature; the deck sends every page each cycle as before.
+constexpr size_t NpcsPerPage = 1;
+constexpr size_t VehicleProjectileWireBytes=60;
+static_assert(HeaderSize+21+kLocalMaxVehicleProjectiles*VehicleProjectileWireBytes<=MaxPacket,
+              "Vehicle projectile snapshots must fit one datagram");
+constexpr size_t VehicleCastWireBytes=50;
+constexpr size_t VehicleCastDeckBytes=HeaderSize+21+kLocalMaxVehicleCasts*VehicleCastWireBytes;
+static_assert(VehicleCastWireBytes==50 && kLocalMaxVehicleCasts==16 && VehicleCastDeckBytes==841,
+              "LAN100 vehicle-cast wire contract changed");
+static_assert(VehicleCastDeckBytes<=MaxPacket,
+              "Vehicle cast snapshots must fit one datagram");
+constexpr size_t ScriptDialogueWireBytes=8+8+1+1+255,ScriptDialoguesPerPage=4,MaxScriptDialoguePages=4;
+static_assert(HeaderSize+20+ScriptDialoguesPerPage*ScriptDialogueWireBytes<=MaxPacket,
+              "Script dialogue pages must fit one datagram");
 constexpr size_t MaxNpcPages = (LocalGameplay::MaxNpcs + NpcsPerPage - 1) / NpcsPerPage;
 static_assert(HeaderSize + 19 + NpcsPerPage * NpcWireBytes <= MaxPacket,
               "NPC deck offsets must not cause IP fragmentation");
@@ -88,6 +118,13 @@ static_assert(HeaderSize + 19 + NpcsPerPage * NpcWireBytes <= MaxPacket,
 // the summon's name as a counted string bounded by validLocalPet's own 96.
 constexpr size_t PetWireBytes = 112 + 1 + 96, PetsPerPage = 4;
 constexpr size_t MaxPetPages = (kLocalMaxPets + PetsPerPage - 1) / PetsPerPage;
+constexpr size_t GameObjectWireBytes=13, GameObjectsPerPage=64;
+constexpr size_t MaxGameObjectPages=(kLocalMaxGameObjects+GameObjectsPerPage-1)/GameObjectsPerPage;
+static_assert(HeaderSize+23+GameObjectsPerPage*GameObjectWireBytes<=MaxPacket,
+              "Shared object pages must fit one datagram");
+constexpr size_t WorldEventWireBytes=17;
+static_assert(HeaderSize+17+kLocalMaxWorldEvents*WorldEventWireBytes<=MaxPacket,
+              "Shared event snapshot must fit one datagram");
 static_assert(HeaderSize + 19 + PetsPerPage * PetWireBytes <= MaxPacket,
               "Pet deck offsets must not cause IP fragmentation");
 constexpr size_t MaxPlayerPages = (LocalRealm::MaxPlayers + PlayersPerPage - 1) / PlayersPerPage;
@@ -111,6 +148,10 @@ static_assert(HeaderSize + 10 + AreaAuraWireBytes <= MaxPacket,
               "Area aura emitters and derived applications must fit one datagram without IP fragmentation");
 constexpr size_t WelcomeWireBytes = HeaderSize + 26 + PublicPlayerBytes + CastWireBytes + 1;
 static_assert(WelcomeWireBytes <= MaxPacket, "Welcome carries only the owner");
+// Save33/LAN88 item-instance snapshot: flags, two enchants, three sockets,
+// durability pair, random property/suffix and soulbound bit. Owner progress
+// carries one of these for every occupied bag/bank slot.
+constexpr size_t ItemInstanceWireBytes = 41;
 // Cooldowns are counted at their own bound rather than the spellbook's. They
 // used to be budgeted at MaxSpells, which was harmless while a character could
 // know sixteen abilities and wrong the moment class trainers raised that to
@@ -118,43 +159,73 @@ static_assert(WelcomeWireBytes <= MaxPacket, "Welcome carries only the owner");
 // assert below is what said so. A character may have many more abilities than
 // it can have on cooldown at once, and MaxCooldowns is the number the reader
 // already rejects a packet for exceeding.
+// LAN107 harmful (creature-cast) aura row: the LAN106 28 bytes plus attack
+// power, flat damage done/taken (3 x u32), four percentages (u16), the school
+// mask and the break-on-damage flag; then the knockback block and up to eight
+// school lockouts (mask + remaining).
+// LAN108 appends the cast speed (i16), hit chance, dodge, parry and block
+// (i8), a scoped resistance (i32 + school) and the disarm flag: 12 more bytes.
+constexpr size_t HarmfulViewWireBytes = 28 + 12 + 8 + 1 + 1 + 12, KnockbackWireBytes = 4 + 4 * 4;
+static_assert(HarmfulViewWireBytes == 62 && KnockbackWireBytes == 20, "LAN108 harmful-view wire contract changed");
+// LAN109 (2.40): the owner's gossip page - creature, menu, text, revision,
+// offered quest, the quest-list flag and at most 32 options of 12 bytes.
+constexpr size_t GossipWireBytes = 8 + 4 + 4 + 4 + 4 + 1 + 1 + kLocalMaxGossipOptions * 12;
+static_assert(GossipWireBytes == 410, "LAN109 gossip wire contract changed");
 constexpr size_t MaxOwnerProgressBytes = 21 + HeaderSize + 8 + 16 + 20 + 34 + 4 * kLocalEquipmentSlotCount + 14 +
-    1 + LocalGameplay::MaxInventory * 7 + 1 + LocalGameplay::MaxQuests * 14 +
+    // Six bytes of stack identity plus the Save33 item-instance snapshot and
+    // the later one-byte bag layout entry for every inventory slot.
+    1 + LocalGameplay::MaxInventory * (7 + ItemInstanceWireBytes) + 1 + LocalGameplay::MaxQuests * 14 +
     1 + LocalGameplay::MaxSpells * 4 + 1 + LocalGameplay::MaxCooldowns * 8 + 2 + kLocalMaxCategoryCooldowns * 12 + 25 +
-    // Professions (count plus six bytes each), the recipes a profession taught
-    // (count plus four bytes each) and the inn binding.
-    1 + LocalGameplay::MaxProfessions * 6 + 1 + LocalGameplay::MaxRecipes * 4 +
-    1 + 4 + 16 + 4 + 25 + 17 + 20 + 12 + 4 + kLocalBankSlots * 6 + LocalGameplay::MaxProfessions * 2 + 2 + 2 + 512 * 4 + 53 + 1 + 71 * 5 + 1 + kLocalMaxStatAuras * 49 + 1 + kLocalMaxHealingAuraViews * 21 + 4 * 39 + 4 +
+    // Professions (count plus six bytes each), Save35's u16 recipe count plus
+    // four bytes per learned recipe, and the inn binding.
+    1 + LocalGameplay::MaxProfessions * 6 + 2 + LocalGameplay::MaxRecipes * 4 +
+    1 + 4 + 16 + 4 + 25 + 17 + 20 + 12 + 4 + kLocalBankSlots * (6 + ItemInstanceWireBytes) + LocalGameplay::MaxProfessions * 2 + 2 + 2 + 512 * 4 + 53 + 1 + 71 * 5 + 1 + kLocalMaxStatAuras * 49 + 1 + kLocalMaxHealingAuraViews * 21 + 1 + kLocalMaxHealingAuraViews * HarmfulViewWireBytes + KnockbackWireBytes + 1 + kLocalMaxSchoolLockouts * 5 + 4 * 39 + 4 +
     // Save29: the owner's saved emitters, plus the derived applications the
     // owner-directed message carries for its own buff display only.
-    AreaAuraWireBytes + 30;
+    AreaAuraWireBytes + 30 +
+    // Save34: bounded faction reputation table (count + faction/value pairs).
+    1 + kLocalMaxReputations * 8 +
+    // Save36: persistent phase mask plus bounded generic script/event state.
+    4 + 1 + kLocalMaxScriptStates * 8 +
+    // Save37: bounded one-shot scheduler state (timer id + remaining ms).
+    1 + kLocalMaxScriptTimers * 8 + 4 + VehicleWireBytes + 1 + kLocalMaxScriptAreas * 4 + 4 + 32 +
+    // LAN109: the owner's gossip page (ids only; texts come from the catalog).
+    GossipWireBytes;
 constexpr size_t ProgressChunkBytes = 1200;
 constexpr size_t MaxProgressChunks = (MaxOwnerProgressBytes + ProgressChunkBytes - 1) / ProgressChunkBytes;
-static_assert(MaxOwnerProgressBytes <= 8192 && MaxProgressChunks <= 8);
+static_assert(MaxOwnerProgressBytes <= 16384 && MaxProgressChunks <= 14);
 static_assert(HeaderSize + 10 + ProgressChunkBytes <= MaxPacket);
 constexpr size_t HistoryPageEntries = 256;
 constexpr size_t MaxHistoryPages = (LocalGameplay::MaxCompletedQuests + HistoryPageEntries - 1) / HistoryPageEntries;
 // Every character may reach the documented history cap; never write a save
 // larger than the parser can subsequently read.
-constexpr size_t MaxSaveSize = MaxSavedPlayers * (LocalGameplay::MaxCompletedQuests * 4 + 8192) + 65536 +
-    2 + LocalVendorInventory::MaxDepletedOffers * 28 + LocalMailbox::MaxMessages * 512 +
-    1 + kLocalMaxPets * PetWireBytes;
+// A maximum-sized letter carries twelve complete item-instance snapshots. Keep
+// the save-file ceiling in lockstep with the codec rather than the old
+// template-only 512-byte approximation.
+constexpr size_t MaxMailWireBytes = 4 + 8 + 8 + 17 + (1 + 64) + (1 + 160) + 4 + 4 + 1 +
+    12 * (4 + 2 + ItemInstanceWireBytes);
+static_assert(HeaderSize + 15 + MaxMailWireBytes <= MaxPacket,
+              "One maximum-sized mail row must fit one LAN datagram");
+constexpr size_t MaxSaveSize = MaxSavedPlayers * (LocalGameplay::MaxCompletedQuests * 4 + MaxOwnerProgressBytes + 2048) + 65536 +
+    2 + LocalVendorInventory::MaxDepletedOffers * 28 + LocalMailbox::MaxMessages * MaxMailWireBytes +
+    1 + kLocalMaxPets * PetWireBytes + 2 + kLocalMaxGameObjects*GameObjectWireBytes +
+    1 + kLocalMaxWorldEvents*WorldEventWireBytes;
 constexpr double SendInterval = 0.1, HelloInterval = 0.5, JoinTimeout = 10.0;
 constexpr double PeerTimeout = 8.0, LoadingTimeout = 180.0, SaveInterval = 5.0;
 // A returning owner can replace its own silent session without waiting out a
 // long world-load lease. Active clients continue to refresh at 10 Hz.
 constexpr double ReconnectSilence = 2.0;
-enum class Message : uint8_t { Hello = 1, Welcome, Position, Snapshot, Leave, Reject, Command, ActionResult, Progress, Npcs, History, HistoryAck, Clock, CharacterRequest, CharacterReply, AbortJoin, Auctions, MerchantQuery, MerchantState, PartyState, ChatRequest, ChatResult, ChatDelivery, ChatAck, SocialState, MailQuery, MailState, Pets };
+enum class Message : uint8_t { Hello = 1, Welcome, Position, Snapshot, Leave, Reject, Command, ActionResult, Progress, Npcs, History, HistoryAck, Clock, CharacterRequest, CharacterReply, AbortJoin, Auctions, MerchantQuery, MerchantState, PartyState, ChatRequest, ChatResult, ChatDelivery, ChatAck, SocialState, MailQuery, MailState, Pets, VehicleProjectiles, GameObjects, WorldEvents, ScriptDialogues, VehicleCasts };
 static_assert(HeaderSize + 38 + LocalPartyDirector::MaxMembers * 66 <= MaxPacket,
               "A complete owner party snapshot must fit one datagram");
 constexpr size_t MerchantOffersPerPage = 128, MaxMerchantPages = 2;
 static_assert(HeaderSize + 20 + 5 + kLocalMaxBuyback * 14 + MerchantOffersPerPage * 8 <= MaxPacket,
               "Selected merchant stock and owner buyback must fit one datagram");
-// How many listings fit one datagram. Each is 63 bytes on the wire, and the
-// board is paged the same way the NPC list is, so a full board never depends
-// on IP fragmentation to arrive.
-constexpr size_t AuctionBytes = 4 + 4 + 2 + 4 + 4 + 8 + 17 + 4 + 4 + 8;
-constexpr size_t AuctionsPerPage = 16;
+// How many listings fit one datagram. A listing now carries a complete item
+// instance snapshot; page below the MTU so LAN replication never relies on IP
+// fragmentation.
+constexpr size_t AuctionBytes = 4 + 4 + 2 + ItemInstanceWireBytes + 4 + 4 + 8 + 17 + 4 + 4 + 8;
+constexpr size_t AuctionsPerPage = 12;
 static_assert(HeaderSize + 8 + AuctionsPerPage * AuctionBytes <= MaxPacket,
               "Auction pages must fit one datagram without IP fragmentation");
 constexpr size_t MaxAuctionPages = (LocalBotDirector::MaxAuctions + AuctionsPerPage - 1) / AuctionsPerPage;
@@ -167,6 +238,7 @@ struct Writer {
     void u64(uint64_t n) { u32(n >> 32); u32(n); }
     void f32(float f) { uint32_t n; std::memcpy(&n, &f, sizeof(n)); u32(n); }
     void text(const std::string& s) { const auto n = std::min(size_t(160), s.size()); u8(uint8_t(n)); for (size_t i = 0; i < n; ++i) u8(uint8_t(s[i])); }
+    void text255(const std::string& s) { const auto n=std::min(size_t(255),s.size());u8(uint8_t(n));for(size_t i=0;i<n;++i)u8(uint8_t(s[i])); }
     void name(const std::string& s) {
         for (size_t i = 0; i < 17; ++i) u8(i < s.size() ? uint8_t(s[i]) : 0);
     }
@@ -183,6 +255,7 @@ struct Reader {
     uint64_t u64() { uint64_t hi = u32(); return (hi << 32) | u32(); }
     float f32() { uint32_t n = u32(); float f; std::memcpy(&f, &n, sizeof(f)); return f; }
     std::string text() { const auto n = u8(); if (n > 160) valid = false; std::string s; for (unsigned i = 0; i < n; ++i) s.push_back(char(u8())); return s; }
+    std::string text255() { const auto n=u8();std::string s;s.reserve(n);for(unsigned i=0;i<n;++i)s.push_back(char(u8()));return s; }
     std::string name() {
         std::string result;
         bool ended = false;
@@ -196,6 +269,20 @@ struct Reader {
     }
     bool done() const { return valid && offset == size; }
 };
+
+void writeItemInstance(Writer& w,const LocalItemInstanceState& i) {
+    w.u32(i.instanceFlags);w.u32(i.permanentEnchantId);w.u32(i.temporaryEnchantId);
+    for(auto socket:i.socketEnchantIds)w.u32(socket);
+    w.u32(i.curDurability);w.u32(i.maxDurability);w.u32(uint32_t(i.randomPropertyId));w.u32(i.suffixFactor);w.u8(i.soulbound?1:0);
+}
+LocalItemInstanceState readItemInstance(Reader& r) {
+    LocalItemInstanceState i;i.instanceFlags=r.u32();i.permanentEnchantId=r.u32();i.temporaryEnchantId=r.u32();
+    for(auto& socket:i.socketEnchantIds)socket=r.u32();
+    i.curDurability=r.u32();i.maxDurability=r.u32();i.randomPropertyId=int32_t(r.u32());i.suffixFactor=r.u32();
+    const auto bound=r.u8();if(bound>1)r.valid=false;i.soulbound=bound!=0;
+    if((i.maxDurability && i.curDurability>i.maxDurability) || (!i.maxDurability && i.curDurability))r.valid=false;
+    return i;
+}
 
 bool validBuyback(uint32_t serial, const std::vector<LocalMerchantBuyback>& rows) {
     if (rows.size() > kLocalMaxBuyback) return false;
@@ -296,8 +383,16 @@ bool readDeathState(Reader& r,LocalRealmPlayer& p) {
 }
 // Active riding is session state, sent with wire 14 but never inserted into
 // the save payload. The learned spell already uses the durable knownSpells list.
-void writeNetworkVitals(Writer& w,const LocalRealmPlayer& p) {writeVitals(w,p);w.u32(p.mountSpellId);w.u32(p.formSpellId);writeDeathState(w,p);}
-void readNetworkVitals(Reader& r,LocalRealmPlayer& p) {readVitals(r,p);p.mountSpellId=r.u32();p.formSpellId=r.u32();if(!validLocalFormState(p)||!readDeathState(r,p))r.valid=false;}
+void writeVehicle(Writer& w,const LocalRealmPlayer& p) {
+    w.u64(p.vehicleGuid);w.u32(p.vehicleId);w.u8(p.vehicleSeat);w.u8(p.vehicleControl?1:0);
+}
+bool readVehicle(Reader& r,LocalRealmPlayer& p) {
+    p.vehicleGuid=r.u64();p.vehicleId=r.u32();p.vehicleSeat=r.u8();const auto control=r.u8();p.vehicleControl=control!=0;
+    return r.valid && control<=1 && validLocalVehicleState(p);
+}
+void writeNetworkVitals(Writer& w,const LocalRealmPlayer& p) {writeVitals(w,p);w.u32(p.mountSpellId);w.u32(p.formSpellId);writeDeathState(w,p);writeVehicle(w,p);}
+void readNetworkVitals(Reader& r,LocalRealmPlayer& p) {readVitals(r,p);p.mountSpellId=r.u32();p.formSpellId=r.u32();if(!validLocalFormState(p)||!readDeathState(r,p)||!readVehicle(r,p))r.valid=false;}
+
 // P03/D2: what an owner projects. Save29 state, written with the character in
 // exactly the same shape as its timed auras. `generation` is authority-only
 // identity of one activation and is never in the payload; a restored emitter is
@@ -343,6 +438,29 @@ void writeAreaAuraViews(Writer& w, const LocalRealmPlayer& p) {
         w.u32(a.amount); w.u8(a.effectMask); w.u8(a.effective ? 1 : 0);
     }
 }
+// 2.40 (LAN109): the owner's gossip page as the authority holds it. The
+// option ids alone travel; the guest resolves their texts from the same
+// catalog (the content fingerprint guarantees the same gossip packs).
+void writeGossip(Writer& w, const LocalRealmPlayer& p) {
+    const auto& g = p.gossip;
+    w.u64(g.npcGuid); w.u32(g.menuId); w.u32(g.textId); w.u32(g.revision); w.u32(g.offeredQuestId); w.u8(g.questMenu ? 1 : 0);
+    const auto count = std::min(g.options.size(), kLocalMaxGossipOptions); w.u8(uint8_t(count));
+    for (size_t i = 0; i < count; ++i) { const auto& o = g.options[i]; w.u16(o.id); w.u8(o.icon); w.u8(o.type); w.u32(o.actionMenuId); w.u32(o.boxMoney); }
+}
+bool readGossip(Reader& r, LocalRealmPlayer& p) {
+    LocalGossipState g;
+    g.npcGuid = r.u64(); g.menuId = r.u32(); g.textId = r.u32(); g.revision = r.u32(); g.offeredQuestId = r.u32();
+    const auto questMenu = r.u8(); if (questMenu > 1) return false; g.questMenu = questMenu != 0;
+    const auto count = r.u8(); if (count > kLocalMaxGossipOptions) return false;
+    for (unsigned i = 0; i < count; ++i) {
+        LocalGossipShownOption o; o.id = r.u16(); o.icon = r.u8(); o.type = r.u8(); o.actionMenuId = r.u32(); o.boxMoney = r.u32();
+        if (i && g.options.back().id >= o.id) return false;
+        g.options.push_back(o);
+    }
+    if (!r.valid) return false;
+    if (!g.npcGuid) { g.menuId = 0; g.options.clear(); g.questMenu = false; g.offeredQuestId = 0; }
+    p.gossip = std::move(g); return true;
+}
 bool readAreaAuraViews(Reader& r, LocalRealmPlayer& p) {
     const auto count = r.u8(); if (count > kLocalMaxAreaAuraApplications) return false;
     std::vector<LocalAreaAuraApplication> incoming;
@@ -359,11 +477,38 @@ bool readAreaAuraViews(Reader& r, LocalRealmPlayer& p) {
     if (!r.valid || !validLocalAreaAuraApplications(incoming)) return false;
     p.areaAuras = std::move(incoming); return true;
 }
+void writeGameObjectState(Writer& w,const LocalGameObjectState& object) {
+    w.u32(object.id);w.u32(object.revision);w.u8(object.status);w.u32(object.remainingMs);
+}
+LocalGameObjectState readGameObjectState(Reader& r) {
+    LocalGameObjectState object;
+    object.id=r.u32();object.revision=r.u32();object.status=r.u8();object.remainingMs=r.u32();
+    return object;
+}
+void writeWorldEventState(Writer& w,const LocalWorldEventState& event) {
+    w.u32(event.id);w.u32(event.revision);w.u32(event.remainingMs);w.u32(event.cycle);
+    w.u8(uint8_t((event.enabled?1:0)|(event.active?2:0)));
+}
+LocalWorldEventState readWorldEventState(Reader& r) {
+    LocalWorldEventState event;
+    event.id=r.u32();event.revision=r.u32();event.remainingMs=r.u32();event.cycle=r.u32();
+    const auto flags=r.u8();if(flags&~3u)r.valid=false;
+    event.enabled=(flags&1u)!=0;event.active=(flags&2u)!=0;
+    return event;
+}
+void writePendingScriptKill(Writer& w,const LocalPendingScriptKill& kill) {
+    w.u64(kill.playerGuid);w.u32(kill.npcEntry);w.u64(kill.xp);w.u32(kill.count);
+}
+LocalPendingScriptKill readPendingScriptKill(Reader& r) {
+    LocalPendingScriptKill kill;
+    kill.playerGuid=r.u64();kill.npcEntry=r.u32();kill.xp=r.u64();kill.count=r.u32();
+    return kill;
+}
 void writeProgress(Writer& w, const LocalRealmPlayer& p, uint8_t version = SaveVersion) {
     writeVitals(w, p); w.u32(p.xp); w.u32(p.xpToLevel); w.u32(p.money); w.u8(p.level);
     w.u8(p.gameplayInitialized ? 1 : 0);
     w.u8(uint8_t(p.inventory.size()));
-    for (const auto& item : p.inventory) { w.u32(item.itemId); w.u16(item.count); }
+    for (const auto& item : p.inventory) { w.u32(item.itemId); w.u16(item.count); if(version>=33)writeItemInstance(w,item.instance); }
     w.u8(uint8_t(p.quests.size()));
     for (const auto& q : p.quests) {
         w.u32(q.id); w.u8(uint8_t(q.status)); w.u8(uint8_t(q.progress.size()));
@@ -376,10 +521,11 @@ void writeProgress(Writer& w, const LocalRealmPlayer& p, uint8_t version = SaveV
     // Save version 7 / wire version 10.
     w.u8(uint8_t(p.professions.size()));
     for (const auto& skill : p.professions) { w.u16(skill.skillId); w.u16(skill.current); w.u16(skill.max); }
-    // Recipes travel with the professions that taught them. They were checked
-    // against MaxRecipes on load and never written by anything, so a learned
-    // recipe survived exactly as long as the session it was learned in.
-    w.u8(uint8_t(p.knownRecipes.size()));
+    // Save35 widens the learned-recipe count from u8 to u16. Production always
+    // writes the wide form; the narrow branch exists only for migration tests
+    // and old save-layout fixtures. LAN90 uses the same owner-progress codec.
+    if(version>=35) w.u16(uint16_t(p.knownRecipes.size()));
+    else w.u8(uint8_t(p.knownRecipes.size()));
     for (auto spellId : p.knownRecipes) w.u32(spellId);
     w.u8(p.hasHome ? 1 : 0); w.u32(p.homeMapId);
     w.f32(p.homeX); w.f32(p.homeY); w.f32(p.homeZ); w.f32(p.homeOrientation);
@@ -388,7 +534,7 @@ void writeProgress(Writer& w, const LocalRealmPlayer& p, uint8_t version = SaveV
     w.f32(p.transportOffsetZ); w.f32(p.transportLastYaw);
     for(const auto remaining:p.runeCooldownMs) w.u16(remaining);
     if (version >= 12) {
-        for (const auto& slot : p.bank) { w.u32(slot.itemId); w.u16(slot.count); }
+        for (const auto& slot : p.bank) { w.u32(slot.itemId); w.u16(slot.count); if(version>=33)writeItemInstance(w,slot.instance); }
         for (const auto& skill : p.professions) w.u16(skill.progress);
     }
     if(version>=15){const auto slots=localInventoryLayout(p);for(size_t i=0;i<p.inventory.size();++i)w.u8(slots[i]);}
@@ -410,6 +556,25 @@ void writeProgress(Writer& w, const LocalRealmPlayer& p, uint8_t version = SaveV
     // unchanged and such a file simply has no emitter block to read.
     if(version>=29)writeAreaEmitters(w,p);
     if(version>=32)writeDeathState(w,p);
+    if(version>=34){
+        w.u8(uint8_t(p.reputations.size()));
+        for(const auto& rep:p.reputations){w.u32(rep.factionId);w.u32(uint32_t(rep.standing));}
+    }
+    if(version>=36){
+        w.u32(p.phaseMask);w.u8(uint8_t(p.scriptStates.size()));
+        for(const auto& state:p.scriptStates){w.u32(state.scriptId);w.u32(uint32_t(state.value));}
+    }
+    if(version>=37){
+        w.u8(uint8_t(p.scriptTimers.size()));
+        for(const auto& timer:p.scriptTimers){w.u32(timer.timerId);w.u32(timer.remainingMs);}
+    }
+    if(version>=38)w.u32(p.vehicleGuid?p.vehicleId:p.vehicleRecoveryId);
+    if(version>=39) {
+        w.u8(uint8_t(p.scriptAreaIds.size()));for(auto id:p.scriptAreaIds)w.u32(id);
+        w.u32(p.scriptAreaInstanceId);
+    }
+    if(version>=40){const auto& e=p.escort;w.u32(e.routeId);w.u32(e.nextPoint);w.u32(e.waitMs);w.u32(e.remainingMs);w.f32(e.x);w.f32(e.y);w.f32(e.z);}
+    if(version>=41)w.u32(p.escort.guideHealth);
 }
 // CharSections indices retain their full uint8 domain; only the model selector
 // is a boolean. Asset-specific option ranges are resolved by the character UI.
@@ -430,8 +595,8 @@ bool readProgress(Reader& r, LocalRealmPlayer& p, uint8_t version = SaveVersion)
     uint8_t count = r.u8(); if (count > LocalGameplay::MaxInventory) return false;
     p.inventory.clear();
     for (unsigned i = 0; i < count; ++i) {
-        LocalItemStack s; s.itemId = r.u32(); s.count = r.u16();
-        if (!s.itemId || !s.count) return false;
+        LocalItemStack s; s.itemId = r.u32(); s.count = r.u16(); if(version>=33)s.instance=readItemInstance(r);
+        if (!s.itemId || !s.count || !validLocalItemInstance(s)) return false;
         p.inventory.push_back(s);
     }
     count = r.u8(); if (count > LocalGameplay::MaxQuests) return false; p.quests.clear();
@@ -476,9 +641,10 @@ bool readProgress(Reader& r, LocalRealmPlayer& p, uint8_t version = SaveVersion)
             for (const auto& other : p.professions) if (other.skillId == skill.skillId) return false;
             p.professions.push_back(skill);
         }
-        count = r.u8(); if (count > LocalGameplay::MaxRecipes) return false;
-        p.knownRecipes.clear();
-        for (unsigned i = 0; i < count; ++i) {
+        const uint16_t recipeCount = version>=35 ? r.u16() : r.u8();
+        if (recipeCount > LocalGameplay::MaxRecipes) return false;
+        p.knownRecipes.clear(); p.knownRecipes.reserve(recipeCount);
+        for (unsigned i = 0; i < recipeCount; ++i) {
             const auto spellId = r.u32();
             if (!spellId || std::find(p.knownRecipes.begin(), p.knownRecipes.end(), spellId) !=
                             p.knownRecipes.end()) return false;
@@ -506,8 +672,8 @@ bool readProgress(Reader& r, LocalRealmPlayer& p, uint8_t version = SaveVersion)
     p.bank.fill({});
     if (version >= 12) {
         for (auto& slot : p.bank) {
-            slot.itemId = r.u32(); slot.count = r.u16();
-            if ((slot.itemId == 0) != (slot.count == 0)) return false;
+            slot.itemId = r.u32(); slot.count = r.u16(); if(version>=33)slot.instance=readItemInstance(r);
+            if (!validLocalItemInstance(slot)) return false;
         }
         for (auto& skill : p.professions) { skill.progress = r.u16(); if (skill.progress >= 1000) return false; }
     }
@@ -528,7 +694,7 @@ bool readProgress(Reader& r, LocalRealmPlayer& p, uint8_t version = SaveVersion)
                 !validPosition(f.originMap,f.originX,f.originY,f.originZ,f.originOrientation))return false;
         }
     }
-    p.healingAuras.clear();
+    p.healingAuras.clear();p.harmfulAuras.clear();
     p.statAuras.clear();
     if(version>=18){const auto count=r.u8();if(count>kLocalMaxStatAuras)return false;
         for(unsigned i=0;i<count;++i){LocalStatAura a;a.spellId=r.u32();a.remainingMs=r.u32();a.mapId=r.u32();a.instanceId=r.u32();if(version>=19){a.casterGuid=r.u64();a.absorbRemaining=r.u32();}if(version>=20)a.stacks=r.u8();if(version>=21){a.procCharges=r.u8();a.procCooldownMs=r.u32();a.manaRegenRemainder=r.u32();}if(version>=23){const auto has=r.u8();if(has>1)return false;a.hasProcAmountSnapshot=has!=0;a.procAmountSnapshot=r.u32();}if(version>=26)a.buffArmorSnapshot=r.u32();if(version>=27)a.reflectChanceBasisPointsSnapshot=r.u16();p.statAuras.push_back(a);}
@@ -553,15 +719,69 @@ bool readProgress(Reader& r, LocalRealmPlayer& p, uint8_t version = SaveVersion)
     if(version>=29){if(!readAreaEmitters(r,p))return false;}
     else p.areaEmitters.clear();
     if(version>=32){if(!readDeathState(r,p))return false;}else{p.ghost=false;p.corpseValid=false;}
+    p.reputations.clear();
+    p.migrateLegacyReputation = version < 34;
+    if(version>=34){
+        const auto reputationCount=r.u8();if(reputationCount>kLocalMaxReputations)return false;
+        p.reputations.reserve(reputationCount);
+        for(unsigned i=0;i<reputationCount;++i){
+            LocalReputationEntry rep;rep.factionId=r.u32();rep.standing=int32_t(r.u32());p.reputations.push_back(rep);
+        }
+        if(!validLocalReputations(p))return false;
+    }
+    p.phaseMask=1;p.scriptStates.clear();p.scriptTimers.clear();
+    if(version>=36){
+        p.phaseMask=r.u32();const auto scriptCount=r.u8();if(!p.phaseMask||scriptCount>kLocalMaxScriptStates)return false;
+        p.scriptStates.reserve(scriptCount);
+        for(unsigned i=0;i<scriptCount;++i){LocalScriptState state;state.scriptId=r.u32();state.value=int32_t(r.u32());p.scriptStates.push_back(state);}
+        if(!validLocalScriptStates(p.scriptStates))return false;
+    }
+    if(version>=37){
+        const auto timerCount=r.u8();if(timerCount>kLocalMaxScriptTimers)return false;
+        p.scriptTimers.reserve(timerCount);
+        for(unsigned i=0;i<timerCount;++i){LocalScriptTimer timer;timer.timerId=r.u32();timer.remainingMs=r.u32();p.scriptTimers.push_back(timer);}
+        if(!validLocalScriptTimers(p.scriptTimers))return false;
+    }
+    p.vehicleRecoveryId=version>=38?r.u32():0;
+    p.scriptAreaIds.clear();p.scriptAreaInstanceId=0;
+    if(version>=39) {
+        const auto count=r.u8();if(count>kLocalMaxScriptAreas)return false;
+        for(unsigned i=0;i<count;++i)p.scriptAreaIds.push_back(r.u32());
+        p.scriptAreaInstanceId=r.u32();
+        if(!validLocalScriptAreaIds(p.scriptAreaIds) || p.scriptAreaInstanceId>65535 ||
+           (p.scriptAreaIds.empty() && p.scriptAreaInstanceId))return false;
+    }
+    p.escort={};
+    if(version>=40){auto& e=p.escort;e.routeId=r.u32();e.nextPoint=r.u32();e.waitMs=r.u32();e.remainingMs=r.u32();e.x=r.f32();e.y=r.f32();e.z=r.f32();if(version>=41)e.guideHealth=r.u32();if(!validLocalEscortProgress(e))return false;}
     return r.valid;
 }
 void writeHealingViews(Writer& w,const LocalRealmPlayer& p){
     w.u8(uint8_t(p.healingAuras.size()));for(const auto& a:p.healingAuras){w.u32(a.spellId);w.u64(a.casterGuid);w.u32(a.remainingMs);w.u32(a.durationMs);w.u8(a.stacks);}
+    // LAN103: creature auras on this character, same row shape; LAN104 adds the
+    // resolved armor modifier and slow percentage the guest's own client applies,
+    // LAN105 the armor percentage, LAN106 the stun/root the guest's client obeys.
+    // LAN107 appends the remaining amounts (attack power, damage done and
+    // taken, healing and haste percentages with their school), the
+    // break-on-damage flag, then the knockback and the school lockouts.
+    w.u8(uint8_t(p.harmfulAuras.size()));for(const auto& a:p.harmfulAuras){w.u32(a.spellId);w.u64(a.casterGuid);w.u32(a.remainingMs);w.u32(a.durationMs);w.u8(a.stacks);w.u32(uint32_t(a.armorModifier));w.u8(a.slowPercent);w.u8(uint8_t(a.armorPercent));w.u8(a.controlKind);
+        w.u32(uint32_t(a.attackPower));w.u32(uint32_t(a.damageDoneFlat));w.u32(uint32_t(a.damageTakenFlat));w.u16(uint16_t(a.damageDonePct));w.u16(uint16_t(a.damageTakenPct));w.u16(uint16_t(a.healingPct));w.u16(uint16_t(a.hastePct));w.u8(a.schoolMask);w.u8(a.breakOnDamage?1:0);
+        // LAN108
+        w.u16(uint16_t(a.castSpeedPct));w.u8(uint8_t(a.hitChancePct));w.u8(uint8_t(a.dodgePct));w.u8(uint8_t(a.parryPct));w.u8(uint8_t(a.blockPct));w.u32(uint32_t(a.resistance));w.u8(a.resistanceSchool);w.u8(a.disarmed?1:0);}
+    w.u32(p.knockbackSequence);w.f32(p.knockbackCos);w.f32(p.knockbackSin);w.f32(p.knockbackSpeedXY);w.f32(p.knockbackSpeedZ);
+    w.u8(uint8_t(p.schoolLockouts.size()));for(const auto& l:p.schoolLockouts){w.u8(l.schoolMask);w.u32(l.remainingMs);}
 }
 bool readHealingViews(Reader& r,LocalRealmPlayer& p){
     const auto count=r.u8();if(count>kLocalMaxHealingAuraViews)return false;
     p.healingAuras.clear();for(unsigned i=0;i<count;++i){LocalHealingAuraView a;a.spellId=r.u32();a.casterGuid=r.u64();a.remainingMs=r.u32();a.durationMs=r.u32();a.stacks=r.u8();p.healingAuras.push_back(a);}
-    return r.valid&&validLocalHealingAuraViews(p);
+    const auto harmful=r.u8();if(harmful>kLocalMaxHealingAuraViews)return false;
+    p.harmfulAuras.clear();for(unsigned i=0;i<harmful;++i){LocalHealingAuraView a;a.spellId=r.u32();a.casterGuid=r.u64();a.remainingMs=r.u32();a.durationMs=r.u32();a.stacks=r.u8();a.armorModifier=int32_t(r.u32());a.slowPercent=r.u8();a.armorPercent=int8_t(r.u8());a.controlKind=r.u8();
+        a.attackPower=int32_t(r.u32());a.damageDoneFlat=int32_t(r.u32());a.damageTakenFlat=int32_t(r.u32());a.damageDonePct=int16_t(r.u16());a.damageTakenPct=int16_t(r.u16());a.healingPct=int16_t(r.u16());a.hastePct=int16_t(r.u16());a.schoolMask=r.u8();const auto brk=r.u8();if(brk>1)r.valid=false;a.breakOnDamage=brk!=0;
+        a.castSpeedPct=int16_t(r.u16());a.hitChancePct=int8_t(r.u8());a.dodgePct=int8_t(r.u8());a.parryPct=int8_t(r.u8());a.blockPct=int8_t(r.u8());a.resistance=int32_t(r.u32());a.resistanceSchool=r.u8();const auto disarmed=r.u8();if(disarmed>1)r.valid=false;a.disarmed=disarmed!=0;
+        p.harmfulAuras.push_back(a);}
+    p.knockbackSequence=r.u32();p.knockbackCos=r.f32();p.knockbackSin=r.f32();p.knockbackSpeedXY=r.f32();p.knockbackSpeedZ=r.f32();
+    const auto lockouts=r.u8();if(lockouts>kLocalMaxSchoolLockouts)return false;
+    p.schoolLockouts.clear();for(unsigned i=0;i<lockouts;++i){LocalSchoolLockout l;l.schoolMask=r.u8();l.remainingMs=r.u32();p.schoolLockouts.push_back(l);}
+    return r.valid&&validLocalHealingAuraViews(p)&&validLocalHarmfulAuraViews(p);
 }
 bool validHistory(const std::vector<uint32_t>& ids) {
     if (ids.size() > LocalGameplay::MaxCompletedQuests) return false;
@@ -604,7 +824,7 @@ bool readCast(Reader& r, LocalRealmPlayer& p) {
         if(!r.valid||outcome>uint8_t(LocalMeleeOutcome::Deflect)||off>1||healing>1||v.amount>1000000||v.blocked>1000000||v.resisted>1000000)return false;
         v.outcome=LocalMeleeOutcome(outcome);v.offHand=off;v.healing=healing;
         if(!v.serial){if(populated||v.spell||v.amount||v.blocked||v.resisted||v.source||v.target||outcome||off||healing)return false;}
-        else {if(!v.source||!v.target||(!healing&&v.source==v.target)||(v.source!=p.guid&&v.target!=p.guid)||
+        else {if(!v.source||!v.target||(!healing&&v.source==v.target)||(v.source!=p.guid&&v.target!=p.guid&&(!p.vehicleGuid || (v.source!=p.vehicleGuid && v.target!=p.vehicleGuid)))||
                  (populated&&int32_t(v.serial-p.meleeSerial)<=0))return false;
             // Every damage-nullifying outcome carries no amount and no block.
             if(localOutcomeNullifiesDamage(LocalMeleeOutcome(outcome))&&(v.amount||v.blocked))return false;
@@ -632,7 +852,7 @@ enum NpcWireFlag : uint16_t {
     NpcDead = 1, NpcLootable = 2, NpcHostile = 4, NpcAggressive = 8,
     NpcFlightMaster = 16, NpcAuctioneer = 32, NpcVendor = 64, NpcRepairer = 128,
     NpcClassTrainer = 256, NpcProfessionTrainer = 512, NpcInnkeeper = 1024,
-    NpcBanker = 2048, NpcFlagMask = 4095,
+    NpcBanker = 2048, NpcVehicleCombat = 4096, NpcFlagMask = 8191,
 };
 void writeNpc(Writer& w, const LocalRealmNpc& n) {
     w.u64(n.guid); w.u64(n.targetGuid); w.u64(n.lootOwner); w.u32(n.entry); w.u32(n.mapId);
@@ -648,7 +868,7 @@ void writeNpc(Writer& w, const LocalRealmNpc& n) {
                    (n.vendor ? NpcVendor : 0) | (n.repairer ? NpcRepairer : 0) |
                    (n.classTrainer ? NpcClassTrainer : 0) |
                    (n.banker ? NpcBanker : 0) | (n.professionTrainer ? NpcProfessionTrainer : 0) |
-                   (n.innkeeper ? NpcInnkeeper : 0)));
+                   (n.innkeeper ? NpcInnkeeper : 0) | (n.viewerVehicleCombat ? NpcVehicleCombat : 0)));
     w.u32(n.instanceId); w.u32(n.taxiNodeId);
     // What the merchant carries and what the trainer teaches. A guest needs
     // both to draw the shop and the training list from its own content copy
@@ -669,6 +889,23 @@ void writeNpc(Writer& w, const LocalRealmNpc& n) {
     // casterRevision is authority-only and is deliberately not replicated.
     w.u8(uint8_t(n.controls.size()));
     for(const auto& a:n.controls){w.u32(a.spellId);w.u32(a.remainingMs);w.u64(a.casterGuid);w.u8(a.kind);}
+    w.u32(n.vehicleId);w.u8(n.vehicleSeatCount);w.u8(n.vehicleControllerSeat);
+    w.u32(n.vehiclePower);w.u32(n.vehicleGlobalCooldownMs);
+    for(auto cooldown:n.vehicleCooldownMs)w.u32(cooldown);
+    // Two signed normalized 12-bit angles per seat. Keep the two-NPC
+    // datagram below 1400 bytes instead of doubling the number of packets.
+    for(const auto& aim:n.vehicleAim) {
+        const auto encode=[](float value,float maximum)->uint32_t {
+            if(!std::isfinite(value) || std::abs(value)>maximum)return 4095;
+            return uint32_t(std::lround(value/maximum*2047.f)+2047);
+        };
+        const auto packed=encode(aim[0],kLocalVehiclePi)|(encode(aim[1],1.4f)<<12);
+        w.u8(uint8_t(packed));w.u8(uint8_t(packed>>8));w.u8(uint8_t(packed>>16));
+    }
+    // LAN107: the creature's own buffs (SmartAI self-casts, allies' heals over
+    // time) as the guest's target frame draws them; amounts stay on the host.
+    w.u8(uint8_t(std::min<size_t>(n.npcBuffs.size(),kLocalMaxNpcBuffs)));
+    for(size_t i=0;i<n.npcBuffs.size()&&i<kLocalMaxNpcBuffs;++i){const auto& b=n.npcBuffs[i];w.u32(b.spellId);w.u32(b.remainingMs);w.u32(b.durationMs);w.u64(b.casterGuid);w.u8(b.stacks);w.u8(b.indefinite?1:0);}
 }
 LocalRealmNpc readNpc(Reader& r, const LocalWorldContent& c) {
     LocalRealmNpc n; n.guid = r.u64(); n.targetGuid = r.u64(); n.lootOwner = r.u64(); n.entry = r.u32(); n.mapId = r.u32();
@@ -709,6 +946,34 @@ LocalRealmNpc readNpc(Reader& r, const LocalWorldContent& c) {
         LocalNpcControl a;a.spellId=r.u32();a.remainingMs=r.u32();a.casterGuid=r.u64();a.kind=r.u8();
         n.controls.push_back(a);
     }
+    n.vehicleId=r.u32();n.vehicleSeatCount=r.u8();n.vehicleControllerSeat=r.u8();
+    n.vehiclePower=r.u32();n.vehicleGlobalCooldownMs=r.u32();
+    for(auto& cooldown:n.vehicleCooldownMs)cooldown=r.u32();
+    for(auto& aim:n.vehicleAim) {
+        const uint32_t a=r.u8(),b=r.u8(),c=r.u8(),packed=a|(b<<8)|(c<<16);
+        const uint32_t yaw=packed&4095,pitch=(packed>>12)&4095;
+        if(yaw==4095 || pitch==4095)r.valid=false;
+        aim={float(int32_t(yaw)-2047)*(kLocalVehiclePi/2047.f),float(int32_t(pitch)-2047)*(1.4f/2047.f)};
+    }
+    const auto buffCount=r.u8();if(buffCount>kLocalMaxNpcBuffs){r.valid=false;return n;}
+    for(unsigned i=0;i<buffCount;++i){
+        LocalNpcBuff b;b.spellId=r.u32();b.remainingMs=r.u32();b.durationMs=r.u32();b.casterGuid=r.u64();b.stacks=r.u8();const auto indefinite=r.u8();
+        if(indefinite>1||!b.spellId||!b.stacks||(!indefinite&&(!b.remainingMs||b.remainingMs>b.durationMs||b.durationMs>3600000))||(indefinite&&(b.remainingMs||b.durationMs)))r.valid=false;
+        b.indefinite=indefinite!=0;n.npcBuffs.push_back(b);
+    }
+    n.viewerVehicleCombat=(flags&NpcVehicleCombat)!=0;
+    const auto* kit=c.vehicleKit(n.vehicleId);
+    if(n.vehiclePower>(kit?kit->maxPower:0) || n.vehicleGlobalCooldownMs>(kit?1000u:0u))r.valid=false;
+    for(size_t i=0;i<kLocalVehicleAbilities;++i)
+        if(n.vehicleCooldownMs[i]>(kit?kit->abilities[i].cooldownMs:0))r.valid=false;
+    for(size_t i=0;i<n.vehicleAim.size();++i) {
+        auto& a=n.vehicleAim[i];
+        if(!std::isfinite(a[0]) || !std::isfinite(a[1]) || std::abs(a[0])>kLocalVehiclePi ||
+           (kit && i<n.vehicleSeatCount ? (a[1]<kit->minPitch-.00035f || a[1]>kit->maxPitch+.00035f) : (a[0]!=0 || a[1]!=0)))r.valid=false;
+        if(kit && i<n.vehicleSeatCount)a[1]=std::clamp(a[1],kit->minPitch,kit->maxPitch);
+    }
+    if(n.vehicleSeatCount>8 || (n.vehicleId==0)!=(n.vehicleSeatCount==0) ||
+       (n.vehicleId ? n.vehicleControllerSeat>=n.vehicleSeatCount : n.vehicleControllerSeat!=0))r.valid=false;
     if(!validLocalNpcSnares(n,c)||!validLocalNpcDamageAuras(n,c)||!validLocalNpcStormstrikeAuras(n,c)||
        !validLocalNpcControls(n,c))r.valid=false;
     const auto* def = c.npc(n.entry);
@@ -731,7 +996,41 @@ LocalRealmNpc readNpc(Reader& r, const LocalWorldContent& c) {
         (n.transportEntry && (n.instanceId || n.transportEntry>10000000)) ||
         (!n.transportEntry && (n.transportX || n.transportY || n.transportZ || n.transportOrientation))) r.valid = false;
     if (def) { n.displayId = def->displayId; n.name = def->name; n.questGiver = def->questGiver; }
+    n.spawnId=uint32_t(n.guid);
+    if(n.vehicleId)for(const auto& spawn:c.spawns)if(spawn.id==n.spawnId && spawn.entry==n.entry && spawn.vehicleId==n.vehicleId) {
+        n.vehicleSeatOffsets=spawn.vehicleSeatOffsets;break;
+    }
     return n;
+}
+void writeVehicleProjectile(Writer& w,const LocalVehicleProjectile& p) {
+    w.u32(p.id);w.u32(p.spellId);w.u32(p.remainingMs);w.u64(p.sourceGuid);w.u64(p.ownerGuid);
+    w.f32(p.x);w.f32(p.y);w.f32(p.z);w.f32(p.vx);w.f32(p.vy);w.f32(p.vz);w.f32(p.gravity);w.u32(p.phaseMask);
+}
+LocalVehicleProjectile readVehicleProjectile(Reader& r,uint32_t map,uint32_t instance,const LocalWorldContent& c) {
+    LocalVehicleProjectile p;p.mapId=map;p.instanceId=instance;
+    p.id=r.u32();p.spellId=r.u32();p.remainingMs=r.u32();p.sourceGuid=r.u64();p.ownerGuid=r.u64();
+    p.x=r.f32();p.y=r.f32();p.z=r.f32();p.vx=r.f32();p.vy=r.f32();p.vz=r.f32();p.gravity=r.f32();p.phaseMask=r.u32();
+    const auto spawn=std::find_if(c.spawns.begin(),c.spawns.end(),[&](const auto& s){return s.id==uint32_t(p.sourceGuid) && s.mapId==map && s.vehicleId;});
+    const auto* kit=spawn!=c.spawns.end()?c.vehicleKit(spawn->vehicleId):nullptr;
+    const LocalVehicleAbility* ability=nullptr;
+    if(kit)for(const auto& a:kit->abilities)if(a.spellId==p.spellId && a.projectileSpeed>0){ability=&a;break;}
+    const bool owner=p.ownerGuid<=0x0000ffffffffffffULL || (p.ownerGuid&0xffff000000000000ULL)==kLocalBotGuidPrefix;
+    if(!validLocalVehicleProjectileView(p) || !owner || !ability || !c.spell(p.spellId) ||
+       p.remainingMs>(ability?ability->projectileLifetimeMs:0) || p.gravity!=(ability?ability->projectileGravity:0))r.valid=false;
+    return p;
+}
+void writeVehicleCast(Writer& w,const LocalVehicleCast& cast) {
+    w.u64(cast.sourceGuid);w.u64(cast.ownerGuid);w.u64(cast.targetGuid);
+    w.u32(cast.spellId);w.u32(cast.remainingMs);w.u32(cast.totalMs);w.u32(cast.mapId);w.u32(cast.instanceId);w.u32(cast.phaseMask);
+    w.u8(cast.slot);w.u8(cast.seat);
+}
+LocalVehicleCast readVehicleCast(Reader& r,const LocalWorldContent& content) {
+    LocalVehicleCast cast;
+    cast.sourceGuid=r.u64();cast.ownerGuid=r.u64();cast.targetGuid=r.u64();
+    cast.spellId=r.u32();cast.remainingMs=r.u32();cast.totalMs=r.u32();cast.mapId=r.u32();cast.instanceId=r.u32();cast.phaseMask=r.u32();
+    cast.slot=r.u8();cast.seat=r.u8();
+    if(!validLocalVehicleCastView(cast,content))r.valid=false;
+    return cast;
 }
 /// One owned creature, in the single layout the save and the pet deck share.
 /// summonEpoch is deliberately absent: it identifies a live summon to the
@@ -807,20 +1106,22 @@ LocalRealmPet readPet(Reader& r, unsigned layoutVersion = SaveVersion) {
     return p;
 }
 void writeAuction(Writer& w, const LocalAuction& a) {
-    w.u32(a.id); w.u32(a.itemId); w.u16(a.count); w.u32(a.bid); w.u32(a.buyout);
+    w.u32(a.id); w.u32(a.itemId); w.u16(a.count); writeItemInstance(w,a.instance); w.u32(a.bid); w.u32(a.buyout);
     w.u64(a.seller); w.name(a.sellerName); w.f32(a.remainingSeconds);
     w.u32(a.highestBid); w.u64(a.highestBidder);
 }
-LocalAuction readAuction(Reader& r, const LocalWorldContent& c, bool requireKnownItem = true) {
+LocalAuction readAuction(Reader& r, const LocalWorldContent& c, bool requireKnownItem = true, bool withInstance = true) {
     LocalAuction a;
-    a.id = r.u32(); a.itemId = r.u32(); a.count = r.u16(); a.bid = r.u32(); a.buyout = r.u32();
+    a.id = r.u32(); a.itemId = r.u32(); a.count = r.u16(); if(withInstance)a.instance=readItemInstance(r); a.bid = r.u32(); a.buyout = r.u32();
     a.seller = r.u64(); a.sellerName = r.name(); a.remainingSeconds = r.f32();
     a.highestBid = r.u32(); a.highestBidder = r.u64();
     // Network traffic and a fully started realm must reference a real item. A
     // character-roster scan, however, intentionally runs without loading the
     // world catalog. Do not make an unrelated auction listing hide every saved
     // character merely because that lightweight scan cannot resolve item ids.
-    if (!a.id || !a.itemId || !a.count || !a.bid || !a.seller || a.sellerName.empty() ||
+    LocalItemStack persisted{a.itemId,a.count,255,a.instance};
+    if (!a.id || !a.itemId || !a.count || !a.bid || !a.seller || a.sellerName.empty() || !validLocalItemInstance(persisted) ||
+        a.instance.soulbound || (a.instance.instanceFlags&1u) ||
         (requireKnownItem && !c.item(a.itemId)) ||
         a.bid > 1000000000u || a.buyout > 1000000000u || a.highestBid > 1000000000u ||
         (a.buyout && (a.bid > a.buyout || a.highestBid >= a.buyout)) ||
@@ -833,12 +1134,12 @@ bool mailActionKind(LocalAction action) {return action>=LocalAction::MailSend &&
 void writeMail(Writer& w,const LocalMail& m) {
     w.u32(m.id);w.u64(m.sender);w.u64(m.recipient);w.name(m.senderName);w.text(m.subject);w.text(m.body);
     w.u32(m.money);w.u32(m.cod);w.u8(m.read | (m.returned<<1) | (m.system<<2));
-    for(const auto& item:m.items){w.u32(item.itemId);w.u16(item.count);}
+    for(const auto& item:m.items){w.u32(item.itemId);w.u16(item.count);writeItemInstance(w,item.instance);}
 }
-LocalMail readMail(Reader& r) {
+LocalMail readMail(Reader& r,bool withInstance=true) {
     LocalMail m;m.id=r.u32();m.sender=r.u64();m.recipient=r.u64();m.senderName=r.name();m.subject=r.text();m.body=r.text();
     m.money=r.u32();m.cod=r.u32();const auto flags=r.u8();m.read=flags&1;m.returned=flags&2;m.system=flags&4;if(flags>7)r.valid=false;
-    for(auto& item:m.items){item.itemId=r.u32();item.count=r.u16();}
+    for(auto& item:m.items){item.itemId=r.u32();item.count=r.u16();if(withInstance)item.instance=readItemInstance(r);if(!validLocalItemInstance(item))r.valid=false;}
     if(!localMailTextValid(m.subject,64) || !localMailTextValid(m.body,160))r.valid=false;
     return m;
 }
@@ -1039,9 +1340,34 @@ struct LocalRealm::Impl {
     // every page of a tick has arrived: a half-received roster would make a
     // summon flicker in and out beside its owner.
     uint32_t petTick = 0, petSequence = 0, collectingPets = 0;
+    uint32_t projectileTick=0,projectileSequence=0;
     uint8_t petParts = 0;
     std::array<std::vector<LocalRealmPet>, MaxPetPages> petChunks;
     std::array<bool, MaxPetPages> petReceived{};
+    uint32_t gameObjectTick=0,gameObjectSequence=0,collectingGameObjects=0;
+    uint32_t gameObjectMap=0,gameObjectInstance=0,gameObjectPositionRevision=0,gameObjectPhase=0;
+    bool gameObjectsReady=false;
+    uint8_t gameObjectParts=0;
+    std::vector<LocalGameObjectState> remoteGameObjects;
+    std::array<std::vector<LocalGameObjectState>,MaxGameObjectPages> gameObjectChunks;
+    std::array<bool,MaxGameObjectPages> gameObjectReceived{};
+    // Save42/LAN100: one authority lifecycle per authored world schedule.
+    // Guests replace this only from a complete context-matched deck.
+    std::vector<LocalWorldEventState> worldEvents;
+    std::vector<LocalHolidayDefinition> holidayCalendar;
+    uint32_t worldEventTick=0,worldEventSequence=0;
+    uint32_t worldEventMap=0,worldEventInstance=0,worldEventPositionRevision=0;
+    bool worldEventsReady=false;
+    double worldEventMillisRemainder=0;
+    uint32_t vehicleCastTick=0,vehicleCastSequence=0;
+    uint32_t vehicleCastMap=0,vehicleCastInstance=0,vehicleCastPositionRevision=0,vehicleCastPhase=0;
+    bool vehicleCastsReady=false;
+    uint32_t dialogueTick=0,dialogueSequence=0,collectingDialogues=0;
+    uint32_t dialogueMap=0,dialogueInstance=0,dialoguePositionRevision=0;
+    uint8_t dialogueParts=0,dialogueTotal=0;
+    bool dialoguesReady=false;
+    std::array<std::vector<LocalScriptDialogue>,MaxScriptDialoguePages> dialogueChunks;
+    std::array<bool,MaxScriptDialoguePages> dialogueReceived{};
     // The auction board as a guest sees it. The host's own board lives in
     // botDirector; a guest has no director, so the replicated copy is what
     // auctions() returns there. Assembled page by page like the NPC list, and
@@ -1054,8 +1380,8 @@ struct LocalRealm::Impl {
     uint32_t mailTick=0,mailSequence=0,collectingMail=0;
     uint8_t mailParts=0;
     std::vector<LocalMail> remoteMail;
-    std::array<std::vector<LocalMail>,32> mailChunks;
-    std::array<bool,32> mailReceived{};
+    std::array<std::vector<LocalMail>,LocalMailbox::MaxInbox> mailChunks;
+    std::array<bool,LocalMailbox::MaxInbox> mailReceived{};
     double lastMailRequest=-1;
     uint32_t auctionTick = 0, auctionSequence = 0, collectingAuctions = 0;
     uint8_t auctionParts = 0;
@@ -1108,6 +1434,7 @@ struct LocalRealm::Impl {
     void resetSavedSession(uint64_t guid) {
         if(auto* record=findSaved(guid)){
             auto& player=record->player;
+            gameplay.detachVehicle(player);
             player.attackTarget=0;player.attackTimer=player.offHandTimer=0;player.meleeViews={};player.meleeSerial=0;
             clearLocalCombo(player);
             player.castingSpellId=player.castRemainingMs=player.castTotalMs=0;clearLocalPreparedCost(player);
@@ -1291,11 +1618,20 @@ struct LocalRealm::Impl {
             if(trade.accepted[0] && trade.accepted[1]) {
                 auto* a=socialPlayer(trade.players[0]);auto* b=socialPlayer(trade.players[1]);LocalRealmPlayer nextA,nextB;
                 if(!a || !b || !prepareLocalTrade(trade,*a,*b,gameplay.content(),nextA,nextB,result)){trade.accepted={};++trade.revision;maintainSocial();return false;}
-                gameplay.refreshInventoryObjectives(nextA);gameplay.refreshInventoryObjectives(nextB);
+                auto scriptCheckpoint=gameplay.scriptActionCheckpoint();
+                const auto& authorityPlayers=activePlayers();
+                std::string scriptError;
+                if(!gameplay.refreshInventoryObjectives(nextA,authorityPlayers,scriptError) ||
+                   !gameplay.refreshInventoryObjectives(nextB,authorityPlayers,scriptError)) {
+                    gameplay.restoreScriptActionCheckpoint(std::move(scriptCheckpoint));
+                    trade.accepted={};++trade.revision;
+                    result="Trade quest completion failed: "+scriptError;maintainSocial();return false;
+                }
                 auto* savedSelf=findSaved(self.guid);LocalRealmPlayer previousSelf=savedSelf?savedSelf->player:LocalRealmPlayer{};
                 std::swap(*a,nextA);std::swap(*b,nextB);
                 if(!saveRealm()){
                     std::swap(*a,nextA);std::swap(*b,nextB);if(savedSelf)savedSelf->player=std::move(previousSelf);
+                    gameplay.restoreScriptActionCheckpoint(std::move(scriptCheckpoint));
                     trade.accepted={};++trade.revision;result="Trade was not saved; no items or money changed";maintainSocial();return false;
                 }
                 closeTrade(trade,3);result="Trade completed and saved";
@@ -1404,14 +1740,14 @@ struct LocalRealm::Impl {
             const auto& world = gameplay.content();
             const bool worldReferencesAvailable = !world.sourcePath.empty() || world.catalog || !world.items.empty();
             for (unsigned i = 0; i < n; ++i) {
-                auto a = readAuction(r, world, worldReferencesAvailable);
+                auto a = readAuction(r, world, worldReferencesAvailable, saveVersion>=33);
                 if (!r.valid) return false;
                 loadedAuctions.push_back(std::move(a));
             }
             const auto d = r.u16(); if (d > 1024) return false;
             for (unsigned i = 0; i < d; ++i) {
                 LocalAuctionDelivery entry;
-                entry.recipient = r.u64(); entry.itemId = r.u32(); entry.money = r.u32(); entry.count = r.u16();
+                entry.recipient = r.u64(); entry.itemId = r.u32(); entry.money = r.u32(); entry.count = r.u16(); if(saveVersion>=33)entry.instance=readItemInstance(r);
                 loadedDeliveries.push_back(entry);
             }
         }
@@ -1431,7 +1767,7 @@ struct LocalRealm::Impl {
         LocalMailbox loadedMail;
         if(saveVersion>=14){
             loadedMail.nextId=r.u32();const auto countMail=r.u16();if(countMail>LocalMailbox::MaxMessages)return false;
-            for(unsigned i=0;i<countMail;++i)loadedMail.messages.push_back(readMail(r));
+            for(unsigned i=0;i<countMail;++i)loadedMail.messages.push_back(readMail(r,saveVersion>=33));
             if(!loadedMail.valid())return false;
         }
         // The realm's owned creatures, once for the whole save. A pre-28 file
@@ -1443,8 +1779,64 @@ struct LocalRealm::Impl {
             for(unsigned i=0;i<countPets;++i){auto summon=readPet(r,saveVersion);if(!r.valid)return false;loadedPets.push_back(std::move(summon));}
             if(!validLocalPets(loadedPets))return false;
         }
+        std::vector<LocalGameObjectState> loadedGameObjects;
+        if(saveVersion>=41) {
+            const auto objectCount=r.u16();if(objectCount>kLocalMaxGameObjects)return false;
+            loadedGameObjects.reserve(objectCount);
+            for(unsigned i=0;i<objectCount;++i)loadedGameObjects.push_back(readGameObjectState(r));
+        }
+        std::vector<LocalWorldEventState> loadedWorldEvents;
+        if(saveVersion>=42) {
+            const auto eventCount=r.u8();if(eventCount>kLocalMaxWorldEvents)return false;
+            loadedWorldEvents.reserve(eventCount);
+            for(unsigned i=0;i<eventCount;++i)loadedWorldEvents.push_back(readWorldEventState(r));
+        } else if(worldContentAvailable()) {
+            loadedWorldEvents.reserve(gameplay.content().worldEvents.size());
+            for(const auto& event:gameplay.content().worldEvents)loadedWorldEvents.push_back(localInitialWorldEventState(event));
+        }
+        // Schedule-ID migration for older saves: the installed content may add
+        // or retire events between releases (2.27 adds an interval clock).
+        // Simulation state is kept by ID; wall-clock states are recomputed.
+        if(saveVersion<45 && worldContentAvailable()) {
+            std::vector<LocalWorldEventState> migrated;
+            migrated.reserve(gameplay.content().worldEvents.size());
+            for(const auto& schedule:gameplay.content().worldEvents) {
+                auto state=localInitialWorldEventState(schedule);
+                if(schedule.clock==LocalWorldEventClock::Simulation) {
+                    const auto it=std::lower_bound(loadedWorldEvents.begin(),loadedWorldEvents.end(),schedule.id,
+                        [](const auto& row,uint32_t id){return row.id<id;});
+                    if(it!=loadedWorldEvents.end()&&it->id==schedule.id&&validLocalWorldEventState(*it,&schedule))state=*it;
+                }
+                migrated.push_back(state);
+            }
+            loadedWorldEvents=std::move(migrated);
+        }
+        std::vector<LocalPendingScriptKill> loadedPendingScriptKills;
+        if(saveVersion>=43) {
+            const auto pendingCount=r.u16();if(pendingCount>LocalGameplay::MaxPendingScriptKills)return false;
+            loadedPendingScriptKills.reserve(pendingCount);
+            for(unsigned i=0;i<pendingCount;++i)loadedPendingScriptKills.push_back(readPendingScriptKill(r));
+            if(!LocalGameplay::validPendingScriptKills(loadedPendingScriptKills))return false;
+            for(const auto& kill:loadedPendingScriptKills)
+                if(std::count_if(records.begin(),records.end(),[&](const auto& record){return record.player.guid==kill.playerGuid;})!=1)
+                    return false;
+        }
         uint32_t sum = r.u32();
         if (!r.done() || sum != checksum(bytes.data(), bytes.size() - 4)) return false;
+        // Object references must be checked before any live subsystem changes.
+        // Slot browsing has no content loaded and performs structural validation.
+        // Rows for objects that the installed content no longer keeps shared
+        // state for (retired spawns, and 2.26 decoration rows) are dropped;
+        // everything else is validated strictly.
+        if(saveVersion<45 && worldContentAvailable()) {
+            const auto before=loadedGameObjects.size();
+            std::erase_if(loadedGameObjects,[&](const auto& row){
+                const auto* object=gameplay.content().gameObject(row.id);return !object||!localGameObjectStateful(object->kind);
+            });
+            if(before!=loadedGameObjects.size())LOG_INFO("[local_realm] Save migration dropped ",before-loadedGameObjects.size()," stateless/retired object rows");
+        }
+        if(!gameplay.validateGameObjectStates(loadedGameObjects))return false;
+        if(!validateWorldEvents(loadedWorldEvents))return false;
         LocalBotDirector validated;
         std::string validationError;
         if (!validated.restoreAuctions(loadedAuctions, validationError) ||
@@ -1454,6 +1846,9 @@ struct LocalRealm::Impl {
         // its previous one rather than half of a new one.
         if (!gameplay.restorePets(std::move(loadedPets), validationError)) return false;
         if (!gameplay.restoreVendorStock(loadedVendorStock)) return false;
+        if(!gameplay.restoreGameObjectStates(loadedGameObjects))return false;
+        if(!gameplay.restorePendingScriptKills(std::move(loadedPendingScriptKills)))return false;
+        worldEvents=std::move(loadedWorldEvents);worldEventMillisRemainder=0;
         gameplay.setTransportTime(loadedTransportTime);
         botDirector.restoreAuctions(loadedAuctions, validationError);
         botDirector.restoreDeliveries(loadedDeliveries);
@@ -1474,7 +1869,7 @@ struct LocalRealm::Impl {
         std::error_code ec;
         const bool exists = std::filesystem::exists(path, ec);
         const bool backupExists = std::filesystem::exists(path + ".bak", ec);
-        if (!exists && !backupExists) { realmId = uniqueId(); return true; }
+        if (!exists && !backupExists) { realmId = uniqueId(); resetWorldEventsFromContent(); return true; }
         if (exists && parseSave(path)) return true;
         if (backupExists && parseSave(path + ".bak")) {
             // Preserve the known-good backup; never copy damaged primary over it.
@@ -1498,9 +1893,14 @@ struct LocalRealm::Impl {
                 record.player.knownRecipes.size() > LocalGameplay::MaxRecipes || record.player.knownTaxiNodes.size()>512 ||
                 record.player.professions.size() > LocalGameplay::MaxProfessions ||
                 !validBuyback(record.player.buybackSerial, record.player.buyback) ||
+                !std::all_of(record.player.inventory.begin(),record.player.inventory.end(),[](const auto& item){return validLocalItemInstance(item);}) ||
+                !std::all_of(record.player.bank.begin(),record.player.bank.end(),[](const auto& item){return validLocalItemInstance(item);}) ||
                 !validLocalCategoryCooldowns(record.player) || !validLocalStatAuras(record.player) || !validLocalTalents(record.player) ||
+                !record.player.phaseMask || !validLocalScriptStates(record.player.scriptStates) || !validLocalScriptTimers(record.player.scriptTimers) ||
+                !validLocalEscortProgress(record.player.escort) || !validLocalScriptAreaIds(record.player.scriptAreaIds) || record.player.scriptAreaInstanceId>65535 ||
+                (record.player.scriptAreaIds.empty() && record.player.scriptAreaInstanceId) ||
                 // Never write an emitter list parseSave would refuse to read back.
-                !validLocalAreaAuraEmitters(record.player.areaEmitters) ||
+                !validLocalAreaAuraEmitters(record.player.areaEmitters) || !validLocalReputations(record.player) ||
                 !validHistory(record.player.completedQuestIds) || !validLocalRunes(record.player.runeCooldownMs)) {
                 if (error.empty()) error = "Cannot save invalid completed quest history";
                 LOG_ERROR("[local_realm] ", error); return false;
@@ -1510,6 +1910,27 @@ struct LocalRealm::Impl {
         if (!validLocalPets(gameplay.pets())) {
             if (error.empty()) error = "Cannot save invalid owned creature state";
             LOG_ERROR("[local_realm] ", error); return false;
+        }
+        if(!gameplay.validateGameObjectStates(gameplay.gameObjectStates())) {
+            error="Cannot save invalid shared object state";LOG_ERROR("[local_realm] ",error);return false;
+        }
+        if(!validateWorldEvents(worldEvents)) {
+            error="Cannot save invalid shared world-event state";LOG_ERROR("[local_realm] ",error);return false;
+        }
+        if(!LocalGameplay::validPendingScriptKills(gameplay.pendingScriptKills())) {
+            error="Cannot save invalid deferred script facts";LOG_ERROR("[local_realm] ",error);return false;
+        }
+        std::vector<const LocalPendingScriptKill*> durablePendingScriptKills;
+        durablePendingScriptKills.reserve(gameplay.pendingScriptKills().size());
+        for(const auto& kill:gameplay.pendingScriptKills()) {
+            const auto owners=std::count_if(saved.begin(),saved.end(),[&](const auto& record){return record.player.guid==kill.playerGuid;});
+            if(owners==1)durablePendingScriptKills.push_back(&kill);
+            else if(!botDirector.isBot(kill.playerGuid)) {
+                error="Cannot save deferred script fact for an unknown player";LOG_ERROR("[local_realm] ",error);return false;
+            }
+            // Walking bots and all of their character progress are transient.
+            // Keep a blocked bot fact in the live retry queue, but do not let it
+            // prevent or enter the durable human-character snapshot.
         }
         Writer w; w.u32(SaveMagic); w.u8(SaveVersion); w.u64(realmId); w.u16(uint16_t(saved.size()));
         for (const auto& record : saved) {
@@ -1527,7 +1948,7 @@ struct LocalRealm::Impl {
         for (const auto& a : botDirector.auctions()) writeAuction(w, a);
         w.u16(uint16_t(botDirector.deliveries().size()));
         for (const auto& d : botDirector.deliveries()) {
-            w.u64(d.recipient); w.u32(d.itemId); w.u32(d.money); w.u16(d.count);
+            w.u64(d.recipient); w.u32(d.itemId); w.u32(d.money); w.u16(d.count); writeItemInstance(w,d.instance);
         }
         const auto vendorStock = gameplay.savedVendorStock();
         w.u16(uint16_t(vendorStock.size()));
@@ -1540,6 +1961,12 @@ struct LocalRealm::Impl {
         for(const auto& mail:mailbox.messages)writeMail(w,mail);
         w.u8(uint8_t(gameplay.pets().size()));
         for(const auto& summon:gameplay.pets())writePet(w,summon);
+        w.u16(uint16_t(gameplay.gameObjectStates().size()));
+        for(const auto& object:gameplay.gameObjectStates())writeGameObjectState(w,object);
+        w.u8(uint8_t(worldEvents.size()));
+        for(const auto& event:worldEvents)writeWorldEventState(w,event);
+        w.u16(uint16_t(durablePendingScriptKills.size()));
+        for(const auto* kill:durablePendingScriptKills)writePendingScriptKill(w,*kill);
         w.u32(checksum(w.bytes.data(), w.bytes.size()));
         if (w.bytes.size() > MaxSaveSize) {
             error = "Local realm snapshot exceeds save limit";
@@ -1600,6 +2027,201 @@ struct LocalRealm::Impl {
         // produced characters that walk through hostile territory untouched.
         for (auto& bot : botPlayers) activePlayerScratch.push_back(&bot);
         return activePlayerScratch;
+    }
+    bool worldContentAvailable() const {
+        const auto& c=gameplay.content();
+        return !c.sourcePath.empty() || c.catalog || !c.items.empty() || !c.spells.empty() || !c.npcs.empty() ||
+            !c.spawns.empty() || !c.quests.empty() || !c.gameObjects.empty() || !c.worldEvents.empty();
+    }
+    bool validateWorldEvents(const std::vector<LocalWorldEventState>& states,bool requireContent=true) const {
+        if(!validLocalWorldEventStates(states))return false;
+        const auto& schedules=gameplay.content().worldEvents;
+        if(requireContent && worldContentAvailable()) {
+            if(states.size()!=schedules.size())return false;
+            for(size_t i=0;i<states.size();++i)
+                if(states[i].id!=schedules[i].id || !validLocalWorldEventState(states[i],&schedules[i]))return false;
+        }
+        return true;
+    }
+    void resetWorldEventsFromContent() {
+        worldEvents.clear();worldEvents.reserve(gameplay.content().worldEvents.size());
+        for(const auto& schedule:gameplay.content().worldEvents)worldEvents.push_back(localInitialWorldEventState(schedule));
+        worldEventMillisRemainder=0;worldEventsReady=authoritative();
+    }
+    uint32_t worldEventOwnedPhases() const {
+        uint32_t mask=0;for(const auto& event:gameplay.content().worldEvents)mask|=event.activePhaseMask|event.inactivePhaseMask;
+        return mask;
+    }
+    bool reconcileWorldEventPhases() {
+        const auto owned=worldEventOwnedPhases();if(!owned)return false;
+        bool changed=false;
+        for(auto* player:allAuraOwners()) {
+            uint32_t desired=0;
+            for(const auto& state:worldEvents) {
+                const auto* schedule=gameplay.content().worldEvent(state.id);
+                if(schedule && player->mapId==schedule->mapId && player->instanceId==schedule->instanceId)
+                    desired|=state.enabled?(state.active?schedule->activePhaseMask:schedule->inactivePhaseMask):schedule->inactivePhaseMask;
+            }
+            const auto phase=(player->phaseMask&~owned)|desired;
+            if(phase!=player->phaseMask) {
+                player->phaseMask=phase?phase:1;
+                player->positionRevision=localWorldEventNext(player->positionRevision);
+                changed=true;
+            }
+        }
+        return changed;
+    }
+    bool tickWorldEvents(float seconds) {
+        if(!authoritative() || !validateWorldEvents(worldEvents))return false;
+        worldEventMillisRemainder+=std::max(0.0,double(seconds))*1000.0;
+        const auto whole=uint32_t(std::min(worldEventMillisRemainder,double(UINT32_MAX)));
+        worldEventMillisRemainder-=whole;
+        bool any=false;
+        for(size_t i=0;i<worldEvents.size();++i) {
+            bool changed=false;
+            const auto& schedule=gameplay.content().worldEvents[i];
+            if(localWorldEventWallClock(schedule.clock)) {
+                LocalCalendarTime calendar{};bool resolved=false;bool active=false;
+                const bool clockReady=readLocalCalendar(calendar);
+                if(clockReady&&schedule.enabled)active=schedule.clock==LocalWorldEventClock::Holiday?
+                    localHolidayEventActive(schedule,holidayCalendar,calendar,resolved):
+                    localIntervalEventActive(schedule,calendar,resolved);
+                const bool enabled=schedule.enabled&&clockReady&&resolved;
+                auto next=worldEvents[i];next.remainingMs=0;next.enabled=enabled;next.active=enabled&&active;
+                if(next.active&&!worldEvents[i].active)next.cycle=localWorldEventNext(next.cycle);
+                if(!next.active&&!next.cycle)next.cycle=0;
+                if(next.enabled!=worldEvents[i].enabled||next.active!=worldEvents[i].active)next.revision=localWorldEventNext(next.revision);
+                changed=next!=worldEvents[i];worldEvents[i]=next;any=any||changed;continue;
+            }
+            auto boundary=[&](LocalWorldEventBoundary kind,const LocalWorldEventSchedule& event,const LocalWorldEventState&) {
+                const auto& authoredIds=kind==LocalWorldEventBoundary::Start?event.startActionIds:event.endActionIds;
+                if(authoredIds.empty())return true;
+                auto ids=authoredIds;
+                if(kind==LocalWorldEventBoundary::End) {
+                    // A spawn lifetime may equal the active duration. Gameplay
+                    // then retires that actor at the same millisecond as the
+                    // event's authored despawn. Treat that one action as
+                    // already satisfied while preserving the rest of the
+                    // atomic end batch.
+                    std::erase_if(ids,[&](uint32_t id){
+                        const auto* action=gameplay.content().scriptAction(id);
+                        return action&&action->kind==LocalScriptActionKind::Despawn&&
+                            std::none_of(gameplay.npcs().begin(),gameplay.npcs().end(),[&](const auto& npc){
+                                return npc.scriptActorId==action->actorId&&!npc.scriptActorRetired;
+                            });
+                    });
+                    if(ids.empty())return true;
+                }
+                const auto& authorityPlayers=activePlayers();
+                std::vector<LocalRealmPlayer*> scope;
+                for(auto* player:authorityPlayers)if(player->mapId==event.mapId&&player->instanceId==event.instanceId)scope.push_back(player);
+                // Dialogue is a view notification, not durable world state.
+                // An event with nobody in its scope must still start and build
+                // its actors; there is no recipient to notify in that case.
+                if(scope.empty())std::erase_if(ids,[&](uint32_t id){
+                    const auto* action=gameplay.content().scriptAction(id);
+                    return action&&(action->kind==LocalScriptActionKind::Dialogue||
+                                    action->kind==LocalScriptActionKind::Combat);
+                });
+                if(ids.empty())return true;
+                const auto checkpoint=gameplay.scriptActionCheckpoint();
+                std::string actionError;
+                if(gameplay.executeScriptActions(ids,scope,authorityPlayers,actionError))return true;
+                gameplay.restoreScriptActionCheckpoint(checkpoint);
+                LOG_WARNING("[LOCAL_WORLD_EVENT] boundary retry id=",event.id," reason=",actionError);
+                return false;
+            };
+            if(!localAdvanceWorldEvent(worldEvents[i],schedule,whole,boundary,changed)) {
+                LOG_ERROR("[LOCAL_WORLD_EVENT] invalid runtime state id=",worldEvents[i].id);
+                continue;
+            }
+            any=any||changed;
+        }
+        // 2.40: the active events for the gossip conditions (CONDITION_ACTIVE_EVENT).
+        {std::vector<uint32_t> active;for(const auto& state:worldEvents)if(state.enabled&&state.active)active.push_back(state.id);gameplay.setActiveWorldEvents(std::move(active));}
+        return reconcileWorldEventPhases()||any;
+    }
+    /// Run gameplay in pieces ending exactly at world-event boundaries. Start
+    /// actions therefore happen after the preceding interval, and a short
+    /// active phase receives only its authored share of a long render frame.
+    bool tickAuthoritySimulation(float seconds) {
+        bool changed=false;
+        double remaining=std::max(0.0,double(seconds));
+        const auto boundaryBlocked=[&](const std::vector<LocalWorldEventState>& prior) {
+            if(prior.size()!=worldEvents.size())return true;
+            for(size_t i=0;i<worldEvents.size();++i)if(gameplay.content().worldEvents[i].clock==LocalWorldEventClock::Simulation&&
+                worldEvents[i].enabled&&!worldEvents[i].remainingMs&&prior[i].revision==worldEvents[i].revision&&
+                prior[i].cycle==worldEvents[i].cycle&&prior[i].active==worldEvents[i].active)return true;
+            return false;
+        };
+        // A save may contain a pending boundary after an atomic action failure.
+        // Retry it before advancing either clock.
+        auto before=worldEvents;
+        changed=tickWorldEvents(0)||changed;
+        bool blocked=boundaryBlocked(before);
+        for(unsigned guard=0;remaining>1e-9&&guard<512&&!blocked;++guard) {
+            uint32_t next=UINT32_MAX;
+            for(size_t i=0;i<worldEvents.size();++i)if(gameplay.content().worldEvents[i].clock==LocalWorldEventClock::Simulation&&worldEvents[i].enabled)
+                next=std::min(next,worldEvents[i].remainingMs);
+            if(next==UINT32_MAX) {
+                changed=gameplay.tick(float(remaining),activePlayers())||changed;remaining=0;break;
+            }
+            if(!next) {
+                before=worldEvents;changed=tickWorldEvents(0)||changed;
+                blocked=boundaryBlocked(before);
+                continue;
+            }
+            const double untilBoundary=std::max(0.0,(double(next)-worldEventMillisRemainder)/1000.0);
+            const double slice=std::min(remaining,untilBoundary);
+            if(slice<=1e-9) {
+                // Floating-point residue below one nanosecond cannot represent
+                // useful simulation time. Feed it to the event accumulator and
+                // retry the now-due boundary without ticking a new actor.
+                changed=tickWorldEvents(float(std::min(remaining,1e-6)))||changed;
+                remaining-=std::min(remaining,1e-6);continue;
+            }
+            changed=gameplay.tick(float(slice),activePlayers())||changed;
+            before=worldEvents;changed=tickWorldEvents(float(slice))||changed;
+            remaining-=slice;
+            if(boundaryBlocked(before))blocked=true;
+        }
+        if(remaining>1e-9&&!blocked) {
+            changed=gameplay.tick(float(remaining),activePlayers())||changed;
+            changed=tickWorldEvents(float(remaining))||changed;
+        }
+        return changed;
+    }
+    bool restoreWorldEventActions() {
+        if(!validateWorldEvents(worldEvents))return false;
+        auto checkpoint=gameplay.scriptActionCheckpoint();
+        for(const auto& state:worldEvents) {
+            // The rebuilt baseline already is the correct inactive state: all
+            // authority-only scripted actors are absent. Replaying a normal
+            // End=Despawn against that empty roster would turn a valid cooldown
+            // save into a startup failure. Only an active phase reconstructs
+            // its authored start batch.
+            if(!state.cycle||!state.active)continue;
+            const auto* event=gameplay.content().worldEvent(state.id);if(!event||localWorldEventWallClock(event->clock))continue;
+            auto ids=event->startActionIds;if(ids.empty())continue;
+            // Restore actor state only. Dialogue/combat are observations of
+            // the historical boundary and must never be replayed on login.
+            std::erase_if(ids,[&](uint32_t id){
+                const auto* action=gameplay.content().scriptAction(id);
+                return action&&(action->kind==LocalScriptActionKind::Dialogue||
+                                action->kind==LocalScriptActionKind::Combat);
+            });
+            if(ids.empty())continue;
+            const auto& authorityPlayers=activePlayers();
+            std::vector<LocalRealmPlayer*> scope;
+            for(auto* player:authorityPlayers)if(player->mapId==event->mapId&&player->instanceId==event->instanceId)scope.push_back(player);
+            std::string actionError;
+            if(!gameplay.executeScriptActions(ids,scope,authorityPlayers,actionError)) {
+                gameplay.restoreScriptActionCheckpoint(std::move(checkpoint));
+                error="Cannot restore shared world event "+std::to_string(event->id)+": "+actionError;
+                return false;
+            }
+        }
+        return true;
     }
     const LocalRealmPlayer* realPlayer(uint64_t guid) const {
         if (self.guid == guid) return &self;
@@ -1791,6 +2413,7 @@ struct LocalRealm::Impl {
         std::string ignored;
         gameplay.setAreaTriggers(previous.gameplay.areaTriggers(), ignored);
         gameplay.setFactionTemplates(previous.gameplay.factionTemplates(), previous.gameplay.raceFactionTemplates(), ignored);
+        gameplay.setFactionReputationBases(previous.gameplay.factionReputationBases(), ignored);
         gameplay.setGraveyards(previous.gameplay.graveyards(), ignored);
         // Everything else the application reads out of the client's own DBCs
         // before a realm starts. Starting one replaces this Impl wholesale, so
@@ -1835,11 +2458,14 @@ struct LocalRealm::Impl {
         const auto* record = findSaved(peer.guid); if (!record) return;
         prepareHistory(peer, record->player);
         Writer w; w.u64(peer.guid); w.u32(peer.historyRevision); w.u32(peer.historyCount);
-        writePosition(w, record->player); writeProgress(w, record->player); writeCast(w, record->player);writeHealingViews(w,record->player);
+        writePosition(w, record->player); writeProgress(w, record->player);
+        // LAN97: read occupancy before validating vehicle-sourced combat views.
+        writeVehicle(w,record->player);writeCast(w, record->player);writeHealingViews(w,record->player);
         // The owner's own derived area aura applications, so its client can
         // draw the buff. Authority state that is never saved and never read
         // back off a guest; see writeAreaAuraViews.
         writeAreaAuraViews(w,record->player);
+        writeGossip(w,record->player); // 2.40
         w.u8(record->player.introSeen ? 1 : 0);
         if (w.bytes.size() > MaxOwnerProgressBytes) { LOG_ERROR("[LOCAL_PROGRESS] snapshot exceeds bound"); return; }
         const auto parts = uint8_t((w.bytes.size() + ProgressChunkBytes - 1) / ProgressChunkBytes);
@@ -1852,8 +2478,28 @@ struct LocalRealm::Impl {
             send(Message::Progress,peer.session,page,peer.address);
         }
     }
+    void clearGameObjects() {
+        gameObjectsReady=false;remoteGameObjects.clear();collectingGameObjects=0;gameObjectParts=0;
+        gameObjectReceived.fill(false);for(auto& page:gameObjectChunks)page.clear();
+    }
+    void clearWorldEvents() {
+        worldEventsReady=false;worldEvents.clear();worldEventMap=worldEventInstance=worldEventPositionRevision=0;
+    }
+    bool gameObjectContextReady() const {
+        return gameObjectsReady && gameObjectMap==self.mapId && gameObjectInstance==self.instanceId &&
+            gameObjectPositionRevision==self.positionRevision && gameObjectPhase==self.phaseMask;
+    }
     void clearWorldForTravel(const LocalRealmPlayer& next) {
         if(next.mapId==self.mapId && next.instanceId==self.instanceId && next.positionRevision==self.positionRevision)return;
+        clearGameObjects();
+        clearWorldEvents();
+        gameplay.setRemoteVehicleProjectiles({});
+        gameplay.setRemoteVehicleCasts({});
+        vehicleCastsReady=false;vehicleCastMap=vehicleCastInstance=vehicleCastPositionRevision=vehicleCastPhase=0;
+        gameplay.setRemoteScriptDialogues({});
+        collectingDialogues=0;dialogueParts=dialogueTotal=0;dialoguesReady=false;
+        dialogueMap=dialogueInstance=dialoguePositionRevision=0;
+        dialogueReceived.fill(false);for(auto& page:dialogueChunks)page.clear();
         gameplay.setRemoteNpcs({});collectingWorld=0;worldParts=0;worldReceived.fill(false);
         for(auto& page:worldChunks)page.clear();
         gameplay.setRemotePets({});collectingPets=0;petParts=0;petReceived.fill(false);
@@ -1873,10 +2519,11 @@ struct LocalRealm::Impl {
             updated.returnX=self.returnX;updated.returnY=self.returnY;updated.returnZ=self.returnZ;updated.returnOrientation=self.returnOrientation;
             updated.flight=self.flight;updated.transportEntry=self.transportEntry;
             updated.transportOffsetX=self.transportOffsetX;updated.transportOffsetY=self.transportOffsetY;updated.transportOffsetZ=self.transportOffsetZ;
-            updated.transportLastYaw=self.transportLastYaw;
+            updated.transportLastYaw=self.transportLastYaw;copyLocalVehicleState(updated,self);
             clearLocalPreparedCost(updated);updated.castingSpellId=0;updated.castTarget=0;updated.castRemainingMs=updated.castTotalMs=0;updated.castStatus=LocalCastStatus::Interrupted;updated.castPushbackMs=updated.castPushbackCount=0;
         }
-        if (updated.positionRevision == self.positionRevision || !newer(updated.positionRevision, self.positionRevision)) {
+        if ((!updated.vehicleGuid || updated.vehicleControl || !newer(seq,vitalsSequence)) &&
+            (updated.positionRevision == self.positionRevision || !newer(updated.positionRevision, self.positionRevision))) {
             updated.mapId = self.mapId; updated.x = self.x; updated.y = self.y; updated.z = self.z;
             updated.orientation = self.orientation; updated.positionRevision = self.positionRevision;
             updated.instanceId = self.instanceId;
@@ -1894,7 +2541,9 @@ struct LocalRealm::Impl {
             updated.xpToLevel = uint32_t(updated.level) * uint32_t(updated.level) * 100 + 300;
         } else vitalsSequence = seq;
         if(updated.dead||!updated.health)clearLocalCombo(updated);
+        if(updated.phaseMask!=self.phaseMask)clearGameObjects();
         clearWorldForTravel(updated);
+        updated.vehicleRecoveryId=0;
         self = std::move(updated); progressSequence = seq; lastSeen = now;
         for (auto& p : players) if (p.guid == self.guid) p = self;
     }
@@ -1953,9 +2602,11 @@ struct LocalRealm::Impl {
         // Bounded pages are assembled atomically by the client.
         std::vector<LocalRealmNpc> actors;
         const auto* player = findSaved(peer.guid); if (!player) return;
-        for (const auto& npc : gameplay.npcs()) if (npc.mapId == player->player.mapId && npc.instanceId == player->player.instanceId) {
+        for (const auto& npc : gameplay.npcs()) if (npc.mapId == player->player.mapId && npc.instanceId == player->player.instanceId &&
+                                                      gameplay.npcVisibleTo(player->player, npc)) {
             auto copy = npc; copy.hostile = gameplay.canAttack(player->player, npc); copy.aggressive = gameplay.isAggressive(player->player, npc);
             copy.playerThreat=localThreatView(npc,player->player);
+            copy.viewerVehicleCombat=player->player.vehicleGuid && localCombatWithNpc(player->player,npc);
             actors.push_back(std::move(copy));
         }
         const size_t parts = std::max(size_t(1), (actors.size() + NpcsPerPage - 1) / NpcsPerPage);
@@ -2127,7 +2778,7 @@ struct LocalRealm::Impl {
         const bool mountLearning=mountItem && mountItem->mountSpell;
         const auto* formCast=cmd.action==LocalAction::CastSpell?gameplay.content().spell(cmd.id):nullptr;
         const bool formAction=cmd.action==LocalAction::CancelForm||(formCast&&formCast->formId);
-        const bool financial=formAction||cmd.action==LocalAction::LearnTalent || cmd.action==LocalAction::ResetTalents || cmd.action==LocalAction::TrainRiding || cmd.action==LocalAction::DiscoverTaxi || cmd.action==LocalAction::TakeFlight || cmd.action==LocalAction::BankDepositFromSlot || cmd.action==LocalAction::BackpackMove || cmd.action==LocalAction::BankWithdrawSlot || cmd.action==LocalAction::EquipItem || cmd.action==LocalAction::UnequipItem || mountLearning || cmd.action==LocalAction::Loot || cmd.action==LocalAction::TurnInQuest || merchant || auction || cmd.action==LocalAction::BankDeposit || cmd.action==LocalAction::BankWithdraw || cmd.action==LocalAction::BankMove || cmd.action==LocalAction::BankDepositSlot ||
+        const bool financial=cmd.action==LocalAction::AcceptQuest || cmd.action==LocalAction::AbandonQuest || cmd.action==LocalAction::UseGameObject || formAction||cmd.action==LocalAction::LearnTalent || cmd.action==LocalAction::ResetTalents || cmd.action==LocalAction::TrainRiding || cmd.action==LocalAction::DiscoverTaxi || cmd.action==LocalAction::TakeFlight || cmd.action==LocalAction::BankDepositFromSlot || cmd.action==LocalAction::BackpackMove || cmd.action==LocalAction::BankWithdrawSlot || cmd.action==LocalAction::EquipItem || cmd.action==LocalAction::UnequipItem || mountLearning || cmd.action==LocalAction::Loot || cmd.action==LocalAction::TurnInQuest || merchant || auction || cmd.action==LocalAction::BankDeposit || cmd.action==LocalAction::BankWithdraw || cmd.action==LocalAction::BankMove || cmd.action==LocalAction::BankDepositSlot ||
             cmd.action==LocalAction::CraftItem || cmd.action==LocalAction::UnlearnProfession ||
             cmd.action==LocalAction::LearnRecipe || cmd.action==LocalAction::LearnProfession ||
             cmd.action==LocalAction::TrainProfessionRank || cmd.action==LocalAction::LearnSpell;
@@ -2135,6 +2786,9 @@ struct LocalRealm::Impl {
         // Persist ownership, escrow and bags as one save before acknowledging a
         // successful transaction. Roll back RAM too when the atomic write fails.
         const auto priorPlayer=player;
+        auto priorScriptActions=gameplay.scriptActionCheckpoint();
+        std::optional<std::vector<LocalGameObjectState>> priorGameObjects;
+        if(cmd.action==LocalAction::UseGameObject)priorGameObjects.emplace(gameplay.gameObjectStates());
         // A talent reset can remove this caster's Earth Shield from an offline
         // saved recipient too. Restore every touched aura list if saving fails.
         std::vector<std::pair<LocalRealmPlayer*,std::vector<LocalStatAura>>> priorTalentAuras;
@@ -2156,6 +2810,7 @@ struct LocalRealm::Impl {
         const auto priorSavedSelf=localRecord?localRecord->player:LocalRealmPlayer{};
         const bool bankAction=cmd.action==LocalAction::BankMove || cmd.action==LocalAction::BankDepositSlot || cmd.action==LocalAction::BankDeposit || cmd.action==LocalAction::BankWithdraw;
         if(!executeCommand(player,cmd,result)) {
+            gameplay.restoreScriptActionCheckpoint(std::move(priorScriptActions));
             if(bankAction)LOG_INFO("[LOCAL_BANK] rejected player=",player.guid," action=",int(cmd.action),
                 " source=",cmd.id," quantity=",cmd.target," result=",result);
             return false;
@@ -2172,6 +2827,9 @@ struct LocalRealm::Impl {
             return true;
         }
         player=priorPlayer;
+        gameplay.restoreScriptActionCheckpoint(std::move(priorScriptActions));
+        if(priorGameObjects&&!gameplay.restoreGameObjectStates(*priorGameObjects))
+            LOG_ERROR("[LOCAL_OBJECT_TRANSACTION] rollback failed");
         for(auto& [owner,auras]:priorTalentAuras)owner->statAuras=std::move(auras);
         if(priorInstances) {
             std::string restoreError;
@@ -2182,7 +2840,7 @@ struct LocalRealm::Impl {
         if(priorDirector)botDirector=std::move(*priorDirector);
         if(priorStock)gameplay.restoreVendorInventory(std::move(*priorStock));
         if(auto* restored=findSaved(self.guid))restored->player=priorSavedSelf;
-        result=formAction ? "Form change was not saved; the previous form and resources were restored" : portal ? "Travel was not saved; you remain at your previous location" : "Transaction was not saved; no items or money were changed";
+        result=(cmd.action==LocalAction::AcceptQuest || cmd.action==LocalAction::AbandonQuest) ? "Quest change was not saved; previous progress restored" : cmd.action==LocalAction::UseGameObject ? "Object use was not saved; your previous progress was restored" : formAction ? "Form change was not saved; the previous form and resources were restored" : portal ? "Travel was not saved; you remain at your previous location" : "Transaction was not saved; no items or money were changed";
         LOG_ERROR("[LOCAL_TRANSACTION] rolled back: ",error);
         return false;
     }
@@ -2228,6 +2886,7 @@ struct LocalRealm::Impl {
         if (cmd.action == LocalAction::ListAuction) cmd.auctionCount = r.u16();
         if (cmd.action == LocalAction::BankMove || cmd.action == LocalAction::BankDepositSlot || cmd.action==LocalAction::BackpackMove || cmd.action==LocalAction::BankWithdrawSlot) { cmd.bankSourceCount = r.u16(); cmd.bankDestinationCount = r.u16(); }
         cmd.serviceNpcGuid = r.u64();
+        if(cmd.action==LocalAction::VehicleAim){cmd.vehicleAimYaw=r.f32();cmd.vehicleAimPitch=r.f32();}
         if(cmd.action==LocalAction::MailSend){
             cmd.mailRecipient=r.name();cmd.mailSubject=r.text();cmd.mailBody=r.text();
             const auto count=r.u8();if(count>12)return;
@@ -2248,6 +2907,10 @@ struct LocalRealm::Impl {
         // A retired summon must leave the owner's screen with the acknowledgement,
         // not at whatever point the round-robin reaches this guest again.
         if(cmd.action==LocalAction::DismissPet)petDeck(peer,++petTick);
+        if(cmd.action==LocalAction::UseGameObject) {
+            if(peer.lastCommandSuccess)publishGameObjectChange(cmd.id,peer.guid);
+            else gameObjectDeck(peer,++gameObjectTick);
+        }
     }
     void receiveWorld(Reader& r) {
         const auto tick = r.u32(); const auto part = r.u8(), parts = r.u8(), count = r.u8();
@@ -2275,6 +2938,212 @@ struct LocalRealm::Impl {
             all.push_back(std::move(n));
         }
         gameplay.setRemoteNpcs(std::move(all)); worldSequence = tick; lastSeen = now;
+    }
+    std::vector<LocalGameObjectState> gameObjectsFor(const LocalRealmPlayer& viewer) const {
+        std::vector<LocalGameObjectState> out;
+        for(const auto& state:gameplay.gameObjectStates()) {
+            const auto* object=gameplay.content().gameObject(state.id);
+            if(object && localGameObjectStateful(object->kind) && localGameObjectVisible(*object,viewer))out.push_back(state);
+        }
+        return out;
+    }
+    void gameObjectDeck(const Peer& peer,uint32_t tick) {
+        const auto* record=findSaved(peer.guid);if(!record)return;
+        const auto& viewer=record->player;const auto objects=gameObjectsFor(viewer);
+        if(objects.size()>kLocalMaxGameObjects)return;
+        const size_t parts=std::max(size_t(1),(objects.size()+GameObjectsPerPage-1)/GameObjectsPerPage);
+        for(size_t part=0;part<parts;++part) {
+            const size_t begin=part*GameObjectsPerPage,end=std::min(begin+GameObjectsPerPage,objects.size());
+            Writer w;w.u32(tick);w.u32(viewer.mapId);w.u32(viewer.instanceId);w.u32(viewer.positionRevision);w.u32(viewer.phaseMask);
+            w.u8(uint8_t(part));w.u8(uint8_t(parts));w.u8(uint8_t(end-begin));
+            for(size_t index=begin;index<end;++index)writeGameObjectState(w,objects[index]);
+            send(Message::GameObjects,peer.session,w,peer.address);
+        }
+    }
+    void publishGameObjectChange(uint32_t id,uint64_t actor) {
+        const auto* object=gameplay.content().gameObject(id);
+        for(const auto& peer:peers) {
+            const auto* record=findSaved(peer.guid);
+            if(record && (peer.guid==actor || (object && localGameObjectStateful(object->kind) &&
+                localGameObjectVisible(*object,record->player))))gameObjectDeck(peer,++gameObjectTick);
+        }
+    }
+    void receiveGameObjects(Reader& r) {
+        const auto tick=r.u32(),map=r.u32(),instance=r.u32(),revision=r.u32(),phase=r.u32();
+        const auto part=r.u8(),parts=r.u8(),count=r.u8();
+        if(!r.valid || !tick || !newer(tick,gameObjectSequence) || map!=self.mapId || instance!=self.instanceId ||
+           revision!=self.positionRevision || phase!=self.phaseMask || !parts || parts>MaxGameObjectPages || part>=parts ||
+           count>GameObjectsPerPage || (part+1<parts && count!=GameObjectsPerPage) || (parts>1 && !count) ||
+           size_t(part)*GameObjectsPerPage+count>kLocalMaxGameObjects)return;
+        std::vector<LocalGameObjectState> chunk;chunk.reserve(count);
+        for(unsigned i=0;i<count;++i) {
+            auto state=readGameObjectState(r);const auto* object=gameplay.content().gameObject(state.id);
+            if(!r.valid || !object || !localGameObjectStateful(object->kind) || !localGameObjectVisible(*object,self))return;
+            chunk.push_back(state);
+        }
+        if(!r.done() || !gameplay.validateGameObjectStates(chunk))return;
+        if(tick!=collectingGameObjects) {
+            if(collectingGameObjects&&!newer(tick,collectingGameObjects))return;
+            collectingGameObjects=tick;gameObjectParts=parts;gameObjectReceived.fill(false);
+            for(auto& page:gameObjectChunks)page.clear();
+        }
+        if(parts!=gameObjectParts || gameObjectReceived[part])return;
+        gameObjectChunks[part]=std::move(chunk);gameObjectReceived[part]=true;
+        for(unsigned index=0;index<parts;++index)if(!gameObjectReceived[index])return;
+        std::vector<LocalGameObjectState> all;
+        for(unsigned index=0;index<parts;++index)for(const auto& object:gameObjectChunks[index])all.push_back(object);
+        if(!gameplay.validateGameObjectStates(all))return;
+        // Every visible shared definition must appear exactly once. A valid
+        // prefix or a page which silently omitted a depleted chest is no deck.
+        size_t expected=0;
+        for(const auto& object:gameplay.content().gameObjects)if(localGameObjectStateful(object.kind) && localGameObjectVisible(object,self)) {
+            ++expected;
+            if(std::none_of(all.begin(),all.end(),[&](const auto& row){return row.id==object.id;}))return;
+        }
+        if(expected!=all.size())return;
+        remoteGameObjects=std::move(all);gameObjectSequence=tick;gameObjectsReady=true;
+        gameObjectMap=map;gameObjectInstance=instance;gameObjectPositionRevision=revision;gameObjectPhase=phase;lastSeen=now;
+    }
+    std::vector<LocalWorldEventState> worldEventsFor(const LocalRealmPlayer& viewer) const {
+        std::vector<LocalWorldEventState> result;
+        for(const auto& state:worldEvents) {
+            const auto* schedule=gameplay.content().worldEvent(state.id);
+            if(schedule&&schedule->mapId==viewer.mapId&&schedule->instanceId==viewer.instanceId)result.push_back(state);
+        }
+        return result;
+    }
+    void worldEventDeck(const Peer& peer,uint32_t tick) {
+        const auto* record=findSaved(peer.guid);if(!record)return;
+        const auto& viewer=record->player;const auto events=worldEventsFor(viewer);
+        if(events.size()>kLocalMaxWorldEvents)return;
+        Writer w;w.u32(tick);w.u32(viewer.mapId);w.u32(viewer.instanceId);w.u32(viewer.positionRevision);w.u8(uint8_t(events.size()));
+        for(const auto& event:events)writeWorldEventState(w,event);
+        send(Message::WorldEvents,peer.session,w,peer.address);
+    }
+    void receiveWorldEvents(Reader& r) {
+        const auto tick=r.u32(),map=r.u32(),instance=r.u32(),revision=r.u32();const auto count=r.u8();
+        if(!r.valid||!tick||!newer(tick,worldEventSequence)||map!=self.mapId||instance!=self.instanceId||
+           revision!=self.positionRevision||count>kLocalMaxWorldEvents)return;
+        std::vector<LocalWorldEventState> incoming;incoming.reserve(count);
+        for(unsigned i=0;i<count;++i) {
+            auto state=readWorldEventState(r);const auto* schedule=gameplay.content().worldEvent(state.id);
+            if(!r.valid||!schedule||schedule->mapId!=map||schedule->instanceId!=instance||
+               !validLocalWorldEventState(state,schedule)||(i&&incoming.back().id>=state.id))return;
+            incoming.push_back(state);
+        }
+        if(!r.done())return;
+        size_t expected=0;
+        for(const auto& schedule:gameplay.content().worldEvents)
+            if(schedule.mapId==map&&schedule.instanceId==instance)++expected;
+        if(expected!=incoming.size())return;
+        worldEvents=std::move(incoming);worldEventSequence=tick;worldEventsReady=true;
+        worldEventMap=map;worldEventInstance=instance;worldEventPositionRevision=revision;lastSeen=now;
+    }
+    std::vector<LocalVehicleProjectile> projectilesFor(const LocalRealmPlayer& viewer) const {
+        std::vector<LocalVehicleProjectile> out;
+        for(const auto& p:gameplay.vehicleProjectiles())if(p.remainingMs && p.mapId==viewer.mapId && p.instanceId==viewer.instanceId && p.phaseMask==viewer.phaseMask)
+            out.push_back(p);
+        return out;
+    }
+    void projectileDeck(const Peer& peer,uint32_t tick) {
+        const auto* record=findSaved(peer.guid);if(!record)return;
+        const auto& viewer=record->player;const auto shots=projectilesFor(viewer);if(shots.size()>kLocalMaxVehicleProjectiles)return;
+        Writer w;w.u32(tick);w.u32(viewer.mapId);w.u32(viewer.instanceId);w.u32(viewer.positionRevision);w.u32(viewer.phaseMask);w.u8(uint8_t(shots.size()));
+        for(const auto& shot:shots)writeVehicleProjectile(w,shot);
+        send(Message::VehicleProjectiles,peer.session,w,peer.address);
+    }
+    void receiveVehicleProjectiles(Reader& r) {
+        const auto tick=r.u32(),map=r.u32(),instance=r.u32(),revision=r.u32(),phase=r.u32();const auto count=r.u8();
+        if(!r.valid || !tick || !newer(tick,projectileSequence) || map!=self.mapId || instance!=self.instanceId ||
+           revision!=self.positionRevision || phase!=self.phaseMask || count>kLocalMaxVehicleProjectiles)return;
+        std::vector<LocalVehicleProjectile> shots;shots.reserve(count);
+        for(unsigned i=0;i<count;++i) {
+            auto shot=readVehicleProjectile(r,map,instance,gameplay.content());
+            if(!r.valid || shot.phaseMask!=phase || std::any_of(shots.begin(),shots.end(),[&](const auto& prior){return prior.id==shot.id;}))return;
+            shots.push_back(shot);
+        }
+        if(!r.done())return;
+        gameplay.setRemoteVehicleProjectiles(std::move(shots));projectileSequence=tick;lastSeen=now;
+    }
+    std::vector<LocalVehicleCast> vehicleCastsFor(const LocalRealmPlayer& viewer) const {
+        std::vector<LocalVehicleCast> result;
+        for(const auto& cast:gameplay.vehicleCasts())if(cast.mapId==viewer.mapId&&cast.instanceId==viewer.instanceId&&cast.phaseMask==viewer.phaseMask)
+            result.push_back(cast);
+        return result;
+    }
+    void vehicleCastDeck(const Peer& peer,uint32_t tick) {
+        const auto* record=findSaved(peer.guid);if(!record)return;
+        const auto& viewer=record->player;const auto casts=vehicleCastsFor(viewer);if(casts.size()>kLocalMaxVehicleCasts)return;
+        Writer w;w.u32(tick);w.u32(viewer.mapId);w.u32(viewer.instanceId);w.u32(viewer.positionRevision);w.u32(viewer.phaseMask);w.u8(uint8_t(casts.size()));
+        for(const auto& cast:casts)writeVehicleCast(w,cast);
+        send(Message::VehicleCasts,peer.session,w,peer.address);
+    }
+    void receiveVehicleCasts(Reader& r) {
+        const auto tick=r.u32(),map=r.u32(),instance=r.u32(),revision=r.u32(),phase=r.u32();const auto count=r.u8();
+        if(!r.valid||!tick||!newer(tick,vehicleCastSequence)||map!=self.mapId||instance!=self.instanceId||
+           revision!=self.positionRevision||phase!=self.phaseMask||count>kLocalMaxVehicleCasts)return;
+        std::vector<LocalVehicleCast> casts;casts.reserve(count);
+        for(unsigned i=0;i<count;++i) {
+            auto cast=readVehicleCast(r,gameplay.content());
+            if(!r.valid||cast.mapId!=map||cast.instanceId!=instance||cast.phaseMask!=phase||
+               std::any_of(casts.begin(),casts.end(),[&](const auto& prior){return prior.sourceGuid==cast.sourceGuid||prior.ownerGuid==cast.ownerGuid;}))return;
+            casts.push_back(cast);
+        }
+        if(!r.done())return;
+        gameplay.setRemoteVehicleCasts(std::move(casts));vehicleCastSequence=tick;vehicleCastsReady=true;
+        vehicleCastMap=map;vehicleCastInstance=instance;vehicleCastPositionRevision=revision;vehicleCastPhase=phase;lastSeen=now;
+    }
+    std::vector<LocalScriptDialogue> dialoguesFor(const LocalRealmPlayer& viewer) const {
+        std::vector<LocalScriptDialogue> result;
+        for(const auto& dialogue:gameplay.scriptDialogues())if(dialogue.mapId==viewer.mapId&&dialogue.instanceId==viewer.instanceId&&
+            (!dialogue.viewerGuid||dialogue.viewerGuid==viewer.guid))result.push_back(dialogue);
+        if(result.size()>16)result.erase(result.begin(),result.end()-16);
+        return result;
+    }
+    void dialogueDeck(const Peer& peer,uint32_t tick) {
+        const auto* record=findSaved(peer.guid);if(!record)return;
+        const auto& viewer=record->player;const auto rows=dialoguesFor(viewer);
+        const auto parts=uint8_t(std::max(size_t(1),(rows.size()+ScriptDialoguesPerPage-1)/ScriptDialoguesPerPage));
+        for(uint8_t part=0;part<parts;++part) {
+            const size_t begin=part*ScriptDialoguesPerPage,end=std::min(begin+ScriptDialoguesPerPage,rows.size());
+            Writer w;w.u32(tick);w.u32(viewer.mapId);w.u32(viewer.instanceId);w.u32(viewer.positionRevision);
+            w.u8(part);w.u8(parts);w.u8(uint8_t(rows.size()));w.u8(uint8_t(end-begin));
+            for(size_t i=begin;i<end;++i){w.u64(rows[i].revision);w.u64(rows[i].speakerGuid);w.u8(rows[i].chatType);w.text255(rows[i].text);}
+            send(Message::ScriptDialogues,peer.session,w,peer.address);
+        }
+    }
+    void receiveDialogues(Reader& r) {
+        const auto tick=r.u32(),map=r.u32(),instance=r.u32(),revision=r.u32();
+        const auto part=r.u8(),parts=r.u8(),total=r.u8(),count=r.u8();
+        const auto expectedParts=uint8_t(std::max(size_t(1),(size_t(total)+ScriptDialoguesPerPage-1)/ScriptDialoguesPerPage));
+        if(!r.valid||!tick||!newer(tick,dialogueSequence)||map!=self.mapId||instance!=self.instanceId||
+           revision!=self.positionRevision||total>16||!parts||parts>MaxScriptDialoguePages||parts!=expectedParts||part>=parts||
+           count!=std::min(ScriptDialoguesPerPage,size_t(total)-size_t(part)*ScriptDialoguesPerPage))return;
+        std::vector<LocalScriptDialogue> chunk;chunk.reserve(count);
+        for(unsigned i=0;i<count;++i) {
+            LocalScriptDialogue dialogue;dialogue.revision=r.u64();dialogue.speakerGuid=r.u64();dialogue.chatType=r.u8();
+            dialogue.viewerGuid=self.guid;dialogue.mapId=map;dialogue.instanceId=instance;dialogue.text=r.text255();
+            if(!r.valid||!dialogue.revision||!dialogue.speakerGuid||dialogue.text.empty()||dialogue.text.find('\0')!=std::string::npos||
+               (i&&chunk.back().revision>=dialogue.revision))return;
+            chunk.push_back(std::move(dialogue));
+        }
+        if(!r.done())return;
+        if(tick!=collectingDialogues) {
+            if(collectingDialogues&&!newer(tick,collectingDialogues))return;
+            collectingDialogues=tick;dialogueParts=parts;dialogueTotal=total;dialogueReceived.fill(false);for(auto& page:dialogueChunks)page.clear();
+        }
+        if(parts!=dialogueParts||total!=dialogueTotal||dialogueReceived[part])return;
+        dialogueChunks[part]=std::move(chunk);dialogueReceived[part]=true;
+        for(unsigned i=0;i<parts;++i)if(!dialogueReceived[i])return;
+        std::vector<LocalScriptDialogue> all;all.reserve(total);
+        for(unsigned i=0;i<parts;++i)for(auto& dialogue:dialogueChunks[i]) {
+            if(!all.empty()&&all.back().revision>=dialogue.revision)return;
+            all.push_back(std::move(dialogue));
+        }
+        if(all.size()!=total)return;
+        if(!gameplay.setRemoteScriptDialogues(std::move(all)))return;
+        dialogueSequence=tick;dialoguesReady=true;dialogueMap=map;dialogueInstance=instance;
+        dialoguePositionRevision=revision;lastSeen=now;
     }
     void receivePets(Reader& r) {
         const auto tick = r.u32(); const auto part = r.u8(), parts = r.u8(), count = r.u8();
@@ -2309,10 +3178,12 @@ struct LocalRealm::Impl {
         // buffers retain capacity. clear()+push_back() freed every nested
         // allocation and then recreated it, even with an unchanged roster.
         size_t npcCount = 0;
-        for (const auto& npc : gameplay.npcs()) if (npc.mapId == self.mapId && npc.instanceId == self.instanceId) {
+        for (const auto& npc : gameplay.npcs()) if (npc.mapId == self.mapId && npc.instanceId == self.instanceId &&
+                                                      gameplay.npcVisibleTo(self, npc)) {
             if (npcCount == npcView.size()) npcView.emplace_back();
             auto& copy = npcView[npcCount++];
-            copy = npc;
+            copy = npc;copy.playerThreat=localThreatView(npc,self);
+            copy.viewerVehicleCombat=self.vehicleGuid && localCombatWithNpc(self,npc);
             const auto disposition = gameplay.npcDisposition(self, npc);
             copy.hostile = disposition.attackable;
             copy.aggressive = disposition.aggressive;
@@ -2436,7 +3307,7 @@ struct LocalRealm::Impl {
         w.u8(1); writePlayer(w, record->player); writeNetworkVitals(w, record->player); writeAppearance(w, record->player);
         writeCast(w, record->player); w.u8(record->player.introSeen ? 1 : 0);
         send(Message::Welcome, peer.session, w, peer.address);
-        clock(peer); progress(peer); history(peer); world(peer, ++worldTick); petDeck(peer, ++petTick);
+        clock(peer); progress(peer); history(peer); world(peer, ++worldTick); petDeck(peer, ++petTick); projectileDeck(peer,++projectileTick);vehicleCastDeck(peer,++vehicleCastTick);gameObjectDeck(peer,++gameObjectTick);worldEventDeck(peer,++worldEventTick);dialogueDeck(peer,++dialogueTick);
         auctionBoard(peer, ++auctionTick);
         // The complete roster follows through the budgeted snapshot path.
         peer.lastSnapshot = -1;
@@ -2669,6 +3540,12 @@ struct LocalRealm::Impl {
             if (!record) return;
             if (freshPosition && !loading && (!record->player.dead || record->player.ghost) && !record->player.flight.active && incoming.mapId==record->player.mapId &&
                 positionRevision == record->player.positionRevision && instanceId == record->player.instanceId) {
+                if(record->player.vehicleGuid) {
+                    if(!gameplay.moveVehicle(record->player,incoming.mapId,incoming.x,incoming.y,incoming.z,incoming.orientation,uint8_t(movement))) {
+                        if(record->player.vehicleControl)++record->player.positionRevision;
+                    }
+                    dirty=true;
+                } else {
                 dirty = dirty || record->player.mapId != incoming.mapId || record->player.x != incoming.x ||
                         record->player.y != incoming.y || record->player.z != incoming.z || record->player.orientation != incoming.orientation;
                 record->player.mapId = incoming.mapId; record->player.x = incoming.x;
@@ -2682,6 +3559,7 @@ struct LocalRealm::Impl {
                 // since - and adopting its movement bits alone would end a fall
                 // the character is no longer having.
                 record->player.movementState = uint8_t(movement);
+                }
             }
             peer->sequence = seq; peer->lastSeen = now;
             if (type == Message::Leave) {
@@ -2743,13 +3621,16 @@ struct LocalRealm::Impl {
             for (auto& p : list) if (p.guid == self.guid) {
                 // Only the server can relocate a character (revive). Ordinary
                 // snapshots keep local movement prediction, never old stats.
-                if (newer(p.positionRevision, self.positionRevision)) {
+                if (newer(p.positionRevision, self.positionRevision) ||
+                    (p.positionRevision==self.positionRevision && p.vehicleGuid && !p.vehicleControl && newer(seq,vitalsSequence))) {
                     clearLocalCombo(self);self.meleeViews={};self.meleeSerial=0;
                     clearWorldForTravel(p);
                     self.mapId = p.mapId; self.x = p.x; self.y = p.y; self.z = p.z;
                     self.orientation = p.orientation; self.positionRevision = p.positionRevision; self.instanceId = p.instanceId;
+                    copyLocalVehicleState(self,p);
                 }
                 if (newer(seq, vitalsSequence)) {
+                    if(p.positionRevision==self.positionRevision)copyLocalVehicleState(self,p);
                     vitalsSequence = seq;
                     self.health = p.health; self.maxHealth = p.maxHealth; self.mana = p.mana; self.maxMana = p.maxMana;
                     self.mountSpellId=p.mountSpellId;self.dead = p.dead;copyDeathState(self,p); self.level = p.level; self.equipment = p.equipment; self.attackTarget = p.attackTarget; self.resourceType = p.resourceType;
@@ -2803,6 +3684,11 @@ struct LocalRealm::Impl {
             }
             if (type == Message::Npcs) { receiveWorld(r); return; }
             if (type == Message::Pets) { receivePets(r); return; }
+            if(type==Message::VehicleProjectiles){receiveVehicleProjectiles(r);return;}
+            if(type==Message::GameObjects){receiveGameObjects(r);return;}
+            if(type==Message::WorldEvents){receiveWorldEvents(r);return;}
+            if(type==Message::ScriptDialogues){receiveDialogues(r);return;}
+            if(type==Message::VehicleCasts){receiveVehicleCasts(r);return;}
             if (type == Message::Auctions) { receiveAuctions(r); return; }
             if (type == Message::MerchantState) { receiveMerchantState(r); return; }
             if (type == Message::MailState) { receiveMailState(r);return; }
@@ -2831,9 +3717,10 @@ struct LocalRealm::Impl {
                 const auto guid = r.u64(); const auto revision = r.u32(), count = r.u32();
                 LocalRealmPlayer updated = self; readPosition(r, updated);
                 if (guid != self.guid || !revision || count > LocalGameplay::MaxCompletedQuests ||
-                    !readProgress(r, updated) || !readCast(r, updated) || !readHealingViews(r,updated) ||
-                    !readAreaAuraViews(r,updated) ||
+                    !readProgress(r, updated) || !readVehicle(r,updated) || !readCast(r, updated) || !readHealingViews(r,updated) ||
+                    !readAreaAuraViews(r,updated) || !readGossip(r,updated) ||
                     !validPosition(updated.mapId, updated.x, updated.y, updated.z, updated.orientation)) return;
+                gameplay.resolveGossipOptions(updated.gossip); // the option texts from the guest's own catalog
                 const auto seen = r.u8(); if (seen > 1 || !r.done()) return;
                 updated.introSeen = seen != 0;
                 if (revision == historyRevision && count == self.completedQuestIds.size()) {
@@ -3011,7 +3898,10 @@ struct LocalRealm::Impl {
         self = record->player;
         if (networked && !openSocket(requestedPort)) return false;
         state = networked ? LocalRealmState::Hosting : LocalRealmState::SinglePlayer;
-        refreshPlayers(); refreshStatus(); dirty = true; gameplay.tick(0, activePlayers()); refreshPlayers();
+        if(!restoreWorldEventActions())return fail(error);
+        refreshPlayers(); refreshStatus(); dirty = true;
+        dirty=tickWorldEvents(0)||dirty;gameplay.tick(0, activePlayers());
+        dirty=reconcileWorldEventPhases()||dirty;refreshPlayers();
         if (!saveRealm()) return fail(error);
         LOG_INFO("[local_realm] Started ", networked ? "host" : "singleplayer", " realm=", realmId,
                  " map=", self.mapId, " xyz=", self.x, ",", self.y, ",", self.z, " port=", port);
@@ -3044,6 +3934,24 @@ bool LocalRealm::setStarterSpells(const std::vector<LocalSpellDefinition>& spell
 }
 bool LocalRealm::setFactionTemplates(const std::vector<LocalFactionTemplate>& rows, const std::array<uint32_t, 12>& races) {
     return impl_->gameplay.setFactionTemplates(rows, races, impl_->error);
+}
+bool LocalRealm::setFactionReputationBases(const std::vector<LocalFactionReputationBase>& rows) {
+    return impl_->gameplay.setFactionReputationBases(rows, impl_->error);
+}
+bool LocalRealm::setHolidayCalendar(std::vector<LocalHolidayDefinition> holidays) {
+    if(ready()||state()==LocalRealmState::Connecting){impl_->error="Stop the realm before changing the holiday calendar";return false;}
+    if(holidays.size()>4096){impl_->error="Holiday calendar limit exceeded";return false;}
+    std::sort(holidays.begin(),holidays.end(),[](const auto& a,const auto& b){return a.id<b.id;});
+    uint32_t previous=0;
+    for(const auto& holiday:holidays) {
+        if(!validLocalHolidayDefinition(holiday)||holiday.id==previous){impl_->error="Invalid or duplicate Holidays.dbc row";return false;}
+        previous=holiday.id;
+    }
+    impl_->holidayCalendar=std::move(holidays);impl_->error.clear();return true;
+}
+bool LocalRealm::setQuestFactionRewards(const std::array<int32_t,10>& gains,
+                                           const std::array<int32_t,10>& losses) {
+    return impl_->gameplay.setQuestFactionRewards(gains, losses);
 }
 bool LocalRealm::setCharacterSlot(uint8_t slot) {
     if (ready() || state() == LocalRealmState::Connecting || slot > 9) return false;
@@ -3292,6 +4200,7 @@ void LocalRealm::update(float deltaTime) {
                 if (action.command.action == LocalAction::ListAuction) w.u16(action.command.auctionCount);
                 if (action.command.action == LocalAction::BankMove || action.command.action == LocalAction::BankDepositSlot || action.command.action==LocalAction::BackpackMove || action.command.action==LocalAction::BankWithdrawSlot) { w.u16(action.command.bankSourceCount); w.u16(action.command.bankDestinationCount); }
                 w.u64(action.command.serviceNpcGuid);
+                if(action.command.action==LocalAction::VehicleAim){w.f32(action.command.vehicleAimYaw);w.f32(action.command.vehicleAimPitch);}
                 if(action.command.action==LocalAction::MailSend){
                     w.name(action.command.mailRecipient);w.text(action.command.mailSubject);w.text(action.command.mailBody);
                     w.u8(uint8_t(action.command.mailAttachments.size()));
@@ -3303,7 +4212,10 @@ void LocalRealm::update(float deltaTime) {
     } else if (p.authoritative()) {
         p.syncParty();
         const float step = std::min(deltaTime, 0.25f);
-        p.dirty = p.gameplay.tick(step, p.activePlayers()) || p.dirty;
+        p.dirty=p.tickAuthoritySimulation(step)||p.dirty;
+        // A script/portal action may have moved an actor after this frame's
+        // event boundary. Reconcile the exclusive overlay in the new scope.
+        p.dirty=p.reconcileWorldEventPhases()||p.dirty;
         // Populate here rather than in setPlayerbots, because the host screen
         // calls that before the realm starts: at that moment the state is still
         // Stopped, so authoritative() is false, realmId is zero and `self` is
@@ -3351,7 +4263,7 @@ void LocalRealm::update(float deltaTime) {
                 if (pages.empty()) pages = p.snapshotPages();
                 for (const auto& page : pages) p.send(Message::Snapshot, peer.session, page, peer.address);
                 if (p.now - peer.lastClock >= 1.0) { p.clock(peer); peer.lastClock = p.now; }
-                p.progress(peer); p.history(peer); p.world(peer, ++p.worldTick); p.petDeck(peer, ++p.petTick);
+                p.progress(peer); p.history(peer); p.world(peer, ++p.worldTick); p.petDeck(peer, ++p.petTick); p.projectileDeck(peer,++p.projectileTick);p.vehicleCastDeck(peer,++p.vehicleCastTick);p.gameObjectDeck(peer,++p.gameObjectTick);p.worldEventDeck(peer,++p.worldEventTick);p.dialogueDeck(peer,++p.dialogueTick);
                 p.auctionBoard(peer, ++p.auctionTick);
                 if(p.now-peer.lastMerchantSnapshot>=0.5)p.merchantState(peer);
                 if(p.now-peer.lastPartySnapshot>=0.5)p.sendParty(peer);
@@ -3379,6 +4291,18 @@ bool LocalRealm::setLocalPosition(uint32_t map, float x, float y, float z, float
     auto& p = *impl_;
     if (!ready() || (p.self.dead && !p.self.ghost) || (p.self.ghost && map!=p.self.mapId) || (p.self.instanceId && map != p.self.mapId) || !validPosition(map, x, y, z, o)) return false;
     if (p.worldLoading || p.self.flight.active || (p.self.transportEntry && map != p.self.mapId)) return false;
+    if(p.self.vehicleGuid) {
+        if(!p.self.vehicleControl || map!=p.self.mapId)return false;
+        if(p.authoritative()) {
+            if(!p.gameplay.moveVehicle(p.self,map,x,y,z,o,movement)) {
+                ++p.self.positionRevision;
+                if(auto* record=p.findSaved(p.self.guid))record->player=p.self;
+                p.dirty=true;return false;
+            }
+            if(auto* record=p.findSaved(p.self.guid))record->player=p.self;
+            p.dirty=true;p.refreshPlayers();return true;
+        }
+    }
     if (p.self.transportEntry) for (const auto& hull : p.gameplay.transports()) {
         if (hull.entry != p.self.transportEntry || hull.mapId != map) continue;
         const float c = std::cos(hull.orientation), s = std::sin(hull.orientation);
@@ -3415,8 +4339,15 @@ bool LocalRealm::command(const LocalRealmCommand& cmd) {
         const bool ok = p.runCommand(p.self, cmd, p.actionStatus);
         if(mailActionKind(cmd.action)){p.mailResultSuccess=ok;++p.mailResultRevision;}
         p.dirty = p.dirty || ok; p.refreshPlayers();
+        if(ok && cmd.action==LocalAction::UseGameObject)p.publishGameObjectChange(cmd.id,p.self.guid);
         LOG_INFO("[local_realm] Local action kind=", int(cmd.action), " ok=", ok, " result=", p.actionStatus);
         return ok;
+    }
+    if(cmd.action==LocalAction::UseGameObject) {
+        const auto* object=p.gameplay.content().gameObject(cmd.id);
+        if(object && localGameObjectStateful(object->kind) && !gameObjectState(cmd.id)) {
+            p.actionStatus="Waiting for shared object state";return false;
+        }
     }
     if (p.pendingCommands.size() >= 16) { p.actionStatus = "Wait for pending LAN actions"; return false; }
     p.pendingCommands.push_back({++p.nextCommand, cmd, -1, p.now});
@@ -3517,6 +4448,120 @@ bool LocalRealm::reclaimCorpse() { return command({LocalAction::ReclaimCorpse});
 bool LocalRealm::canReclaimCorpse()const { return ready() && localCanReclaimCorpse(impl_->self); }
 bool LocalRealm::setGraveyards(const std::vector<LocalGraveyardSite>& sites) { return impl_->gameplay.setGraveyards(sites,impl_->error); }
 bool LocalRealm::interact(uint64_t guid) { return command({LocalAction::Interact, guid, 0}); }
+bool LocalRealm::aimVehicle(float yaw,float pitch) {
+    LocalRealmCommand cmd{LocalAction::VehicleAim,impl_->self.vehicleGuid,impl_->self.vehicleSeat};
+    cmd.serviceNpcGuid=impl_->self.vehicleGuid;cmd.vehicleAimYaw=yaw;cmd.vehicleAimPitch=pitch;return command(cmd);
+}
+std::vector<LocalVehicleProjectile> LocalRealm::vehicleProjectiles() const {return impl_->projectilesFor(impl_->self);}
+std::vector<LocalVehicleCast> LocalRealm::vehicleCasts() const {
+    const auto& p=*impl_;if(!ready())return {};
+    if(!p.authoritative()&&(!p.vehicleCastsReady||p.vehicleCastMap!=p.self.mapId||p.vehicleCastInstance!=p.self.instanceId||
+       p.vehicleCastPositionRevision!=p.self.positionRevision||p.vehicleCastPhase!=p.self.phaseMask))return {};
+    return p.vehicleCastsFor(p.self);
+}
+std::vector<LocalWorldEventState> LocalRealm::worldEventStates() const {
+    const auto& p=*impl_;if(!ready())return {};
+    if(p.authoritative())return p.worldEventsFor(p.self);
+    return p.worldEventsReady&&p.worldEventMap==p.self.mapId&&p.worldEventInstance==p.self.instanceId&&
+        p.worldEventPositionRevision==p.self.positionRevision?p.worldEvents:std::vector<LocalWorldEventState>{};
+}
+bool LocalRealm::worldEventActive(uint32_t id) const {
+    const auto& events=worldEventStates();const auto it=std::lower_bound(events.begin(),events.end(),id,
+        [](const auto& event,uint32_t value){return event.id<value;});
+    return it!=events.end()&&it->id==id&&it->enabled&&it->active;
+}
+std::vector<LocalScriptDialogue> LocalRealm::scriptDialogues() const {
+    const auto& p=*impl_;if(!ready())return {};
+    if(!p.authoritative()&&(!p.dialoguesReady||p.dialogueMap!=p.self.mapId||p.dialogueInstance!=p.self.instanceId||
+       p.dialoguePositionRevision!=p.self.positionRevision))return {};
+    return p.dialoguesFor(p.self);
+}
+uint64_t LocalRealm::overwrittenScriptDialogues() const {return impl_->gameplay.overwrittenScriptDialogues();}
+bool LocalRealm::useVehicleAbility(uint8_t slot,uint64_t target) {
+    LocalRealmCommand cmd{LocalAction::VehicleAbility,target,slot};cmd.serviceNpcGuid=impl_->self.vehicleGuid;return command(cmd);
+}
+bool LocalRealm::switchVehicleSeat(uint8_t seat) { return command({LocalAction::SwitchVehicleSeat,impl_->self.vehicleGuid,seat}); }
+// 2.40 gossip: a chosen option and a text emote go to the authority; the
+// page itself is the owner's own state (LocalRealmPlayer::gossip).
+bool LocalRealm::gossipSelect(uint64_t npcGuid,uint32_t menuId,uint32_t optionId) {
+    LocalRealmCommand cmd{LocalAction::GossipSelect,npcGuid,optionId};cmd.bid=menuId;return command(cmd);
+}
+bool LocalRealm::textEmote(uint32_t emoteId,uint64_t targetGuid) { return command({LocalAction::TextEmote,targetGuid,emoteId}); }
+bool LocalRealm::gossipText(uint32_t textId,LocalGossipText& out) const { return ready()&&impl_->gameplay.gossipTextFor(textId,out); }
+bool LocalRealm::cycleVehicleSeat(int direction) {
+    const auto& p=impl_->self;
+    if(!p.vehicleGuid || (direction!=1 && direction!=-1))return false;
+    const auto& actors=impl_->gameplay.npcs();
+    const auto found=std::find_if(actors.begin(),actors.end(),[&](const auto& n){return n.guid==p.vehicleGuid;});
+    const auto* vehicle=found==actors.end()?nullptr:&*found;
+    if(!vehicle || !vehicle->vehicleSeatCount)return false;
+    for(int i=1;i<vehicle->vehicleSeatCount;++i) {
+        const auto seat=uint8_t((int(p.vehicleSeat)+direction*i+vehicle->vehicleSeatCount)%vehicle->vehicleSeatCount);
+        if(std::none_of(impl_->players.begin(),impl_->players.end(),[&](const auto& other){return other.guid!=p.guid && other.vehicleGuid==p.vehicleGuid && other.vehicleSeat==seat;}))
+            return switchVehicleSeat(seat);
+    }
+    return false;
+}
+bool LocalRealm::useGameObject(uint32_t id) {
+    LocalRealmCommand cmd{LocalAction::UseGameObject,localGameObjectGuid(id),id};
+    const auto* object=content().gameObject(id);
+    if(object && object->kind==LocalGameObjectKind::Chair) {
+        impl_->actionStatus="Chairs are used through chairSeat";++impl_->actionStatusRevision;return false;
+    }
+    if(object && localGameObjectStateful(object->kind)) {
+        const auto* state=gameObjectState(id);
+        if(!state){impl_->actionStatus="Waiting for shared object state";++impl_->actionStatusRevision;return false;}
+        cmd.bid=state->revision;
+        if(object->kind==LocalGameObjectKind::Door)cmd.buyout=state->status==0?1:0;
+    }
+    return command(cmd);
+}
+bool LocalRealm::chairSeat(uint32_t id,LocalChairSeat& seat) const {
+    const auto& p=*impl_;seat={};
+    if(!ready())return false;
+    const auto* object=p.gameplay.content().gameObject(id);
+    if(!object || object->kind!=LocalGameObjectKind::Chair || !localGameObjectUsable(*object,p.self,p.gameplay.content()))return false;
+    const int slot=localChairNearestFreeSlot(*object,p.self.x,p.self.y,[&](float x,float y){
+        return std::any_of(p.players.begin(),p.players.end(),[&](const auto& other){
+            return other.guid!=p.self.guid && other.mapId==object->mapId && other.instanceId==p.self.instanceId &&
+                std::hypot(other.x-x,other.y-y)<0.1f && std::abs(other.z-object->z)<2.f;
+        });
+    });
+    if(slot<0)return false;
+    const auto position=localChairSlotPosition(*object,uint8_t(slot));
+    seat.objectId=object->id;seat.slot=uint8_t(slot);seat.mapId=object->mapId;
+    seat.x=position[0];seat.y=position[1];seat.z=object->z;seat.orientation=object->orientation;
+    seat.standState=localChairStandState(*object);
+    return true;
+}
+const LocalGameObjectState* LocalRealm::gameObjectState(uint32_t id) const {
+    const auto& p=*impl_;const auto* object=p.gameplay.content().gameObject(id);
+    if(!ready() || !object || !localGameObjectStateful(object->kind) || !localGameObjectVisible(*object,p.self))return nullptr;
+    if(p.authoritative())return p.gameplay.gameObjectState(id);
+    if(!p.gameObjectContextReady())return nullptr;
+    const auto it=std::lower_bound(p.remoteGameObjects.begin(),p.remoteGameObjects.end(),id,
+        [](const auto& state,uint32_t key){return state.id<key;});
+    return it!=p.remoteGameObjects.end()&&it->id==id?&*it:nullptr;
+}
+std::vector<LocalGameObjectState> LocalRealm::gameObjectStates() const {
+    const auto& p=*impl_;if(!ready())return {};
+    return p.authoritative()?p.gameObjectsFor(p.self):p.gameObjectContextReady()?p.remoteGameObjects:std::vector<LocalGameObjectState>{};
+}
+const LocalGameObject* LocalRealm::nearbyGameObject() const {
+    const auto& p=*impl_;if(!ready())return nullptr;
+    if(p.authoritative())return p.gameplay.nearbyGameObject(p.self);
+    const LocalGameObject* best=nullptr;float distance=std::numeric_limits<float>::max();
+    for(const auto& object:p.gameplay.content().gameObjects)if(localGameObjectUsable(object,p.self,p.gameplay.content())) {
+        if(localGameObjectStateful(object.kind)) {
+            const auto* state=gameObjectState(object.id);if(!state || state->status==kLocalGameObjectDepleted || state->status==kLocalGameObjectDormant)continue;
+        }
+        const float dx=object.x-p.self.x,dy=object.y-p.self.y,dz=object.z-p.self.z,squared=dx*dx+dy*dy+dz*dz;
+        if(squared<distance){distance=squared;best=&object;}
+    }
+    return best;
+}
+bool LocalRealm::enterVehicle(uint64_t guid, uint8_t seat) { return command({LocalAction::EnterVehicle, guid, seat}); }
+bool LocalRealm::exitVehicle() { return command({LocalAction::ExitVehicle, 0, 0}); }
 bool LocalRealm::enterPortal(uint32_t id, bool privateInstance) { return command({LocalAction::EnterPortal, privateInstance ? 1ULL : 0ULL, id}); }
 bool LocalRealm::leaveInstance() { return command({LocalAction::LeaveInstance, 0, 0}); }
 std::vector<LocalRealmPortal> LocalRealm::availablePortals() const {
@@ -3720,7 +4765,20 @@ bool LocalRealm::buybackItem(uint32_t entryId, uint64_t npcGuid) {
 }
 uint32_t LocalRealm::vendorBuyPrice(uint32_t itemId, uint16_t count) const {
     const auto* item = content().item(itemId);
-    return item ? localVendorBuyPrice(*item, count) : 0;
+    if (!item) return 0;
+    uint8_t rank = 0;
+    if (ready()) {
+        if (const auto* vendor = nearbyVendor()) {
+            if (const auto* npc = content().npc(vendor->entry)) {
+                const auto& factions = impl_->gameplay.factionTemplates();
+                const auto it = std::lower_bound(factions.begin(), factions.end(), npc->faction,
+                    [](const LocalFactionTemplate& row, uint32_t id) { return row.id < id; });
+                if (it != factions.end() && it->id == npc->faction && it->faction)
+                    rank = localReputationRank(impl_->self, it->faction);
+            }
+        }
+    }
+    return uint32_t(std::min<uint64_t>(localVendorDiscountedBuyTotal(*item, count, rank), 1000000000ULL));
 }
 uint32_t LocalRealm::vendorSellPrice(uint32_t itemId, uint16_t count) const {
     const auto* item = content().item(itemId);
@@ -3829,6 +4887,13 @@ void LocalRealm::stop() {
     p.remoteAuctions.clear();p.auctionSequence=0;p.collectingAuctions=0;p.auctionParts=0;
     p.auctionReceived.fill(false);for(auto& page:p.auctionChunks)page.clear();
     p.petView.clear();p.petSequence=0;p.collectingPets=0;p.petParts=0;
+    p.gameplay.setRemoteVehicleProjectiles({});p.projectileSequence=p.projectileTick=0;
+    p.gameplay.setRemoteVehicleCasts({});p.vehicleCastSequence=p.vehicleCastTick=0;p.vehicleCastsReady=false;
+    p.vehicleCastMap=p.vehicleCastInstance=p.vehicleCastPositionRevision=p.vehicleCastPhase=0;
+    p.gameplay.setRemoteScriptDialogues({});p.dialogueSequence=p.dialogueTick=p.collectingDialogues=0;p.dialogueParts=p.dialogueTotal=0;p.dialoguesReady=false;
+    p.dialogueMap=p.dialogueInstance=p.dialoguePositionRevision=0;p.dialogueReceived.fill(false);for(auto& page:p.dialogueChunks)page.clear();
+    p.clearGameObjects();p.gameObjectSequence=p.gameObjectTick=0;
+    p.clearWorldEvents();p.worldEventSequence=p.worldEventTick=0;p.worldEventMillisRemainder=0;
     p.petReceived.fill(false);for(auto& page:p.petChunks)page.clear();
     p.session=p.joinNonce=0;
     clearLocalCombo(p.self);p.self.meleeViews={};p.self.meleeSerial=0;

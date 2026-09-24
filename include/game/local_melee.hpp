@@ -34,6 +34,7 @@ int32_t localRangedCritRating(const LocalRealmPlayer&,const LocalWorldContent&);
 float localRangedCritRatingBonus(const LocalRealmPlayer&,const LocalWorldContent&);
 float localRangedCritChance(const LocalRealmPlayer&,const LocalWorldContent&);
 float localSpellCritChance(const LocalRealmPlayer&,const LocalWorldContent&,uint32_t schoolMask);
+float localSpellCritChance(const LocalRealmPlayer&,const LocalWorldContent&,const LocalSpellDefinition&);
 float localIncomingCritReductionPct(const LocalRealmPlayer&,const LocalWorldContent&);
 uint32_t localNpcCreatureType(uint32_t entry);
 bool localNpcIsDemonOrUndead(uint32_t entry);
@@ -84,6 +85,10 @@ void localRescaleMeleeTimers(LocalRealmPlayer&,float oldMainPeriod,float oldOffP
 struct LocalMeleeSpellRules { bool alwaysHit=false,noActiveDefense=false,fullBlock=false; };
 LocalMeleeOutcome localRollPlayerMelee(const LocalRealmPlayer&,const LocalRealmNpc&,const LocalMeleeStats&,bool special,uint32_t roll,uint32_t criticalRoll,bool offHand=false,LocalMeleeSpellRules rules={});
 LocalMeleeOutcome localRollNpcMelee(const LocalRealmNpc&,const LocalRealmPlayer&,const LocalMeleeStats&,uint32_t roll);
+/// Unit::MeleeSpellHitResult for a creature melee special; roll 0..10000.
+LocalMeleeOutcome localRollNpcMeleeSpell(const LocalRealmNpc&,const LocalRealmPlayer&,const LocalMeleeStats&,const LocalSpellDefinition&,uint32_t roll);
+/// Unit::isSpellBlocked for a physical creature melee special; roll 0..9999.
+bool localNpcMeleeSpellBlocked(const LocalRealmNpc&,const LocalRealmPlayer&,const LocalMeleeStats&,const LocalSpellDefinition&,uint32_t roll);
 // Creature attacker against a creature victim (Unit::RollMeleeOutcomeAgainst
 // with a non-player attacker): the victim's own avoidance from its creature
 // flags and rank, the source crushing rule for a four-level advantage and a

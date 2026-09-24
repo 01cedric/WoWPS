@@ -56,6 +56,12 @@ public:
     bool setCharacterSlot(uint8_t slot);
     bool setFactionTemplates(const std::vector<LocalFactionTemplate>& rows,
                              const std::array<uint32_t, 12>& raceTemplates);
+    bool setFactionReputationBases(const std::vector<LocalFactionReputationBase>& rows);
+    /// Install the player's WotLK Holidays.dbc stage durations before start.
+    /// Calendar events fail closed when a referenced row is unavailable.
+    bool setHolidayCalendar(std::vector<LocalHolidayDefinition> holidays);
+    bool setQuestFactionRewards(const std::array<int32_t,10>& gains,
+                                const std::array<int32_t,10>& losses);
     bool setCharacterOptions(uint8_t race, uint8_t classId, uint8_t gender);
     // Appearance for a character this start creates (an existing slot keeps its own).
     bool setCharacterAppearance(uint8_t skin, uint8_t face, uint8_t hairStyle, uint8_t hairColor,
@@ -151,6 +157,34 @@ public:
     bool canReclaimCorpse() const;
     bool setGraveyards(const std::vector<LocalGraveyardSite>& sites);
     bool interact(uint64_t npcGuid);
+    bool switchVehicleSeat(uint8_t seat);
+    // 2.40 gossip (LAN109).
+    bool gossipSelect(uint64_t npcGuid,uint32_t menuId,uint32_t optionId);
+    bool textEmote(uint32_t emoteId,uint64_t targetGuid);
+    bool gossipText(uint32_t textId,LocalGossipText& out) const;
+    bool useVehicleAbility(uint8_t slot,uint64_t target=0);
+    bool aimVehicle(float yaw,float pitch);
+    std::vector<LocalVehicleProjectile> vehicleProjectiles() const;
+    std::vector<LocalVehicleCast> vehicleCasts() const;
+    /// Host-owned shared schedule state. A guest exposes only a complete,
+    /// context-matched LAN snapshot and never advances it locally.
+    std::vector<LocalWorldEventState> worldEventStates() const;
+    bool worldEventActive(uint32_t eventId) const;
+    /// Recent dialogue visible to this player. A guest exposes it only while
+    /// the complete LAN deck still matches its current world revision.
+    std::vector<LocalScriptDialogue> scriptDialogues() const;
+    uint64_t overwrittenScriptDialogues() const;
+    bool cycleVehicleSeat(int direction);
+    bool useGameObject(uint32_t objectId);
+    /// GAMEOBJECT_TYPE_CHAIR: nearest free slot for the local character. The
+    /// client applies the seat (position, facing, stand state) itself; chairs
+    /// own no shared authority state.
+    bool chairSeat(uint32_t objectId,LocalChairSeat& seat) const;
+    const LocalGameObjectState* gameObjectState(uint32_t objectId) const;
+    std::vector<LocalGameObjectState> gameObjectStates() const;
+    const LocalGameObject* nearbyGameObject() const;
+    bool enterVehicle(uint64_t vehicleGuid, uint8_t seat = 0);
+    bool exitVehicle();
     bool enterPortal(uint32_t portalId, bool privateInstance = false);
     bool leaveInstance();
     // Local parties are session membership, not saved instance/loot/XP rules.

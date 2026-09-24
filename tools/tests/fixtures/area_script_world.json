@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "name": "Synthetic area and timer-sequence regression fixture",
+  "start": {"mapId": 0, "x": 0, "y": 0, "z": 0},
+  "items": [], "spells": [],
+  "npcs": [{"id": 50, "name": "Test guide", "health": 1000, "hostile": false, "questGiver": true}],
+  "spawns": [{"id": 1, "entry": 50, "mapId": 0, "x": 0, "y": 0, "z": 0}],
+  "quests": [{"id": 1, "title": "Test event sequence", "giverEntry": 50, "turnInEntry": 50,
+    "objectives": [{"type": "script", "entry": 600, "count": 2, "text": "Finish the test sequence"}]}],
+  "scriptAreas": [{"id": 800, "mapId": 0, "x": 20, "y": 0, "z": 0, "radius": 2,
+    "hysteresis": 0.5, "requiredPhaseMask": 1}],
+  "scriptTriggers": [
+    {"trigger": "questAccept", "sourceId": 1, "scriptId": 600, "value": 0},
+    {"trigger": "areaEnter", "sourceId": 800, "scriptId": 600, "value": 1,
+      "scheduleTimerId": 901, "scheduleDelayMs": 100},
+    {"trigger": "areaEnter", "sourceId": 800, "scriptId": 610, "operation": "add", "value": 1},
+    {"trigger": "areaLeave", "sourceId": 800, "scriptId": 611, "operation": "add", "value": 1,
+      "cancelTimerId": 901},
+    {"trigger": "areaLeave", "sourceId": 800, "cancelTimerId": 902},
+    {"trigger": "questComplete", "sourceId": 1, "scriptId": 613, "operation": "add", "value": 1}
+  ],
+  "scriptTimers": [
+    {"timerId": 901, "scriptId": 600, "value": 2, "scheduleTimerId": 902, "scheduleDelayMs": 100},
+    {"timerId": 902, "scriptId": 612, "operation": "add", "value": 1}
+  ]
+}

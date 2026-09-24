@@ -521,11 +521,14 @@ void Renderer::updatePerFrameUBO() {
         // Shift fog to blue when camera is significantly underwater (terrain water only).
         if (waterRenderer && camera) {
             glm::vec3 camPos = camera->getPosition();
-            auto waterH = waterRenderer->getNearestWaterHeightAt(camPos.x, camPos.y, camPos.z);
+            auto waterSample = waterRenderer->getNearestWaterSampleAt(
+                camPos.x, camPos.y, camPos.z);
+            if (waterSample && cameraIndoors_ && !waterSample->fromWmo())
+                waterSample.reset();
             constexpr float MIN_SUBMERSION = 2.0f;
-            if (waterH && camPos.z < (*waterH - MIN_SUBMERSION)
-                       && !waterRenderer->isWmoWaterAt(camPos.x, camPos.y)) {
-                float depth = *waterH - camPos.z - MIN_SUBMERSION;
+            if (waterSample && camPos.z < (waterSample->height - MIN_SUBMERSION)
+                            && !waterSample->fromWmo()) {
+                float depth = waterSample->height - camPos.z - MIN_SUBMERSION;
                 float blend = glm::clamp(1.0f - std::exp(-depth * 0.08f), 0.0f, 0.7f);
                 glm::vec3 underwaterFog(0.03f, 0.09f, 0.18f);
                 glm::vec3 blendedFog = glm::mix(lp.fogColor, underwaterFog, blend);
@@ -1541,8 +1544,9 @@ void Renderer::endFrame() {
         bool cameraSubmerged = false;
         if (waterRenderer && camera) {
             const glm::vec3 eye = camera->getPosition();
-            const auto surface = waterRenderer->getNearestWaterHeightAt(eye.x, eye.y, eye.z);
-            cameraSubmerged = surface && eye.z < *surface - 0.1f;
+            auto sample = waterRenderer->getNearestWaterSampleAt(eye.x, eye.y, eye.z);
+            if (sample && cameraIndoors_ && !sample->fromWmo()) sample.reset();
+            cameraSubmerged = sample && eye.z < sample->height - 0.1f;
         }
         const bool inspectSurfaceShadow = postProcessPipeline_->getVolumetricDebug() == 4;
         const auto volumeEligibility = volumetricEligibility(cameraSubmerged,
@@ -2065,8 +2069,9 @@ void Renderer::update(float deltaTime) {
         const float gameTime = environmentHandler ? environmentHandler->getGameTime() : -1.0f;
         bool isUnderwater = false;
         if (waterRenderer && camera) {
-            const auto surface = waterRenderer->getNearestWaterHeightAt(camPos.x, camPos.y, camPos.z);
-            isUnderwater = surface && camPos.z < *surface - 0.1f;
+            auto sample = waterRenderer->getNearestWaterSampleAt(camPos.x, camPos.y, camPos.z);
+            if (sample && cameraIndoors_ && !sample->fromWmo()) sample.reset();
+            isUnderwater = sample && camPos.z < sample->height - 0.1f;
         }
         lightingManager->update(characterPosition, mapId, resolvedZoneId,
                                 gameTime, forecast.usesOvercastLighting(), isUnderwater, deltaTime);
@@ -3410,8 +3415,12 @@ if (overlaySystem_ && waterRenderer && camera) {
         // overlay stopped, and the scene snapped bright at a fixed depth.
         // Deep ocean is far deeper than that, so reach much further here.
         constexpr float kUnderwaterReach = 400.0f;
-        auto waterH = waterRenderer->getNearestWaterHeightAt(
+        auto waterSample = waterRenderer->getNearestWaterSampleAt(
             camPos.x, camPos.y, camPos.z, kUnderwaterReach);
+        if (waterSample && cameraIndoors_ && !waterSample->fromWmo())
+            waterSample.reset();
+        const std::optional<float> waterH = waterSample
+            ? std::optional<float>(waterSample->height) : std::nullopt;
         // How far the eye is under the surface. The tint used to wait
         // until 1.5 units down and then apply to the whole screen at
         // once, so crossing the surface was a step: no tint, no tint,
@@ -3437,7 +3446,7 @@ if (overlaySystem_ && waterRenderer && camera) {
                 lastLog = globalTime;
                 LOG_INFO("underwater: camZ=", camPos.z, " waterZ=", *waterH,
                          " eyeDepth=", eyeDepth, " band=", kCrossingBand,
-                         " wmoWater=", waterRenderer->isWmoWaterAt(camPos.x, camPos.y) ? 1 : 0,
+                         " wmoWater=", (waterSample && waterSample->fromWmo()) ? 1 : 0,
                          " drawing=", (eyeDepth > 0.0f) ? 1 : 0);
             }
         }
@@ -3457,10 +3466,9 @@ if (overlaySystem_ && waterRenderer && camera) {
         // whose ray enters the world above the surface comes out untouched -
         // so the band above the surface costs nothing where there is no water.
         if (waterH && eyeDepth > -kCrossingBand
-                   && !waterRenderer->isWmoWaterAt(camPos.x, camPos.y)) {
-            bool canal = false;
-            if (auto lt = waterRenderer->getWaterTypeAt(camPos.x, camPos.y))
-                canal = (*lt == 5 || *lt == 13 || *lt == 17);
+                   && waterSample && !waterSample->fromWmo()) {
+            const uint16_t lt = waterSample->liquidType;
+            const bool canal = (lt == 5 || lt == 13 || lt == 17);
             // Until the eye passes the surface the view is darkened by
             // looking through the water plane itself, which is strong -
             // its alpha runs up towards 0.9 with depth. Once the eye is
@@ -4451,19 +4459,34 @@ void Renderer::renderShadowPass() {
         (shadowHalfExtent_ > 1.0f ? shadowHalfExtent_ : shadowDistance_) * 1.35f;
     // With shadows off the pass still begins and ends, so the map is cleared
     // and left where its readers expect it; only the casters are skipped.
-    const auto castersStart = std::chrono::steady_clock::now();
-    double terrainShadowMs=0, wmoShadowMs=0, m2ShadowMs=0, characterShadowMs=0;
-    auto stamp=castersStart;
+    // Fine-grained CPU shadow timing is diagnostic-only. Sampling every sub-pass
+    // every frame added multiple steady_clock calls to a serial prefix of the
+    // frame even though the values were printed only once per 300 frames.
+    static uint32_t shadowTimingFrames = 0;
+    const bool profileShadowTiming = (++shadowTimingFrames % 300u) == 1u;
+    double terrainShadowMs = 0.0, wmoShadowMs = 0.0, m2ShadowMs = 0.0, characterShadowMs = 0.0;
+    auto stamp = profileShadowTiming ? std::chrono::steady_clock::now()
+                                     : std::chrono::steady_clock::time_point{};
+    const auto markShadowStage = [&](double& bucket) {
+        if (!profileShadowTiming) return;
+        const auto now = std::chrono::steady_clock::now();
+        bucket += std::chrono::duration<double, std::milli>(now - stamp).count();
+        stamp = now;
+    };
     if (drawCasters && drawObjectCasters && m2Renderer) {
         m2Renderer->beginShadowFrame();
-        const auto now = std::chrono::steady_clock::now();
-        m2ShadowMs += std::chrono::duration<double,std::milli>(now-stamp).count();
-        stamp = now;
+        markShadowStage(m2ShadowMs);
     }
     // Both actual camera clip volumes can sample the atlas. The reflected
     // oblique projection must be included even when no reflected surface
     // lies in the main camera's receiver hull.
     const bool haveReceiverHull = camera && camera->getFarPlane() > camera->getNearPlane();
+    // The camera clip transform is identical for both cascades. Building it in
+    // the loop paid two projection/view matrix multiplies on every shadowed
+    // frame before any caster was considered.
+    const glm::mat4 cameraClip = haveReceiverHull
+        ? camera->getProjectionMatrix() * camera->getViewMatrix()
+        : glm::mat4(1.0f);
     glm::mat4 reflectionClip(1.0f);
     bool haveReflectionReceivers = false;
 #ifdef WOWEE_PS4
@@ -4502,8 +4525,7 @@ void Renderer::renderShadowPass() {
     const float cascadeExtent = cascade == 0 ? nearShadowHalfExtent_ : shadowHalfExtent_;
     const float receiverSupport = 4.0f * cascadeExtent / static_cast<float>(side);
     if (haveReceiverHull) {
-        receiverHull.buildClipped(camera->getProjectionMatrix() * camera->getViewMatrix(),
-                                  cascadeMatrix,receiverSupport);
+        receiverHull.buildClipped(cameraClip, cascadeMatrix, receiverSupport);
         if (haveReflectionReceivers) {
             reflectionReceiverHull.buildClipped(reflectionClip,cascadeMatrix,receiverSupport);
             receiverHull.includeAdditional(&reflectionReceiverHull);
@@ -4512,37 +4534,42 @@ void Renderer::renderShadowPass() {
     const auto* receiver = haveReceiverHull ? &receiverHull : nullptr;
     if (drawCasters) {
     if (terrainRenderer) {
-        terrainRenderer->renderShadow(currentCmd, cascadeMatrix, cascadeCenter, cascadeRadius, receiver);
-            { const auto now=std::chrono::steady_clock::now(); terrainShadowMs+=std::chrono::duration<double,std::milli>(now-stamp).count();stamp=now; }
+        terrainRenderer->renderShadow(currentCmd, cascadeMatrix, cascadeCenter, cascadeRadius, cascade, receiver);
+            markShadowStage(terrainShadowMs);
     }
     // Buildings, doodads, creatures, NPCs and every player character use the
     // light's own volume, so off-camera occluders remain eligible as well.
     if (drawObjectCasters) {
         if (wmoRenderer) {
             wmoRenderer->renderShadow(currentCmd, cascadeMatrix, cascadeCenter, cascadeRadius, cascade, receiver);
-            { const auto now=std::chrono::steady_clock::now(); wmoShadowMs+=std::chrono::duration<double,std::milli>(now-stamp).count();stamp=now; }
+            markShadowStage(wmoShadowMs);
         }
         if (m2Renderer) {
-            // Omit only far doodads smaller than half a far shadow texel;
-            // the focused map retains every intersecting nearby caster.
+            // The far atlas region is 512x512 while the near region is 1024.
+            // Omit far doodads whose conservative projected diameter cannot
+            // cover one far texel; the focused near map still retains every
+            // intersecting caster. 2.06 used SHADOW_MAP_SIZE here, which was
+            // half a far texel and left thousands of sub-pixel casters alive.
             const float minCasterDiameter = cascade == 0 ? 0.0f
-                : 2.0f * shadowHalfExtent_ / static_cast<float>(SHADOW_MAP_SIZE);
+                : 4.0f * shadowHalfExtent_ / static_cast<float>(SHADOW_MAP_SIZE);
             m2Renderer->renderShadow(currentCmd, cascadeMatrix, globalTime,
                 cascadeCenter, cascadeRadius, cascade, minCasterDiameter,
                 receiver);
-            { const auto now=std::chrono::steady_clock::now(); m2ShadowMs+=std::chrono::duration<double,std::milli>(now-stamp).count();stamp=now; }
+            markShadowStage(m2ShadowMs);
         }
         if (characterRenderer) {
-            characterRenderer->renderShadow(currentCmd, cascadeMatrix, cascadeCenter, cascadeRadius, cascade, receiver);
-            { const auto now=std::chrono::steady_clock::now(); characterShadowMs+=std::chrono::duration<double,std::milli>(now-stamp).count();stamp=now; }
+            const float minCharacterDiameter = cascade == 0 ? 0.0f
+                : 4.0f * shadowHalfExtent_ / static_cast<float>(SHADOW_MAP_SIZE);
+            characterRenderer->renderShadow(currentCmd, cascadeMatrix, cascadeCenter,
+                cascadeRadius, cascade, minCharacterDiameter, receiver);
+            markShadowStage(characterShadowMs);
         }
     }
     }  // drawCasters
     }  // atlas regions; disjoint viewport/scissor, one clear and transition
     if (drawCasters && drawObjectCasters && m2Renderer) m2Renderer->endShadowFrame();
 
-    static uint32_t shadowTimingFrames=0;
-    if (++shadowTimingFrames % 300u == 1u)
+    if (profileShadowTiming)
         LOG_INFO("[SHADOW_PERF] terrainMs=",terrainShadowMs," wmoMs=",wmoShadowMs,
                  " m2Ms=",m2ShadowMs," charactersMs=",characterShadowMs,
                  " quality=",shadowQuality_," objectCasters=",drawObjectCasters,
@@ -4591,78 +4618,73 @@ void Renderer::buildFrameGraph(game::GameHandler* gameHandler) {
     (void)gameHandler;
     if (!renderGraph_) return;
 
-    renderGraph_->reset();
+    // The pre-pass topology is static for the lifetime of a Renderer. Rebuilding
+    // it every frame used to recreate strings, vectors, std::function targets,
+    // an unordered_map, adjacency lists and Kahn's queue merely to recover the
+    // exact same five-node order. Keep the compiled graph and let callbacks read
+    // current frame state at execution time. Dynamic state remains a pass toggle.
+    if (renderGraph_->getPasses().empty()) {
+        auto shadowDepth = renderGraph_->findResource("shadow_depth");
+        auto reflTex = renderGraph_->findResource("reflection_texture");
 
-    auto shadowDepth = renderGraph_->findResource("shadow_depth");
-    auto reflTex = renderGraph_->findResource("reflection_texture");
+        // Minimap composites (no dependencies - standalone off-screen render target)
+        renderGraph_->addPass("minimap_composite", {}, {},
+            [this](VkCommandBuffer cmd) {
+                if (minimap && minimap->isEnabled() && camera) {
+                    glm::vec3 minimapCenter = camera->getPosition();
+                    if (cameraController && cameraController->isThirdPerson())
+                        minimapCenter = characterPosition;
+                    minimap->compositePass(cmd, minimapCenter);
+                }
+            });
 
-    // Minimap composites (no dependencies - standalone off-screen render target)
-    renderGraph_->addPass("minimap_composite", {}, {},
-        [this](VkCommandBuffer cmd) {
-            if (minimap && minimap->isEnabled() && camera) {
-                glm::vec3 minimapCenter = camera->getPosition();
-                if (cameraController && cameraController->isThirdPerson())
-                    minimapCenter = characterPosition;
-                minimap->compositePass(cmd, minimapCenter);
-            }
-        });
+        // World map composite (standalone)
+        renderGraph_->addPass("worldmap_composite", {}, {},
+            [this](VkCommandBuffer cmd) {
+                if (worldMap) worldMap->compositePass(cmd);
+            });
 
-    // World map composite (standalone)
-    renderGraph_->addPass("worldmap_composite", {}, {},
-        [this](VkCommandBuffer cmd) {
-            if (worldMap) worldMap->compositePass(cmd);
-        });
+        // Character preview composites (standalone)
+        renderGraph_->addPass("preview_composite", {}, {},
+            [this](VkCommandBuffer cmd) {
+                uint32_t frame = vkCtx->getCurrentFrame();
+                for (auto* preview : activePreviews_) {
+                    if (preview && preview->isModelLoaded())
+                        preview->compositePass(cmd, frame);
+                }
+            });
 
-    // Character preview composites (standalone)
-    renderGraph_->addPass("preview_composite", {}, {},
-        [this](VkCommandBuffer cmd) {
-            uint32_t frame = vkCtx->getCurrentFrame();
-            for (auto* preview : activePreviews_) {
-                if (preview && preview->isModelLoaded())
-                    preview->compositePass(cmd, frame);
-            }
-        });
+        // Shadow pre-pass → outputs shadow_depth
+        renderGraph_->addPass("shadow_pass", {}, {shadowDepth},
+            [this](VkCommandBuffer) {
+                // Not gated on shadowsEnabled: renderShadowPass is what clears the
+                // map and leaves it in the layout its readers expect, and it
+                // already skips the casters on its own when shadows are off.
+                if (shadowDepthImage[0] != VK_NULL_HANDLE) {
+                    const auto t0 = std::chrono::steady_clock::now();
+                    renderShadowPass();
+                    lastShadowPassMs = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - t0).count();
+                } else {
+                    lastShadowPassMs = 0.0;
+                }
+            });
 
-    // Shadow pre-pass → outputs shadow_depth
-    renderGraph_->addPass("shadow_pass", {}, {shadowDepth},
-        [this](VkCommandBuffer) {
-            // Not gated on shadowsEnabled: renderShadowPass is what clears the
-            // map and leaves it in the layout its readers expect, and it
-            // already skips the casters on its own when shadows are off.
-            // Declining to call it here put the transition back where it was
-            // before, which is the whole of the fault this was meant to end.
-            if (shadowDepthImage[0] != VK_NULL_HANDLE) {
-                // B39: both pre-passes run single-threaded on the main thread,
-                // ahead of the multithreaded main pass, and neither was timed.
-                // On a slow frame they are a serial prefix nobody could see.
+        // Reflection pre-pass → outputs reflection_texture (reads scene, so after shadow)
+        renderGraph_->addPass("reflection_pass", {shadowDepth}, {reflTex},
+            [this](VkCommandBuffer) {
                 const auto t0 = std::chrono::steady_clock::now();
-                renderShadowPass();
-                lastShadowPassMs = std::chrono::duration<double, std::milli>(
+                renderReflectionPass();
+                lastReflectionPassMs = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - t0).count();
-            } else {
-                lastShadowPassMs = 0.0;
-            }
-        });
-    // Left enabled even with shadows off, as long as the image exists.
-    //
-    // A disabled pass is skipped whole, and that includes the image barriers
-    // declared on it - so turning shadows off stopped the shadow map ever
-    // being transitioned, while the passes that read it kept it bound and
-    // sampled it in whatever layout it was last left in. The lambda above
-    // already declines to draw anything; what has to keep happening is the
-    // transition.
+            });
+
+        renderGraph_->compile();
+    }
+
+    // Left enabled even with shadows off, as long as the image exists. A
+    // disabled pass skips the transition performed inside renderShadowPass too.
     renderGraph_->setPassEnabled("shadow_pass", shadowDepthImage[0] != VK_NULL_HANDLE);
-
-    // Reflection pre-pass → outputs reflection_texture (reads scene, so after shadow)
-    renderGraph_->addPass("reflection_pass", {shadowDepth}, {reflTex},
-        [this](VkCommandBuffer) {
-            const auto t0 = std::chrono::steady_clock::now();
-            renderReflectionPass();
-            lastReflectionPassMs = std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - t0).count();
-        });
-
-    renderGraph_->compile();
 }
 
 } // namespace rendering

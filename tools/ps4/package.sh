@@ -109,7 +109,24 @@ done
 
 python3 "$REPO_DIR/tools/ps4/verify_shaders.py"
 
-rm -rf "$OUT_DIR"
+# Resolve and validate the exact generated staging target before cleanup.
+OUT_DIR="$(python3 - "$REPO_DIR" "$BUILD_DIR" "$OUT_DIR" "$OO_PS4_TOOLCHAIN" <<'PY'
+from pathlib import Path
+import sys
+repo, build, output, sdk = (Path(p).resolve() for p in sys.argv[1:])
+protected = (Path('/'), Path.home().resolve(), repo, build, sdk)
+if any(output == p or output in p.parents for p in protected):
+    sys.exit('error: unsafe package output directory')
+if sdk in output.parents or (repo in output.parents and build not in output.parents):
+    sys.exit('error: package staging must not overwrite source or toolchain files')
+if Path(sys.argv[3]).is_symlink():
+    sys.exit('error: package output must not be a symlink')
+if output.exists() and any(output.iterdir()) and not (output / 'sce_sys/param.sfo').is_file():
+    sys.exit('error: refusing to clean a nonempty directory without package metadata')
+print(output)
+PY
+)"
+rm -rf -- "$OUT_DIR"
 mkdir -p "$OUT_DIR/sce_sys/about" "$OUT_DIR/sce_module"
 
 echo "==> eboot.bin"

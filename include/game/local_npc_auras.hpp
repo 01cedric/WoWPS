@@ -93,14 +93,32 @@ inline bool validLocalNpcControls(const LocalRealmNpc& n,const LocalWorldContent
 // Spell.cpp:2413-2416 (AddUnitTarget) and :3101-3118 (DoSpellHitOnUnit) drop
 // the stripped slots from what the cast applies; the rest lands, and no immune
 // line is shown for a partially stripped cast.
-inline uint8_t localNpcStrippedEffects(const LocalNpcDefinition& def,const LocalSpellDefinition& d) {
+// 2.37: the immunity container of one creature - the template's two masks
+// plus what SmartAI's ADD_IMMUNITY (ApplySpellImmune) and its own aura
+// immunities (SCHOOL_IMMUNITY, DAMAGE_IMMUNITY, MECHANIC_IMMUNITY) granted:
+// Unit::m_spellImmune[IMMUNITY_SCHOOL / _DAMAGE / _MECHANIC / _ID].
+struct LocalNpcImmunitySet {
+    uint32_t schoolMask=0,damageSchoolMask=0;
+    uint64_t mechanicsMask=0;
+    const std::vector<uint32_t>* spellIds=nullptr;
+};
+inline LocalNpcImmunitySet localNpcImmunitySet(const LocalNpcDefinition& def,const LocalRealmNpc& n) {
+    LocalNpcImmunitySet set{def.immuneSchoolMask,0,def.immuneMechanicsMask,&n.npcSpellImmunity};
+    set.schoolMask|=n.npcSchoolImmunity;set.damageSchoolMask|=n.npcDamageImmunity;set.mechanicsMask|=uint64_t(n.npcMechanicImmunity);
+    for(const auto& b:n.npcBuffs)if(b.remainingMs||b.indefinite){set.schoolMask|=b.schoolImmunity;set.damageSchoolMask|=b.damageImmunity;set.mechanicsMask|=uint64_t(b.mechanicImmunity);}
+    return set;
+}
+inline uint8_t localNpcStrippedEffects(uint64_t immuneMechanicsMask,const LocalSpellDefinition& d) {
     uint8_t stripped=0;
     for(unsigned k=0;k<3;++k) {
         if(!(d.effectMask&(1u<<k)))continue;
         const auto mechanic=d.effectMechanic[k];
-        if(mechanic&&mechanic<64&&((def.immuneMechanicsMask>>mechanic)&1u))stripped|=uint8_t(1u<<k);
+        if(mechanic&&mechanic<64&&((immuneMechanicsMask>>mechanic)&1u))stripped|=uint8_t(1u<<k);
     }
     return stripped;
+}
+inline uint8_t localNpcStrippedEffects(const LocalNpcDefinition& def,const LocalSpellDefinition& d) {
+    return localNpcStrippedEffects(def.immuneMechanicsMask,d);
 }
 // Unit::IgnoresSchoolImmunityFromFriendlyCaster (Unit.cpp:9571-9581): template
 // immunity, recognisable by its placeholder id, never applies against a
@@ -108,9 +126,12 @@ inline uint8_t localNpcStrippedEffects(const LocalNpcDefinition& def,const Local
 // caller here has already passed canAttack, so the caster is hostile and the
 // clause is a constant; it is written on the caller as the reference writes
 // it, so the shape survives a friendly-target producer.
-inline bool localNpcSchoolImmune(const LocalNpcDefinition& def,uint32_t schoolMask,bool casterFriendly) {
+inline bool localNpcSchoolImmune(uint32_t immuneSchoolMask,uint32_t schoolMask,bool casterFriendly) {
     if(!schoolMask||casterFriendly)return false;
-    return (uint32_t(def.immuneSchoolMask)&schoolMask)==schoolMask;
+    return (immuneSchoolMask&schoolMask)==schoolMask;
+}
+inline bool localNpcSchoolImmune(const LocalNpcDefinition& def,uint32_t schoolMask,bool casterFriendly) {
+    return localNpcSchoolImmune(uint32_t(def.immuneSchoolMask),schoolMask,casterFriendly);
 }
 // Creature::IsImmunedToSpell (Creature.cpp:2286-2316) followed by
 // Unit::IsImmunedToSpell (Unit.cpp:9733-9799), reduced to the template
@@ -132,21 +153,44 @@ inline bool localNpcSchoolImmune(const LocalNpcDefinition& def,uint32_t schoolMa
 // target that was not immune (Spell.cpp:3195), which is why the caller must
 // run this before any diminishing read. Immunity is decided at hit, never at
 // cast (there is no SPELL_FAILED_IMMUNE site), so the cost is always paid.
-inline bool localNpcImmuneToSpell(const LocalNpcDefinition& def,const LocalSpellDefinition& d,bool casterFriendly) {
-    if(d.mechanic&&d.mechanic<64&&((def.immuneMechanicsMask>>d.mechanic)&1u))return true;
-    if(d.effectMask&&localNpcStrippedEffects(def,d)==d.effectMask)return true;
+inline bool localNpcImmuneToSpell(const LocalNpcImmunitySet& set,const LocalSpellDefinition& d,bool casterFriendly) {
+    if(d.mechanic&&d.mechanic<64&&((set.mechanicsMask>>d.mechanic)&1u))return true;
+    if(d.effectMask&&localNpcStrippedEffects(set.mechanicsMask,d)==d.effectMask)return true;
+    // Unit::IsImmunedToSpell's IMMUNITY_ID arm (script-granted, 2.37) comes
+    // before the NO_IMMUNITIES read (Unit.cpp:9739-9749).
+    if(set.spellIds&&std::find(set.spellIds->begin(),set.spellIds->end(),d.id)!=set.spellIds->end())return true;
     if(d.sourceNoImmunities)return false;
-    if(!d.sourceNoSchoolImmunities&&localNpcSchoolImmune(def,d.schoolMask,casterFriendly))return true;
+    if(!d.sourceNoSchoolImmunities&&localNpcSchoolImmune(set.schoolMask,d.schoolMask,casterFriendly))return true;
     return false;
+}
+inline bool localNpcImmuneToSpell(const LocalNpcDefinition& def,const LocalSpellDefinition& d,bool casterFriendly) {
+    return localNpcImmuneToSpell(LocalNpcImmunitySet{def.immuneSchoolMask,0,def.immuneMechanicsMask,nullptr},d,casterFriendly);
+}
+inline bool localNpcImmuneToSpell(const LocalNpcDefinition& def,const LocalRealmNpc& n,const LocalSpellDefinition& d,bool casterFriendly) {
+    return localNpcImmuneToSpell(localNpcImmunitySet(def,n),d,casterFriendly);
 }
 // Unit::IsImmunedToDamage(caster, spellInfo) (Unit.cpp:9629-9669), the form
 // every periodic damage tick asks first (SpellAuraEffects.cpp:6287:
 // SendTickImmune, the aura kept): NO_IMMUNITIES or NO_SCHOOL_IMMUNITIES
 // answers not immune, then the template school mask must cover the spell's.
 // IMMUNITY_DAMAGE is aura-granted only and has no producer here.
-inline bool localNpcImmuneToDamage(const LocalNpcDefinition& def,const LocalSpellDefinition& d,bool casterFriendly) {
+// 2.37: IMMUNITY_DAMAGE (aura 40 / ADD_IMMUNITY type 3) is read the same way
+// (Unit.cpp:9646-9660), so the merged set answers both.
+inline bool localNpcImmuneToDamage(const LocalNpcImmunitySet& set,const LocalSpellDefinition& d,bool casterFriendly) {
     if(d.sourceNoImmunities||d.sourceNoSchoolImmunities)return false;
-    return localNpcSchoolImmune(def,d.schoolMask,casterFriendly);
+    return localNpcSchoolImmune(set.schoolMask,d.schoolMask,casterFriendly)||localNpcSchoolImmune(set.damageSchoolMask,d.schoolMask,casterFriendly);
+}
+inline bool localNpcImmuneToDamage(const LocalNpcDefinition& def,const LocalSpellDefinition& d,bool casterFriendly) {
+    return localNpcImmuneToDamage(LocalNpcImmunitySet{def.immuneSchoolMask,0,def.immuneMechanicsMask,nullptr},d,casterFriendly);
+}
+inline bool localNpcImmuneToDamage(const LocalNpcDefinition& def,const LocalRealmNpc& n,const LocalSpellDefinition& d,bool casterFriendly) {
+    return localNpcImmuneToDamage(localNpcImmunitySet(def,n),d,casterFriendly);
+}
+/// Unit::IsImmunedToDamageOrSchool(SPELL_SCHOOL_MASK_NORMAL) for a white
+/// swing (Unit::CalculateMeleeDamage: VICTIMSTATE_IS_IMMUNE, no damage).
+inline bool localNpcImmuneToMelee(const LocalNpcDefinition& def,const LocalRealmNpc& n) {
+    const auto set=localNpcImmunitySet(def,n);
+    return ((set.schoolMask|set.damageSchoolMask)&1u)!=0;
 }
 
 // ---------------------------------------------------------------------------

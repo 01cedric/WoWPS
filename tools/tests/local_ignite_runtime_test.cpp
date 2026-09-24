@@ -139,8 +139,8 @@ int main(int argc,char** argv) {
         Runtime f(content);f.c->npcs[0].id=4008;f.c->npcs[0].damage=0;
         f.n.entry=4008;f.n.level=80;f.n.targetGuid=f.p.guid;f.n.attackTimer=100000;
         f.p.x=4;f.q.x=5;f.n.x=f.n.homeX=1;
-        const auto* profile=localNpcSpellProfile(4008);assert(profile&&profile->spellId==5401);
-        assert(f.c->spell(profile->spellId)&&f.c->spell(profile->spellId)->npcOnly);
+        const auto* profile=localNpcSpellProfile(4008);assert(profile&&profile->spellId()==5401);
+        assert(f.c->spell(profile->spellId())&&f.c->spell(profile->spellId())->npcOnly);
         const auto* armor=f.c->spell(30482);assert(armor&&armor->unsupportedReason.empty()&&armor->procCanCrit);
         const auto* retaliation=f.c->spell(armor->proc.spellId);assert(retaliation&&retaliation->triggeredOnly);
         if(moltenShields) {
@@ -155,12 +155,12 @@ int main(int argc,char** argv) {
             // with a living target, so death cannot suppress its retaliation.
             f.p.health=f.p.maxHealth;
             auto npc=f.game.npcs()[0];npc.targetGuid=f.p.guid;npc.threat[0]={f.p.guid,100000};npc.attackTimer=100000;
-            npc.npcSpellTimerInitialized=true;npc.npcSpellTimerMs=9000;npc.npcCastingSpellId=profile->spellId;
+            npc.npcSpellTimerInitialized=true;npc.npcSpellTimerMs=9000;npc.npcCastingSpellId=profile->spellId();
             npc.npcCastTargetGuid=f.p.guid;npc.npcCastRemainingMs=1;npc.npcSpellLaunched=false;
             f.game.setRemoteNpcs({npc});f.advance(100);
         }
         for(const auto& e:f.observed) {
-            if(e.kind==LocalCombatEventKind::SpellDamage&&e.source==f.n.guid&&e.spell==profile->spellId&&e.effective)++incoming;
+            if(e.kind==LocalCombatEventKind::SpellDamage&&e.source==f.n.guid&&e.spell==profile->spellId()&&e.effective)++incoming;
             if(e.kind==LocalCombatEventKind::ProcDamage&&e.spell==retaliation->id) {
                 assert(e.source==f.p.guid&&e.target==f.n.guid&&e.auraSpell==30482);
                 assert(e.auraOwnerGuid==f.p.guid&&e.auraCasterGuid==f.p.guid);

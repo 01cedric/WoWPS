@@ -10,6 +10,7 @@ using namespace wowee::game;
 namespace net=wowee::net;
 static LocalRealmPlayer player(uint64_t id){auto p=rewardPlayer(id);p.quests.clear();p.race=1;p.classId=1;p.money=10000;p.inventory={{117,10,0},{118,4,5},{900001,1,23}};p.bank[0]={117,18};p.bank[1]={118,3};return p;}
 static LocalRealmNpc banker(){auto n=rewardNpc(10);n.hostile=false;n.lootOwner=0;n.banker=n.innkeeper=n.vendor=true;n.x=2;return n;}
+static LocalItemInstanceState markedInstance(){LocalItemInstanceState i;i.instanceFlags=0x10;i.permanentEnchantId=3820;i.temporaryEnchantId=2673;i.socketEnchantIds={3520,3521,3522};i.curDurability=37;i.maxDurability=80;i.randomPropertyId=-123;i.suffixFactor=9876;return i;}
 static std::shared_ptr<LocalWorldContent> fixture(){auto c=rewardContent();c->quests.clear();c->npcs[0].hostile=false;c->items[0].value=1;LocalItemDefinition potion;potion.id=118;potion.name="Potion";potion.stack=20;potion.value=1;c->items.push_back(potion);auto gear=potion;gear.id=900001;gear.inventoryType=1;gear.stack=1;c->items.push_back(gear);return c;}
 static LocalRealmCommand move(const LocalRealmPlayer& p,unsigned from,unsigned to,unsigned n,bool bank=false){
  auto i=localInventoryIndex(p,from-1),j=localInventoryIndex(p,to-1);auto a=bank?p.bank[from-1]:(i<p.inventory.size()?p.inventory[i]:LocalItemStack{});auto b=j<p.inventory.size()?p.inventory[j]:LocalItemStack{};
@@ -25,7 +26,7 @@ int main(){
  assert(p.inventory[localInventoryIndex(p,5)].itemId==118 && p.inventory[localInventoryIndex(p,0)].itemId==900001);
  auto stale=move(p,12,13,1);--stale.bankSourceCount;reject(stale);reject(move(p,12,6,1));reject(move(p,12,12,1));auto invalid=move(p,12,13,1);invalid.buyout=25;reject(invalid);
  std::cout<<"PASS backpack cells: whole swap, split, merge, unrelated positions stable, stale/same-cell/partial-swap/invalid rejection\n";
- p=player(1);assert(call(move(p,1,13,5,true)));assert(p.bank[0].count==13 && p.inventory[localInventoryIndex(p,12)].count==5);
+ p=player(1);p.bank[0].instance=markedInstance();assert(call(move(p,1,13,5,true)));assert(p.bank[0].count==13 && p.bank[0].instance==markedInstance() && p.inventory[localInventoryIndex(p,12)].count==5 && p.inventory[localInventoryIndex(p,12)].instance==markedInstance());
  assert(call(move(p,2,6,3,true)));assert(p.bank[1].itemId==0 && p.inventory[localInventoryIndex(p,5)].count==7);
  p=player(1);assert(call(move(p,1,6,18,true)));assert(p.bank[0].itemId==118 && p.bank[0].count==4 && p.inventory[localInventoryIndex(p,5)].itemId==117);
  p=player(1);p.equipment[0]=900001;reject(move(p,1,24,18,true));p.equipment[0]=0;
@@ -39,14 +40,15 @@ int main(){
  p.bank.fill({118,20});deposit.target=1;deposit.buyout=4;reject(deposit);
  p=player(1);LocalRealmCommand targeted{LocalAction::BankDepositSlot,1,24};targeted.bid=900001;targeted.buyout=28;targeted.bankSourceCount=1;targeted.serviceNpcGuid=10;assert(call(targeted));assert(p.bank[27].itemId==900001 && localInventoryIndex(p,23)==p.inventory.size() && p.inventory[localInventoryIndex(p,5)].itemId==118);
  std::cout<<"PASS physical bank deposits: chosen duplicate stack only, multi-bank-slot fill, stale/full-bank rollback and sparse source placement\n";
- // Normal removal, trade and mail retain remaining physical cells.
- p=player(1);LocalRealmPlayer recipient=player(2);LocalRealmPlayer sent;LocalMail letter;
- assert(prepareLocalMail(p,recipient,"Cells","",0,0,{{118,4,4,5}},*content,sent,letter,result));assert(localInventoryIndex(sent,5)==sent.inventory.size() && sent.inventory[localInventoryIndex(sent,23)].itemId==900001);
+ // Normal removal, trade and mail retain remaining physical cells and the exact item instance.
+ p=player(1);p.inventory[localInventoryIndex(p,5)].instance=markedInstance();LocalRealmPlayer recipient=player(2);LocalRealmPlayer sent;LocalMail letter;
+ assert(prepareLocalMail(p,recipient,"Cells","",0,0,{{118,4,4,5}},*content,sent,letter,result));assert(localInventoryIndex(sent,5)==sent.inventory.size() && sent.inventory[localInventoryIndex(sent,23)].itemId==900001 && letter.items[0].instance==markedInstance());
  assert(giveLocalMailItem(sent,{118,2},*content));assert(sent.inventory[localInventoryIndex(sent,23)].itemId==900001 && validLocalInventoryLayout(sent));
  LocalTrade trade;trade.state=2;trade.players={p.guid,recipient.guid};trade.items[0][0]={118,4,4,5};trade.fingerprints={localTradeFingerprint(p),localTradeFingerprint(recipient)};LocalRealmPlayer a,b;
  assert(prepareLocalTrade(trade,p,recipient,*content,a,b,result));assert(localInventoryIndex(a,5)==a.inventory.size() && a.inventory[localInventoryIndex(a,23)].itemId==900001);
- LocalBotDirector market;assert(market.listItemPriced(p,118,4,100,500,720,*content,result));assert(localInventoryIndex(p,5)==p.inventory.size() && p.inventory[localInventoryIndex(p,23)].itemId==900001);
- std::cout<<"PASS cross-system positions: noncontiguous mail/trade sources, incoming mail capacity and auction removal preserve other cells\n";
+ auto received118=std::find_if(b.inventory.begin(),b.inventory.end(),[](const auto& stack){return stack.itemId==118 && stack.instance==markedInstance();});assert(received118!=b.inventory.end() && received118->count==4);
+ LocalBotDirector market;assert(market.listItemPriced(p,118,4,100,500,720,*content,result));assert(localInventoryIndex(p,5)==p.inventory.size() && p.inventory[localInventoryIndex(p,23)].itemId==900001 && market.auctions().back().instance==markedInstance());
+ std::cout<<"PASS cross-system positions/instances: bank withdrawal, noncontiguous mail/trade sources and auction escrow preserve exact item state\n";
  // Exercise actual metadata masks, not a duplicate requirement implementation.
  p=player(1);const LocalAuctionItemMetadata* restricted=nullptr;
  for(const auto& m:kLocalAuctionItems)if(m.allowableClasses && m.allowableClasses!=UINT32_MAX && (m.allowableClasses&1) && !(m.allowableClasses&128) && m.requiredLevel>1 && m.requiredLevel<=80){restricted=&m;break;}

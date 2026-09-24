@@ -10,6 +10,7 @@ import subprocess
 import sys
 
 SUITES = {
+    'network_auth': 'tools/tests/run_network_auth_tests.py',
     'lighting_shader_pairs': 'tools/ps4/verify_shaders.py',
     'package_staging': 'tools/tests/package_staging_test.py',
     'm2_cutout_shader': 'tools/tests/run_m2_cutout_shader_tests.py',
@@ -47,7 +48,8 @@ def main() -> int:
         try:
             with logfile.open('w') as log:
                 process = subprocess.run(command, cwd=root, env=env,
-                                         stdout=log, stderr=subprocess.STDOUT, timeout=240)
+                                         stdout=log, stderr=subprocess.STDOUT,
+                                         timeout=600 if name == 'network_auth' else 240)
             code = process.returncode
         except (OSError, subprocess.TimeoutExpired) as error:
             with logfile.open('a') as log:
@@ -61,7 +63,7 @@ def main() -> int:
                 'sanitizer_error': sanitizer_error, 'log': logfile.name}
         results.append(item)
         (out / 'release-checks.json').write_text(json.dumps({
-            'release': '2.00', 'scope': 'self-contained host checks, not hardware acceptance',
+            'release': (root / 'BUILD_VERSION').read_text().strip(), 'scope': 'self-contained host checks, not hardware acceptance',
             'results': results}, indent=2) + '\n')
         print(json.dumps(item), flush=True)
     return 1 if any(x['status'] == 'failed' for x in results) else 0

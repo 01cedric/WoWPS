@@ -2,6 +2,7 @@
 #include "rendering/m2_renderer.hpp"
 #include "core/collision_height.hpp"
 #include "rendering/m2_renderer_internal.h"
+#include "rendering/m2_blend_mode.hpp"
 #include "rendering/m2_model_classifier.hpp"
 #include "rendering/vk_context.hpp"
 #include "rendering/vk_buffer.hpp"
@@ -92,6 +93,28 @@ void M2Renderer::setInstanceAnimation(uint32_t instanceId, uint32_t animationId,
             return;
         }
     }
+}
+
+bool M2Renderer::setInstanceAnimationEndPose(uint32_t instanceId, uint32_t animationId) {
+    const auto idxIt = instanceIndexById.find(instanceId);
+    if (idxIt == instanceIndexById.end()) return false;
+    auto& inst = instances[idxIt->second];
+    if (!inst.cachedModel) return false;
+    const auto& seqs = inst.cachedModel->sequences;
+    for (int i = 0; i < static_cast<int>(seqs.size()); ++i) {
+        if (seqs[i].id != animationId) continue;
+        inst.currentSequenceIndex = i;
+        inst.animDuration = static_cast<float>(seqs[i].duration);
+        // The update loop treats animTime >= duration as completion. Stay one
+        // representable step below it to sample the authored final pose.
+        inst.animTime = inst.animDuration > 0.0f
+            ? std::nextafter(inst.animDuration, 0.0f)
+            : 0.0f;
+        inst.animSpeed = 0.0f;
+        inst.playingVariation = false;
+        return true;
+    }
+    return false;
 }
 
 bool M2Renderer::hasAnimation(uint32_t instanceId, uint32_t animationId) const {
@@ -389,6 +412,7 @@ void M2Renderer::clear() {
     pinnedModelIds_.clear();
     localLightInstancesDirty_ = true;
     std::vector<size_t>{}.swap(localLightInstanceIndices_);
+    std::vector<LocalLightCandidate>{}.swap(localLightCandidates_);
     shadowInstanceOrder_.release();
     shadowSnapshot_.release();
     visibilityClusters_.release();
@@ -479,6 +503,7 @@ void M2Renderer::clearInstances() {
     for (auto& inst : instances) destroyInstanceBones(inst);
     localLightInstancesDirty_ = true;
     std::vector<size_t>{}.swap(localLightInstanceIndices_);
+    std::vector<LocalLightCandidate>{}.swap(localLightCandidates_);
     shadowInstanceOrder_.release();
     shadowSnapshot_.release();
     visibilityClusters_.release();
@@ -1442,6 +1467,20 @@ void M2Renderer::recreatePipelines() {
     // The same nine pipelines initialize() builds, built by the same
     // function. The layouts are untouched above, so it makes none.
     buildMainPassPipelines(perFrameLayout_);
+
+    // Alpha-test encoding carries one bit that depends on whether the new
+    // scene target is single-sampled. Every other material field is immutable
+    // and was written when the model loaded; refresh this one only on the rare
+    // MSAA rebuild instead of every draw of every frame.
+    const bool singleSample = vkCtx_->getMsaaSamples() == VK_SAMPLE_COUNT_1_BIT;
+    for (auto& [modelId, model] : models) {
+        (void)modelId;
+        for (auto& batch : model.batches) {
+            if (!batch.materialUBOMapped) continue;
+            auto* mat = static_cast<M2MaterialUBO*>(batch.materialUBOMapped);
+            mat->alphaTest = m2EncodeAlphaTest(batch.materialAlphaMode, singleSample);
+        }
+    }
 
     core::Logger::getInstance().info("M2Renderer: pipelines recreated");
 }

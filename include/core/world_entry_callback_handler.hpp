@@ -59,6 +59,15 @@ private:
     /// Dismount and remove the local mount before an unstuck teleport.
     void clearMountForUnstuck();
 
+    /// Apply an authoritative relocation to every local movement/camera state.
+    /// This is used for same-map teleports/reconnects that deliberately avoid a
+    /// full WorldLoader rebuild. Keeping the reset in one place prevents stale
+    /// vertical velocity, swimming or ground-recovery checkpoints surviving a
+    /// server teleport.
+    void applyAuthoritativeRelocation(const glm::vec3& renderPos,
+                                      float movementSuppressSeconds,
+                                      float gravitySuspendSeconds);
+
     /// Sync teleported render position to server
     void syncTeleportedPositionToServer(const glm::vec3& renderPos);
 

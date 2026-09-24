@@ -14,6 +14,7 @@
 #include "game/transport_manager.hpp"
 
 #include <set>
+#include <cmath>
 
 namespace wowee { namespace core {
 
@@ -122,13 +123,21 @@ void TransportCallbackHandler::setupCallbacks() {
     // game_handler.hpp for why this exists (Application's own per-frame render
     // sync stops as soon as onTaxi goes false, which happens before this fires).
     gameHandler_.setPlayerPositionCorrectionCallback([this](float x, float y, float z) {
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+            LOG_WARNING("[MOVEMENT_GUARD] ignored non-finite server position correction");
+            return;
+        }
         glm::vec3 renderPos = core::coords::canonicalToRender(glm::vec3(x, y, z));
         renderer_.getCharacterPosition() = renderPos;
-        if (renderer_.getCameraController()) {
-            glm::vec3* followTarget = renderer_.getCameraController()->getFollowTargetMutable();
-            if (followTarget) {
-                *followTarget = renderPos;
-            }
+        if (auto* camera = renderer_.getCameraController()) {
+            // A server correction is an authoritative relocation, not ordinary
+            // movement. Reset fall/knockback/ground-recovery state as well as
+            // the visible position so stale client physics cannot immediately
+            // pull the character away from the corrected landing point.
+            camera->teleportTo(renderPos);
+            camera->clearMovementInputs();
+            camera->suppressMovementFor(0.25f);
+            camera->suspendGravityFor(0.75f);
         }
     });
 

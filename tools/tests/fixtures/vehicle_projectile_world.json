@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "name": "Synthetic free-aim vehicle projectile fixture, not retail content",
+  "start": {"mapId": 0, "x": 0, "y": 0, "z": 0},
+  "items": [],
+  "spells": [
+    {"id": 9101, "name": "Test straight shell", "damage": 90},
+    {"id": 9102, "name": "Test gravity shell", "damage": 90},
+    {"id": 9103, "name": "Test fast shell", "damage": 90},
+    {"id": 9104, "name": "Test slow shell", "damage": 1},
+    {"id": 9105, "name": "Test targeted cannon", "damage": 90},
+    {"id": 9106, "name": "Test short-lived shell", "damage": 90}
+  ],
+  "npcs": [
+    {"id": 50, "name": "Test vehicle", "health": 1000, "armor": 0, "hostile": false, "questGiver": true, "respawnSeconds": 2},
+    {"id": 51, "name": "Near target", "health": 1000, "armor": 0, "damage": 40, "hostile": true, "aggroRadius": 0, "boundingRadius": 0.5, "xp": 80},
+    {"id": 52, "name": "Far target", "health": 1000, "armor": 0, "damage": 40, "hostile": true, "aggroRadius": 0, "boundingRadius": 0.5, "xp": 80}
+  ],
+  "spawns": [
+    {"id": 1, "entry": 50, "vehicleId": 700, "vehicleSeatCount": 3, "requiredPhaseMask": 1},
+    {"id": 2, "entry": 51, "x": 12, "requiredPhaseMask": 1},
+    {"id": 3, "entry": 52, "x": 24, "requiredPhaseMask": 1}
+  ],
+  "quests": [{"id": 1, "title": "Test projectile credit", "giverEntry": 50, "turnInEntry": 50,
+    "objectives": [{"type": "kill", "entry": 51, "count": 1}]}],
+  "vehicleKits": [{"id": 700, "maxPower": 100, "regenPerSecond": 0, "minPitch": -1, "maxPitch": 1, "muzzleHeight": 0, "abilities": [
+    {"slot": 1, "spellId": 9101, "seatMask": 7, "powerCost": 10, "cooldownMs": 2000, "damage": 90, "range": 30,
+      "projectileSpeed": 20, "projectileGravity": 0, "projectileRadius": 0.1, "projectileLifetimeMs": 4000},
+    {"slot": 2, "spellId": 9102, "seatMask": 3, "powerCost": 10, "cooldownMs": 2000, "damage": 90, "range": 30,
+      "projectileSpeed": 20, "projectileGravity": 10, "projectileRadius": 0.1, "projectileLifetimeMs": 4000},
+    {"slot": 3, "spellId": 9103, "seatMask": 3, "powerCost": 10, "cooldownMs": 2000, "damage": 90, "range": 30,
+      "projectileSpeed": 120, "projectileGravity": 0, "projectileRadius": 0.1, "projectileLifetimeMs": 1000},
+    {"slot": 4, "spellId": 9104, "seatMask": 3, "powerCost": 1, "cooldownMs": 100, "damage": 1, "range": 60,
+      "projectileSpeed": 1, "projectileGravity": 0, "projectileRadius": 0.1, "projectileLifetimeMs": 10000},
+    {"slot": 5, "spellId": 9105, "seatMask": 3, "powerCost": 10, "cooldownMs": 2000, "damage": 90, "range": 30},
+    {"slot": 6, "spellId": 9106, "seatMask": 3, "powerCost": 10, "cooldownMs": 2000, "damage": 90, "range": 30,
+      "projectileSpeed": 1, "projectileGravity": 0, "projectileRadius": 0.1, "projectileLifetimeMs": 100}
+  ]}]
+}

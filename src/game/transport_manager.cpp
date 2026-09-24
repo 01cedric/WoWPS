@@ -380,31 +380,26 @@ glm::vec3 TransportManager::getPlayerWorldPosition(uint64_t transportGuid, const
         return localOffset;
     }
 
-    if (transport->isM2) {
-        // M2 transports (trams): localOffset is a canonical world-space delta
-        // from the transport's canonical position. Just add directly.
-        return transport->position + localOffset;
-    }
-
-    // WMO transports (ships): localOffset is in transport-local space,
-    // use the render-space transform matrix.
-    glm::vec4 localPos(localOffset, 1.0f);
-    glm::vec4 worldPos = transport->transform * localPos;
-    // transform is a renderer-space matrix; every caller of this API expects
-    // canonical world coordinates. Returning it raw swaps X/Y again when the
-    // application converts canonical -> render, leaving riders behind or mirrored.
-    return core::coords::renderToCanonical(glm::vec3(worldPos));
+    // One passenger-space convention for every moving platform: localOffset is
+    // expressed in the transport model's local axes.  WMO ships have used this
+    // convention for a long time; M2 lifts/trams used to keep a canonical
+    // world-space delta instead.  That old M2 shortcut translated riders but did
+    // not rotate them with a turning car, so curves accumulated lateral drift and
+    // a server attachment could disagree with a client-side boarding offset.
+    const glm::vec4 worldRender = transport->transform * glm::vec4(localOffset, 1.0f);
+    // transform is renderer-space; callers of this API always consume canonical
+    // world coordinates.
+    return core::coords::renderToCanonical(glm::vec3(worldRender));
 }
 
 glm::vec3 TransportManager::serverToTransportLocal(
     uint64_t transportGuid, const glm::vec3& serverOffset) const {
     const auto it = transports_.find(transportGuid);
-    // WMO transport movement blocks already express offsets in the model's
-    // local axes. Their render transform consumes those axes directly; applying
-    // the world-space server->canonical X/Y swap here displaced deck NPCs and
-    // server-attached players across the hull. M2 transports retain their older
-    // canonical-delta representation.
-    if (it != transports_.end() && !it->second.isM2) return serverOffset;
+    // Movement blocks encode transport offsets in the transport/model frame,
+    // not in world axes.  The local transform consumes those axes directly for
+    // both WMO and M2 transports.  Only retain the legacy world conversion when
+    // the transport is not registered yet (the caller cannot compose it anyway).
+    if (it != transports_.end()) return serverOffset;
     return core::coords::serverToCanonical(serverOffset);
 }
 

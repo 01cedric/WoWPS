@@ -1,0 +1,18 @@
+{
+  "schemaVersion":1,"name":"Synthetic escort regression fixture",
+  "start":{"mapId":0,"x":0,"y":0,"z":0},"items":[],"spells":[],
+  "npcs":[{"id":50,"name":"Guide","health":1000,"hostile":false,"questGiver":true}],
+  "spawns":[{"id":1,"entry":50,"mapId":0,"x":0,"y":0,"z":0,"requiredPhaseMask":1}],
+  "quests":[{"id":1,"title":"Walk with the guide","giverEntry":50,"turnInEntry":50,
+    "objectives":[{"type":"script","entry":600,"count":1,"text":"Escort the guide"}]}],
+  "escortRoutes":[{"id":900,"questId":1,"spawnId":1,"speed":4,"followRadius":5,"failRadius":20,"timeoutMs":10000,
+    "points":[{"x":2,"y":0,"z":0,"waitMs":500},{"x":4,"y":0,"z":0}]}],
+  "scriptTriggers":[
+    {"trigger":"questAccept","sourceId":1,"scriptId":600,"value":0},
+    {"trigger":"escortStart","sourceId":900,"scriptId":610,"operation":"add","value":1},
+    {"trigger":"escortWaypoint","sourceId":900,"scriptId":611,"operation":"add","value":1},
+    {"trigger":"escortComplete","sourceId":900,"scriptId":600,"value":1},
+    {"trigger":"escortFail","sourceId":900,"scriptId":612,"operation":"add","value":1},
+    {"trigger":"questComplete","sourceId":1,"scriptId":613,"operation":"add","value":1}
+  ]
+}

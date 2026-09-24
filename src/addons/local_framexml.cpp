@@ -199,7 +199,25 @@ void LocalFrameXml::publish() {
             }
         }
     }lua_setfield(L,-2,"training");
-    str(L,"greeting",npc?game::localNpcGreeting(*p,*npc,c):std::string{});
+    // 2.40: the creature's gossip page (its npc_text, the admitted options,
+    // a script's offered quest) as the authority holds it for this player.
+    {
+        const auto& gossip=p->gossip;const bool here=npc&&gossip.open()&&gossip.npcGuid==npc->guid;
+        std::string greeting;
+        if(here&&!gossip.questMenu&&gossip.textId&&gossip.textId!=game::kLocalGossipDefaultText) {
+            game::LocalGossipText text;
+            if(realm->gossipText(gossip.textId,text))greeting=game::localGossipPageText(*p,text,gossip.revision);
+        }
+        if(greeting.empty()&&npc)greeting=game::localNpcGreeting(*p,*npc,c);
+        str(L,"greeting",greeting);
+        num(L,"gossipMenu",here?gossip.menuId:0);num(L,"gossipRevision",here?gossip.revision:0);num(L,"gossipOffered",here?gossip.offeredQuestId:0);
+        lua_newtable(L);int optionIndex=0;
+        if(here&&!gossip.questMenu)for(const auto& o:gossip.options){
+            lua_newtable(L);num(L,"id",o.id);num(L,"icon",o.icon);num(L,"type",o.type);str(L,"text",o.text);str(L,"boxText",o.boxText);num(L,"boxMoney",o.boxMoney);
+            lua_rawseti(L,-2,++optionIndex);
+        }
+        lua_setfield(L,-2,"gossipOptions");
+    }
     if (npc && (npc->vendor || npc->repairer)) {
         lua_newtable(L);flag(L,"vendor",npc->vendor);flag(L,"repair",npc->repairer);
         flag(L,"open",phase_==DialoguePhase::Merchant);
@@ -231,17 +249,20 @@ void LocalFrameXml::publish() {
     for(const auto& progress:p->quests)if(const auto* q=c.quest(progress.id)) quests.push_back(*q);
     if(npc)for(const auto& q:realm->questsForNpc(npc->entry))
         if(game::localQuestOffered(*p,*npc,q) && std::none_of(quests.begin(),quests.end(),[&](const auto& a){return a.id==q.id;}))quests.push_back(q);
+    const uint32_t scriptOffered=npc&&p->gossip.open()&&p->gossip.npcGuid==npc->guid?p->gossip.offeredQuestId:0;
+    if(scriptOffered&&std::none_of(quests.begin(),quests.end(),[&](const auto& a){return a.id==scriptOffered;}))
+        if(const auto* q=c.quest(scriptOffered))quests.push_back(*q);
     for(const auto& q:quests){
         lua_newtable(L);num(L,"id",q.id);str(L,"title",q.title);str(L,"description",q.description);
         num(L,"level",q.minLevel);num(L,"money",q.money);num(L,"xp",q.xp);
         const auto* progress=game::localQuestProgress(*p,q.id);
         flag(L,"active",progress);flag(L,"complete",progress && progress->status==game::LocalQuestStatus::Complete);
-        flag(L,"offered",npc && game::localQuestOffered(*p,*npc,q));
+        flag(L,"offered",npc && (game::localQuestOffered(*p,*npc,q) || (q.id==scriptOffered && !progress)));
         lua_newtable(L);int i=0;
         for(const auto& o:q.objectives){lua_newtable(L);
             const auto* item=c.item(o.entry);const auto* mob=c.npc(o.entry);
-            str(L,"text",o.type==game::LocalQuestObjective::Type::Collect?(item?item->name:"Item"):(mob?mob->name:"Target"));
-            str(L,"type",o.type==game::LocalQuestObjective::Type::Collect?"item":"monster");
+            str(L,"text",o.type==game::LocalQuestObjective::Type::Script?o.text:o.type==game::LocalQuestObjective::Type::Collect?(item?item->name:"Item"):(mob?mob->name:"Target"));
+            str(L,"type",o.type==game::LocalQuestObjective::Type::Script?"event":o.type==game::LocalQuestObjective::Type::Collect?"item":"monster");
             num(L,"count",o.count);num(L,"done",progress && size_t(i)<progress->progress.size()?progress->progress[i]:0);
             lua_rawseti(L,-2,++i);
         }lua_setfield(L,-2,"objectives");
@@ -331,37 +352,40 @@ void LocalFrameXml::publish() {
     }lua_setfield(L,-2,"trade");lua_setfield(L,-2,"social");
     lua_setglobal(L,"__WoWPSLocal");lua_settop(L,top);
 }
+bool LocalFrameXml::openAuctionHouse(uint64_t npc){
+    auto* r=realm_();if(!r||!handler_)return false;
+    // Build the real load-on-demand addon before the service event.
+    // A harvested MPQ file is not a constructed AuctionFrame, and a
+    // generic stub named AuctionFrame_LoadUI must not count as one.
+    if (!engine_->widgets().findByName("AuctionFrame")) {
+        const bool loaded = engine_->executeString(kLocalAuctionLoadLua);
+        if (!loaded || !engine_->widgets().findByName("AuctionFrame")) {
+            LOG_ERROR("[LOCAL_AUCTION] original UI load failed: ", engine_->lastError());
+            engine_->fireEvent("UI_ERROR_MESSAGE", {"The auction interface could not be loaded."});
+            return true; // preserve original UI ownership; no invisible native dialog
+        }
+    }
+    npc_=npc;phase_=DialoguePhase::None;publish();if(greeting_)greeting_(npc);
+    handler_->openAuctionHouse(npc);
+    if (handler_->isAuctionHouseOpen()) {
+        engine_->executeString(kLocalAuctionShowLua);
+        LOG_INFO("[LOCAL_AUCTION] original auction window opened guid=", npc,
+                 " listings=", r->auctions().size(), " walkingBots=", r->playerbotsEnabled());
+    }
+    return handler_->isAuctionHouseOpen();
+}
 bool LocalFrameXml::open(uint64_t npc){
     if(!ready())return false;
     auto* r=realm_();const auto* p=r->localPlayer();
     for(const auto& n:r->npcs())if(n.guid==npc && p && game::localNpcInTalkRange(*p,n)){
         focus_=0;navigationRoot_=0;
-        if (n.auctioneer && handler_) {
-            // Build the real load-on-demand addon before the service event.
-            // A harvested MPQ file is not a constructed AuctionFrame, and a
-            // generic stub named AuctionFrame_LoadUI must not count as one.
-            if (!engine_->widgets().findByName("AuctionFrame")) {
-                const bool loaded = engine_->executeString(kLocalAuctionLoadLua);
-                if (!loaded || !engine_->widgets().findByName("AuctionFrame")) {
-                    LOG_ERROR("[LOCAL_AUCTION] original UI load failed: ", engine_->lastError());
-                    engine_->fireEvent("UI_ERROR_MESSAGE", {"The auction interface could not be loaded."});
-                    return true; // preserve original UI ownership; no invisible native dialog
-                }
-            }
-            npc_=npc;phase_=DialoguePhase::None;publish();if(greeting_)greeting_(npc);
-            handler_->openAuctionHouse(npc);
-            if (handler_->isAuctionHouseOpen()) {
-                engine_->executeString(kLocalAuctionShowLua);
-                LOG_INFO("[LOCAL_AUCTION] original auction window opened guid=", npc,
-                         " listings=", r->auctions().size(), " walkingBots=", r->playerbotsEnabled());
-            }
-            return handler_->isAuctionHouseOpen();
-        }
+        if (n.auctioneer && handler_) return openAuctionHouse(npc);
         npc_=npc;selected_=0;phase_=DialoguePhase::Gossip;missingNpcSeconds_=0;pendingQuest_=0;
         if (n.banker && r->questsForNpc(n.entry).empty()) {if(greeting_)greeting_(npc);return act("bank_open",0);}
         if (!n.innkeeper && (n.vendor || n.repairer) && r->questsForNpc(n.entry).empty()) {
             if(greeting_)greeting_(npc);return act("merchant_open",0);
         }
+        gossipRevision_=p->gossip.open()&&p->gossip.npcGuid==npc?p->gossip.revision:0;
         publish();if(greeting_)greeting_(npc);engine_->fireEvent("GOSSIP_SHOW");return true;}
     return false;
 }
@@ -384,6 +408,21 @@ void LocalFrameXml::update(float dt){
             act("close",0);
         }
     }
+    // 2.40: the page changed on the authority (a script's menu, a closed
+    // gossip, an offered quest): redraw or close the frame.
+    if(npc_&&phase_==DialoguePhase::Gossip){
+        const auto& gossip=p->gossip;
+        const uint32_t revision=gossip.open()&&gossip.npcGuid==npc_?gossip.revision:0;
+        if(revision!=gossipRevision_){
+            const bool wasOpen=gossipRevision_!=0;gossipRevision_=revision;
+            if(!revision&&wasOpen){LOG_INFO("[LOCAL_GOSSIP_UI] page closed by the authority");act("close",0);}
+            else if(revision){
+                publish();
+                if(gossip.offeredQuestId&&!game::localQuestProgress(*p,gossip.offeredQuestId))act("detail",gossip.offeredQuestId);
+                else engine_->fireEvent("GOSSIP_SHOW");
+            }
+        }
+    } else gossipRevision_=0;
     if(pendingQuest_){
         pendingQuestSeconds_+=.2f;
         const bool confirmed=pendingTurnIn_
@@ -672,7 +711,36 @@ bool LocalFrameXml::act(const std::string& name,uint32_t id,uint32_t quantity){
         npc_=0;selected_=0;pendingQuest_=0;phase_=DialoguePhase::None;publish();
         engine_->fireEvent("GOSSIP_CLOSED");engine_->fireEvent("QUEST_FINISHED");engine_->fireEvent("MERCHANT_CLOSED");engine_->fireEvent("BANKFRAME_CLOSED");engine_->fireEvent("TRAINER_CLOSED");closing_=false;return true;
     }
+    if(name=="set_home"){
+        if(phase_!=DialoguePhase::Gossip||!npc_)return false;
+        ok=r->setHome(npc_);timer_=0;publish();return ok;
+    }
+    if(name=="auction_open"){
+        if(phase_!=DialoguePhase::Gossip||!npc_)return false;
+        const auto guid=npc_;closing_=true;engine_->fireEvent("GOSSIP_CLOSED");closing_=false;
+        return openAuctionHouse(guid);
+    }
+    if(name=="gossip_select"){
+        // 2.40: an option of the page; the authority answers with a new
+        // page revision (update() redraws the frame) or closes it.
+        if(phase_!=DialoguePhase::Gossip||!npc_||!p->gossip.open()||p->gossip.npcGuid!=npc_)return false;
+        return r->gossipSelect(npc_,p->gossip.menuId,id);
+    }
+    if(name=="gossip_confirm"){
+        // The confirmation box of a priced option: GOSSIP_CONFIRM (index, text, money).
+        for(size_t i=0;i<p->gossip.options.size();++i)if(p->gossip.options[i].id==id){
+            const auto& o=p->gossip.options[i];
+            engine_->fireEvent("GOSSIP_CONFIRM",{std::to_string(i+1),o.boxText,std::to_string(o.boxMoney)});return true;
+        }
+        return false;
+    }
     if(name=="detail" || name=="progress" || name=="reward"){
+        const uint32_t scriptOffered=p->gossip.open()&&p->gossip.npcGuid==npc_?p->gossip.offeredQuestId:0;
+        if(name=="detail"&&scriptOffered&&scriptOffered==id&&!game::localQuestProgress(*p,id)&&r->content().quest(id)){
+            selected_=id;pendingQuest_=0;focus_=0;navigationRoot_=0;phase_=DialoguePhase::Detail;
+            publish();closing_=true;engine_->fireEvent("GOSSIP_CLOSED");engine_->fireEvent("QUEST_DETAIL");closing_=false;
+            LOG_INFO("[LOCAL_QUEST_UI] opened script-offered quest=",id," npc=",npc_);return true;
+        }
         for(const auto& n:r->npcs())if(n.guid==npc_)for(const auto& q:r->questsForNpc(n.entry))
             if(q.id==id && game::localQuestOffered(*p,n,q)){
                 const auto* progress=game::localQuestProgress(*p,id);

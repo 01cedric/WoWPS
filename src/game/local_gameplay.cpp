@@ -2,9 +2,13 @@
 #include "game/local_ignite.hpp"
 #include "game/local_party.hpp"
 #include "game/local_gameplay.hpp"
+#include "game/local_quest_eligibility.hpp"
+#include "game/local_quest_dialogue.hpp"
+#include "game/local_quest_chain_json.hpp"
 #include "game/local_npc_auras.hpp"
 #include "game/local_spell_ranks.hpp"
 #include "game/local_diminishing.hpp"
+#include "game/local_aura_presentation.hpp"
 #include "game/local_npc_spell_runtime.hpp"
 #include "game/local_pet_spell.hpp"
 #include "game/local_npc_spell_profiles.hpp"
@@ -21,6 +25,7 @@
 #include "game/local_ranged.hpp"
 #include "game/local_pet.hpp"
 #include "game/local_pet_catalog.hpp"
+#include "game/local_bots.hpp"
 #include "game/pet_action.hpp"
 #include "game/local_area_aura.hpp"
 #include "game/local_periodic_critical.hpp"
@@ -31,6 +36,9 @@
 #include "game/local_armor.hpp"
 #include "game/local_resistance.hpp"
 #include "game/local_combat_state.hpp"
+#include "game/local_vehicle_combat.hpp"
+#include "game/local_vehicle_projectile.hpp"
+#include "game/local_escort_combat.hpp"
 #include "game/local_threat_talents.hpp"
 #include "game/local_spell_threat.hpp"
 #include "game/local_regeneration.hpp"
@@ -63,6 +71,7 @@
 #include <utility>
 
 namespace wowee::game {
+
 namespace {
 using Json = nlohmann::json;
 constexpr float ActiveRadius = 180.0f, RetainRadius = 240.0f, CellSize = 180.0f;
@@ -78,6 +87,14 @@ uint32_t number(const Json& j, const char* key, uint32_t fallback, uint32_t max 
     if (!v.is_number_integer() || (v.is_number_integer() && v.get<int64_t>() < 0) || v.get<uint64_t>() > max)
         throw std::runtime_error(std::string("Invalid unsigned value: ") + key);
     return v.get<uint32_t>();
+}
+int32_t signedNumber(const Json& j, const char* key, int32_t fallback, int32_t minimum = -42000, int32_t maximum = 42999) {
+    if (!j.contains(key)) return fallback;
+    const auto& v = j.at(key);
+    if (!v.is_number_integer()) throw std::runtime_error(std::string("Invalid signed value: ") + key);
+    const auto value = v.get<int64_t>();
+    if (value < minimum || value > maximum) throw std::runtime_error(std::string("Out-of-range signed value: ") + key);
+    return int32_t(value);
 }
 uint64_t wide(const Json& j, const char* key, uint64_t fallback) {
     if (!j.contains(key)) return fallback;
@@ -158,22 +175,108 @@ void removeItem(LocalRealmPlayer& p, uint32_t id, uint32_t count) {
 bool questRewarded(const LocalRealmPlayer& p, uint32_t id) {
     return std::binary_search(p.completedQuestIds.begin(), p.completedQuestIds.end(), id);
 }
-void questStatus(LocalRealmPlayer& p, const LocalWorldContent& c) {
+using LocalScriptActionBatch=std::vector<uint32_t>;
+bool applyScriptTriggers(LocalRealmPlayer& p,const LocalWorldContent& c,LocalScriptTriggerKind kind,uint32_t sourceId,
+                         LocalScriptActionBatch* actions=nullptr) {
+    // A single event can author several rows. Stage only the two fields these
+    // transitions are allowed to touch, so a later overflow/invalid phase
+    // cannot leave half an event committed. Conditions see earlier rows from
+    // the same event, which makes small deterministic state machines possible.
+    LocalRealmPlayer staged;staged.phaseMask=p.phaseMask;staged.scriptStates=p.scriptStates;staged.scriptTimers=p.scriptTimers;
+    auto stagedActions=actions?*actions:LocalScriptActionBatch{};size_t applied=0;
+    for(const auto& trigger:c.scriptTriggers) {
+        if(trigger.kind!=kind || trigger.sourceId!=sourceId || !localScriptTriggerMatches(staged,trigger))continue;
+        if(!localApplyScriptTrigger(staged,trigger)) {
+            LOG_ERROR("[LOCAL_SCRIPT] transition failed player=",p.guid," kind=",unsigned(kind)," source=",sourceId,
+                " script=",trigger.scriptId," phase=",staged.phaseMask);
+            return false;
+        }
+        if(!trigger.actionIds.empty()) {
+            if(!actions || stagedActions.size()+trigger.actionIds.size()>kLocalMaxScriptActionBatch)return false;
+            stagedActions.insert(stagedActions.end(),trigger.actionIds.begin(),trigger.actionIds.end());
+        }
+        ++applied;
+    }
+    if(applied) {
+        p.phaseMask=staged.phaseMask;p.scriptStates=std::move(staged.scriptStates);p.scriptTimers=std::move(staged.scriptTimers);
+        if(actions)*actions=std::move(stagedActions);
+        LOG_INFO("[LOCAL_SCRIPT] applied player=",p.guid," kind=",unsigned(kind)," source=",sourceId,
+            " transitions=",applied," phase=",p.phaseMask);
+    }
+    return true;
+}
+bool updateScriptAreas(LocalRealmPlayer& p,const LocalWorldContent& c,LocalScriptActionBatch* actions=nullptr) {
+    if(c.scriptAreas.empty() && p.scriptAreaIds.empty())return false;
+    if(c.scriptAreas.size()>kLocalMaxScriptAreas)return false;
+    const bool sameInstance=p.scriptAreaInstanceId==p.instanceId;
+    std::array<uint32_t,kLocalMaxScriptAreas> inside{};size_t insideCount=0;
+    for(const auto& area:c.scriptAreas) {
+        if(p.dead || p.ghost || !p.health || p.mapId!=area.mapId ||
+           !localPhaseVisible(p.phaseMask,area.requiredPhaseMask,area.excludedPhaseMask))continue;
+        const bool retained=sameInstance && std::binary_search(p.scriptAreaIds.begin(),p.scriptAreaIds.end(),area.id);
+        const double radius=double(area.radius)+(retained?area.hysteresis:0.f);
+        const double dx=double(p.x)-area.x,dy=double(p.y)-area.y,dz=double(p.z)-area.z;
+        const double distance=dx*dx+dy*dy+dz*dz;
+        if(std::isfinite(distance) && distance<=radius*radius)inside[insideCount++]=area.id;
+    }
+    const auto insideEnd=inside.begin()+insideCount;
+    if(insideCount==p.scriptAreaIds.size() && std::equal(inside.begin(),insideEnd,p.scriptAreaIds.begin()) &&
+       (!insideCount || sameInstance))return false;
+    // All edges in one position sample are atomic. A failed second trigger
+    // cannot award the first edge repeatedly while membership stays unchanged.
+    auto stagedActions=actions?*actions:LocalScriptActionBatch{};
+    LocalRealmPlayer staged;staged.guid=p.guid;staged.phaseMask=p.phaseMask;
+    staged.scriptStates=p.scriptStates;staged.scriptTimers=p.scriptTimers;
+    for(auto id:p.scriptAreaIds)if(!sameInstance || !std::binary_search(inside.begin(),insideEnd,id))
+        if(!applyScriptTriggers(staged,c,LocalScriptTriggerKind::AreaLeave,id,actions?&stagedActions:nullptr))return false;
+    for(size_t i=0;i<insideCount;++i)if(!sameInstance || !std::binary_search(p.scriptAreaIds.begin(),p.scriptAreaIds.end(),inside[i]))
+        if(!applyScriptTriggers(staged,c,LocalScriptTriggerKind::AreaEnter,inside[i],actions?&stagedActions:nullptr))return false;
+    p.phaseMask=staged.phaseMask;p.scriptStates=std::move(staged.scriptStates);p.scriptTimers=std::move(staged.scriptTimers);
+    p.scriptAreaIds.assign(inside.begin(),insideEnd);p.scriptAreaInstanceId=p.scriptAreaIds.empty()?0:p.instanceId;
+    if(actions)*actions=std::move(stagedActions);
+    return true;
+}
+bool questStatus(LocalRealmPlayer& p, const LocalWorldContent& c, bool scriptOnly = false, bool* scriptsOk = nullptr,
+                 LocalScriptActionBatch* actions=nullptr) {
+    if(scriptsOk)*scriptsOk=true;
+    bool changed = false;
     for (auto& progress : p.quests) {
         if (progress.status == LocalQuestStatus::Rewarded) continue;
         const auto* def = c.quest(progress.id);
         if (!def) continue;
+        if(scriptOnly && std::none_of(def->objectives.begin(),def->objectives.end(),[](const auto& o){return o.type==LocalQuestObjective::Type::Script;}))continue;
+        const auto previous = progress.status;
         progress.progress.resize(def->objectives.size(),0);
         bool complete = true;
         for (size_t i=0;i<def->objectives.size();++i) {
             const auto& obj=def->objectives[i];
+            const auto before = progress.progress[i];
             if(obj.type==LocalQuestObjective::Type::Collect) progress.progress[i]=uint16_t(std::min(totalItem(p,obj.entry),uint32_t(obj.count)));
+            // Script objectives accumulate earned credit like kill objectives.
+            // Clearing an event's temporary state must not undo earned credit.
+            if(obj.type==LocalQuestObjective::Type::Script)
+                progress.progress[i]=std::max(progress.progress[i],uint16_t(std::clamp(localScriptState(p,obj.entry),0,int(obj.count))));
+            changed = changed || before != progress.progress[i];
             complete = complete && progress.progress[i]>=obj.count;
         }
         progress.status = complete ? LocalQuestStatus::Complete : LocalQuestStatus::Active;
+        changed = changed || previous != progress.status;
+        // Completion is edge-triggered. Re-running inventory/objective refreshes
+        // cannot repeatedly add script counters or replay a phase transition.
+        if(previous!=LocalQuestStatus::Complete && progress.status==LocalQuestStatus::Complete &&
+           !applyScriptTriggers(p,c,LocalScriptTriggerKind::QuestComplete,progress.id,actions)) {
+            // Keep the earned objective counts, but retain the Active edge so
+            // an action-bearing completion can be retried by a transactional
+            // caller. Marking Complete here would consume the only edge.
+            progress.status=previous;
+            if(scriptsOk)*scriptsOk=false;
+            LOG_ERROR("[LOCAL_SCRIPT] quest-complete transition refused player=",p.guid," quest=",progress.id);
+        }
     }
+    return changed;
 }
-void objectiveCredit(LocalRealmPlayer& p,const LocalWorldContent& c,LocalQuestObjective::Type type,uint32_t entry) {
+void objectiveCredit(LocalRealmPlayer& p,const LocalWorldContent& c,LocalQuestObjective::Type type,uint32_t entry,
+                     LocalScriptActionBatch* actions=nullptr) {
     for(auto& q:p.quests) {
         if(q.status==LocalQuestStatus::Rewarded)continue;
         const auto* def=c.quest(q.id);if(!def)continue;
@@ -181,7 +284,7 @@ void objectiveCredit(LocalRealmPlayer& p,const LocalWorldContent& c,LocalQuestOb
         for(size_t i=0;i<def->objectives.size();++i)
             if(def->objectives[i].type==type && def->objectives[i].entry==entry && q.progress[i]<def->objectives[i].count) ++q.progress[i];
     }
-    questStatus(p,c);
+    questStatus(p,c,false,nullptr,actions);
 }
 uint32_t equipmentValue(const LocalRealmPlayer& p,const LocalWorldContent& c, unsigned kind) {
     uint64_t result = 0;
@@ -272,6 +375,22 @@ void clearCast(LocalRealmPlayer& p, LocalCastStatus status) {
     p.castingSpellId=0;p.castTarget=0;p.castRemainingMs=0;p.castTotalMs=0;p.castStatus=status;
     p.castPushbackMs=0;p.castPushbackCount=0;clearLocalPreparedCost(p);
 }
+void clearLocalTravelMotion(LocalRealmPlayer& p) {
+    // Death and authoritative relocations are hard movement boundaries.  Keep
+    // the world position (so the corpse is created where the player actually
+    // died) but drop every owner that could keep writing that position on the
+    // following tick.  In particular a dead passenger must not remain parented
+    // to a ship/lift while the corpse marker stays at the death point.
+    p.movementState = 0;
+    p.falling = false;
+    p.fallStartZ = p.z;
+    p.fallRevision = p.positionRevision;
+    p.flight = {};
+    p.transportEntry = 0;
+    p.transportOffsetX = p.transportOffsetY = p.transportOffsetZ = 0;
+    p.transportLastYaw = 0;
+}
+
 void finishLocalTeleport(LocalRealmPlayer& p) {
     // Earth Shield carries CHANGE_MAP: expire immediately on map/instance
     // transfer, while same-map near teleports retain it (source Player.cpp).
@@ -280,9 +399,8 @@ void finishLocalTeleport(LocalRealmPlayer& p) {
     if(p.castingSpellId)clearCast(p,LocalCastStatus::Interrupted);
     leaveLocalForm(p);
     clearLocalCombo(p);
-    localStopRangedAuto(p);p.attackTarget=0;p.attackTimer=0;p.mountSpellId=0;p.movementState=0;
-    p.falling=false;p.fallStartZ=p.z;p.fallRevision=p.positionRevision;
-    p.flight={};p.transportEntry=0;p.transportOffsetX=p.transportOffsetY=p.transportOffsetZ=p.transportLastYaw=0;
+    localStopRangedAuto(p);p.attackTarget=0;p.attackTimer=0;p.mountSpellId=0;
+    clearLocalTravelMotion(p);
     LOG_INFO("[LOCAL_TRAVEL_STATE] cleared player=",p.guid," map=",p.mapId," instance=",p.instanceId," revision=",p.positionRevision);
 }
 // SpellEffectInfo::CalcValue, SpellInfo.cpp:414-431, transcribed whole since
@@ -347,6 +465,97 @@ template <class T> const T* definition(const std::vector<T>& entries, uint32_t i
     const auto it = std::lower_bound(entries.begin(), entries.end(), id, [](const T& entry, uint32_t key) { return entry.id < key; });
     return it != entries.end() && it->id == id ? &*it : nullptr;
 }
+void attachQuestChain(const LocalWorldContent& content,LocalQuestDefinition& quest) {
+    const auto gate=content.questChainGates.find(quest.id);
+    if(gate!=content.questChainGates.end())quest.chainGate=gate->second;
+    else if(content.questChainCatalogRequired) {
+        quest.chainGate.defined=true;
+        quest.chainGate.unsupportedReason="Quest chain metadata is absent from the installed companion";
+    }
+}
+}
+const LocalVehicleKit* LocalWorldContent::vehicleKit(uint32_t id) const { return definition(vehicleKits,id); }
+const LocalVehicleAbility* localVehicleCastAbility(const LocalVehicleCast& cast,const LocalWorldContent& content) {
+    if(cast.slot>=kLocalVehicleAbilities || !cast.sourceGuid ||
+       (cast.sourceGuid&0xffff000000000000ULL)!=0xf130000000000000ULL ||
+       uint32_t((cast.sourceGuid>>32)&0xffff)!=cast.instanceId)return nullptr;
+    const auto spawn=std::find_if(content.spawns.begin(),content.spawns.end(),[&](const auto& row){
+        return row.id==uint32_t(cast.sourceGuid) && row.mapId==cast.mapId && row.vehicleId && cast.seat<row.vehicleSeatCount;
+    });
+    const auto* kit=spawn==content.spawns.end()?nullptr:content.vehicleKit(spawn->vehicleId);
+    if(!kit)return nullptr;
+    const auto& ability=kit->abilities[cast.slot];
+    return ability.spellId==cast.spellId && ability.castTimeMs==cast.totalMs &&
+        (ability.seatMask&(1u<<cast.seat))?&ability:nullptr;
+}
+bool validLocalVehicleCastView(const LocalVehicleCast& cast,const LocalWorldContent& content) {
+    if(!cast.sourceGuid || !cast.ownerGuid || !cast.spellId || !cast.totalMs ||
+       !cast.remainingMs || cast.remainingMs>cast.totalMs || cast.totalMs>10000 ||
+       cast.mapId>10000 || cast.instanceId>65535 || cast.slot>=kLocalVehicleAbilities || cast.seat>=8)return false;
+    const bool owner=cast.ownerGuid<=0x0000ffffffffffffULL ||
+        (cast.ownerGuid&0xffff000000000000ULL)==kLocalBotGuidPrefix;
+    const auto* ability=localVehicleCastAbility(cast,content);
+    if(!owner || !ability || !content.spell(cast.spellId))return false;
+    if(ability->repair)return cast.targetGuid==cast.sourceGuid;
+    if(ability->projectileSpeed>0)return cast.targetGuid==0;
+    return cast.targetGuid && (cast.targetGuid&0xffff000000000000ULL)==0xf130000000000000ULL &&
+        uint32_t((cast.targetGuid>>32)&0xffff)==cast.instanceId;
+}
+const LocalEscortRoute* LocalWorldContent::escortRoute(uint32_t id) const { return definition(escortRoutes,id); }
+const LocalWorldEventSchedule* LocalWorldContent::worldEvent(uint32_t id) const { return definition(worldEvents,id); }
+const LocalGameObject* LocalWorldContent::gameObject(uint32_t id) const { return definition(gameObjects,id); }
+const LocalScriptAction* LocalWorldContent::scriptAction(uint32_t id) const { return definition(scriptActions,id); }
+const LocalGameObjectPool* LocalWorldContent::gameObjectPool(uint32_t id) const { return definition(gameObjectPools,id); }
+std::string localExpandCreatureText(const std::string& text,const LocalRealmPlayer* target) {
+    static const char* races[]={"","Human","Orc","Dwarf","Night Elf","Undead","Tauren","Gnome","Troll","","Blood Elf","Draenei"};
+    static const char* classes[]={"","Warrior","Paladin","Hunter","Rogue","Priest","Death Knight","Shaman","Mage","Warlock","","Druid"};
+    std::string out;out.reserve(text.size()+16);
+    for(size_t i=0;i<text.size();++i) {
+        if(text[i]!='$' || i+1>=text.size()){out+=text[i];continue;}
+        const char token=text[i+1];
+        if((token=='g'||token=='G')) {
+            const auto colon=text.find(':',i+2),end=text.find(';',i+2);
+            if(colon!=std::string::npos && end!=std::string::npos && colon<end) {
+                auto trim=[](std::string v){while(!v.empty()&&v.front()==' ')v.erase(v.begin());while(!v.empty()&&v.back()==' ')v.pop_back();return v;};
+                out+=trim(target&&target->gender?text.substr(colon+1,end-colon-1):text.substr(i+2,colon-i-2));
+                i=end;continue;
+            }
+        }
+        if(!target){out+=text[i];continue;}
+        if(token=='n'||token=='N'){out+=target->name;++i;continue;}
+        if(token=='r'||token=='R'){out+=target->race<12?races[target->race]:"";++i;continue;}
+        if(token=='c'||token=='C'){out+=target->classId<12?classes[target->classId]:"";++i;continue;}
+        out+=text[i];
+    }
+    if(out.size()>255)out.resize(255);
+    return out;
+}
+bool localPlayerNeedsQuestItem(const LocalRealmPlayer& player,const LocalWorldContent& content,uint32_t itemId) {
+    if(!itemId)return false;
+    for(const auto& quest:player.quests) {
+        if(quest.status!=LocalQuestStatus::Active)continue;
+        const auto* definition=content.quest(quest.id);if(!definition)continue;
+        for(const auto& objective:definition->objectives)
+            if(objective.type==LocalQuestObjective::Type::Collect && objective.entry==itemId && totalItem(player,itemId)<objective.count)
+                return true;
+    }
+    return false;
+}
+bool localGameObjectUsable(const LocalGameObject& object,const LocalRealmPlayer& player,const LocalWorldContent& content) {
+    if(!localGameObjectUsable(object,player))return false;
+    if(!object.questLootOnly)return true;
+    return std::any_of(object.lootTable.begin(),object.lootTable.end(),[&](const auto& row){
+        return row.questRequired && localPlayerNeedsQuestItem(player,content,row.itemId);
+    });
+}
+const LocalGameObject* LocalWorldContent::nearbyGameObject(const LocalRealmPlayer& player) const {
+    const LocalGameObject* best=nullptr;float distance=std::numeric_limits<float>::max();
+    for(const auto& object:gameObjects)if(localGameObjectUsable(object,player,*this)) {
+        const float dx=object.x-player.x,dy=object.y-player.y,dz=object.z-player.z;
+        const float squared=dx*dx+dy*dy+dz*dz;
+        if(squared<distance){distance=squared;best=&object;}
+    }
+    return best;
 }
 const LocalItemDefinition* LocalWorldContent::item(uint32_t id) const {
     if (const auto* d = definition(items, id)) return d;
@@ -371,6 +580,7 @@ const LocalQuestDefinition* LocalWorldContent::quest(uint32_t id) const {
     const auto found = questCache.find(id); if (found != questCache.end()) return &found->second;
     if (!catalog || questCache.size() >= 16384) return nullptr;
     LocalQuestDefinition d; if (!catalog->quest(id, d, catalogError)) return nullptr;
+    attachQuestChain(*this,d);
     return &questCache.emplace(id, std::move(d)).first->second;
 }
 const LocalNpcDefinition* LocalWorldContent::npc(uint32_t id) const {
@@ -390,6 +600,7 @@ std::vector<LocalQuestDefinition> LocalWorldContent::questsForNpc(uint32_t entry
             if (!catalog->questsForNpc(entry,extra,catalogError)) return result;
             std::vector<uint32_t> ids;ids.reserve(extra.size());
             for (auto& q:extra) {
+                attachQuestChain(*this,q);
                 ids.push_back(q.id);
                 if (questCache.size()<16384) questCache.emplace(q.id,std::move(q));
             }
@@ -415,6 +626,169 @@ struct LocalGameplay::Impl {
             std::none_of(result.begin(),result.end(),[&](auto* p){return p&&p->guid==owner->guid;}))result.push_back(owner);
         return result;
     }
+    std::mt19937 objectRandom{uint32_t(std::chrono::steady_clock::now().time_since_epoch().count()^0x5bd1e995u)};
+    LocalGameObjectState* objectState(uint32_t id) {
+        const auto it=std::lower_bound(gameObjectStates.begin(),gameObjectStates.end(),id,[](const auto& row,uint32_t key){return row.id<key;});
+        return it!=gameObjectStates.end()&&it->id==id?&*it:nullptr;
+    }
+    static void bumpObject(LocalGameObjectState& state){state.revision=state.revision==UINT32_MAX?1:state.revision+1;}
+    /// PoolMgr: keep exactly min(max_limit, members) spawned; members chosen
+    /// with equal chance. Depleted members still hold their slot until their
+    /// respawn rotates the pool.
+    bool normalizeGameObjectPools() {
+        bool changed=false;
+        for(const auto& pool:content->gameObjectPools) {
+            std::vector<LocalGameObjectState*> active,dormant;
+            for(const auto id:pool.members)if(auto* state=objectState(id))(state->status==kLocalGameObjectDormant?dormant:active).push_back(state);
+            const size_t want=std::min<size_t>(pool.maxActive,active.size()+dormant.size());
+            while(active.size()>want) {
+                // Retire a ready member first; a depleted one keeps its timer.
+                std::vector<size_t> ready;for(size_t i=0;i<active.size();++i)if(active[i]->status==kLocalGameObjectReady)ready.push_back(i);
+                const size_t index=ready.empty()?std::uniform_int_distribution<size_t>(0,active.size()-1)(objectRandom):
+                    ready[std::uniform_int_distribution<size_t>(0,ready.size()-1)(objectRandom)];
+                auto* state=active[index];state->status=kLocalGameObjectDormant;state->remainingMs=0;bumpObject(*state);
+                dormant.push_back(state);active.erase(active.begin()+std::ptrdiff_t(index));changed=true;
+            }
+            while(active.size()<want) {
+                const size_t index=std::uniform_int_distribution<size_t>(0,dormant.size()-1)(objectRandom);
+                auto* state=dormant[index];state->status=kLocalGameObjectReady;state->remainingMs=0;bumpObject(*state);
+                active.push_back(state);dormant.erase(dormant.begin()+std::ptrdiff_t(index));changed=true;
+            }
+        }
+        return changed;
+    }
+    /// A pooled spawn finished its respawn: the pool respawns one member,
+    /// chosen uniformly among itself and every dormant member.
+    void rotatePooledRespawn(LocalGameObjectState& finished,const LocalGameObject& object) {
+        const auto* pool=content->gameObjectPool(object.poolId);
+        std::vector<LocalGameObjectState*> candidates{&finished};
+        if(pool)for(const auto id:pool->members)if(auto* state=objectState(id);state&&state->status==kLocalGameObjectDormant)candidates.push_back(state);
+        auto* chosen=candidates[std::uniform_int_distribution<size_t>(0,candidates.size()-1)(objectRandom)];
+        if(chosen!=&finished){finished.status=kLocalGameObjectDormant;finished.remainingMs=0;chosen->status=kLocalGameObjectReady;chosen->remainingMs=0;bumpObject(*chosen);}
+        else {finished.status=kLocalGameObjectReady;finished.remainingMs=0;}
+        bumpObject(finished);
+    }
+    std::mt19937 talkRandom{uint32_t(std::chrono::steady_clock::now().time_since_epoch().count()^0x2545f491u)};
+    void appendNpcDialogue(uint64_t speaker,const LocalRealmPlayer& viewer,uint32_t mapId,uint32_t instanceId,std::string text,uint8_t chatType) {
+        if(scriptDialogues.size()>=kLocalMaxScriptDialogues){scriptDialogues.erase(scriptDialogues.begin());++overwrittenScriptDialogues;}
+        if(!++scriptDialogueRevision)++scriptDialogueRevision;
+        scriptDialogues.push_back({scriptDialogueRevision,speaker,viewer.guid,mapId,instanceId,std::move(text),chatType});
+    }
+    std::pair<std::vector<LocalCreatureTalkRule>::const_iterator,std::vector<LocalCreatureTalkRule>::const_iterator>
+    talkRules(const LocalRealmNpc& n) const {
+        const auto& rules=content->creatureTalk;
+        // SmartScript runs a spawn's guid script instead of its entry script.
+        const bool guidScripted=n.spawnId&&std::binary_search(content->creatureGuidScripts.begin(),content->creatureGuidScripts.end(),n.spawnId);
+        const int64_t owner=guidScripted?-int64_t(n.spawnId):int64_t(n.entry);
+        return std::equal_range(rules.begin(),rules.end(),owner,[](const auto& a,const auto& b){
+            if constexpr(std::is_same_v<std::decay_t<decltype(a)>,int64_t>)return a<b.owner;else return a.owner<b;});
+    }
+    /// SmartScript::ProcessEvent/ProcessAction for installed TALK rows: the
+    /// once flag, then the event chance, then CreatureTextMgr::SendChat.
+    bool creatureTalk(LocalRealmNpc& n,LocalCreatureTalkEvent event,const LocalRealmPlayer* invoker,uint32_t questId,
+                      const std::vector<LocalRealmPlayer*>& players) {
+        if(content->creatureTalk.empty() || n.scriptActorId)return false;
+        bool spoke=false;
+        const auto [begin,end]=talkRules(n);
+        for(auto it=begin;it!=end;++it) {
+            const auto& rule=*it;
+            if(rule.event!=event || rule.action!=LocalCreatureSmartAction::Talk || (rule.questId && rule.questId!=questId))continue;
+            if(rule.once && ((n.talkOnceMask>>rule.ownerIndex)&1))continue;
+            if(event==LocalCreatureTalkEvent::Kill) {
+                if(n.talkKillCooldownMs)continue;
+                n.talkKillCooldownMs=std::uniform_int_distribution<uint32_t>(rule.cooldownMinMs,rule.cooldownMaxMs)(talkRandom);
+            }
+            if(rule.chance<100 && std::uniform_int_distribution<uint32_t>(0,99)(talkRandom)>=rule.chance)continue;
+            n.talkOnceMask|=uint64_t(1)<<rule.ownerIndex;
+            speak(n,rule,invoker,players);
+            spoke=true;
+        }
+        return spoke;
+    }
+    void speak(const LocalRealmNpc& n,const LocalCreatureTalkRule& rule,const LocalRealmPlayer* invoker,const std::vector<LocalRealmPlayer*>& players) {
+        {
+            float total=0;for(const auto& line:rule.lines)total+=line.weight;
+            size_t pick=0;
+            if(total>0) {
+                float roll=std::uniform_real_distribution<float>(0,total)(talkRandom);
+                for(pick=0;pick+1<rule.lines.size() && roll>=rule.lines[pick].weight;++pick)roll-=rule.lines[pick].weight;
+            } else pick=std::uniform_int_distribution<size_t>(0,rule.lines.size()-1)(talkRandom);
+            const auto& line=rule.lines[pick];
+            const float range=localCreatureTalkRange(line.chatType);
+            for(const auto* viewer:players) {
+                if(!viewer || viewer->mapId!=n.mapId || viewer->instanceId!=n.instanceId)continue;
+                if(line.chatType==kLocalChatMonsterWhisper && (!invoker || viewer->guid!=invoker->guid))continue;
+                const float dx=viewer->x-n.x,dy=viewer->y-n.y,dz=viewer->z-n.z;
+                if(!std::isfinite(dx+dy+dz) || dx*dx+dy*dy+dz*dz>range*range)continue;
+                auto text=localExpandCreatureText(line.text,invoker?invoker:viewer);
+                // The client prints "%s" in monster text as the speaker's name.
+                for(size_t at=text.find("%s");at!=std::string::npos;at=text.find("%s",at+n.name.size()))text.replace(at,2,n.name);
+                if(text.size()>255)text.resize(255);
+                appendNpcDialogue(n.guid,*viewer,n.mapId,n.instanceId,std::move(text),line.chatType);
+            }
+        }
+    }
+    static bool smartTimed(const LocalCreatureTalkRule& rule) {
+        return rule.event==LocalCreatureTalkEvent::UpdateIc||rule.event==LocalCreatureTalkEvent::UpdateOoc||rule.event==LocalCreatureTalkEvent::HealthPct;
+    }
+    uint32_t* smartTimer(LocalRealmNpc& n,uint8_t index) {
+        for(auto& row:n.smartTimers)if(row.first==index)return &row.second;
+        n.smartTimers.push_back({index,0});return &n.smartTimers.back().second;
+    }
+    /// SmartScript::InitTimer; on reset, DONT_RESET rows keep their timer.
+    void initSmartTimers(LocalRealmNpc& n,bool reset) {
+        const auto [begin,end]=talkRules(n);
+        for(auto it=begin;it!=end;++it)if(smartTimed(*it) && !(reset && it->keepOnEvade)) {
+            const bool update=it->event!=LocalCreatureTalkEvent::HealthPct;
+            *smartTimer(n,it->ownerIndex)=update?std::uniform_int_distribution<uint32_t>(it->initialMinMs,it->initialMaxMs)(talkRandom):0;
+        }
+        n.smartTimersReady=true;
+    }
+    /// SmartScript::UpdateTimer/ProcessTimedAction for UPDATE_IC/OOC and
+    /// HEALTH_PCT rows. `flee` performs FLEE_FOR_ASSIST for this creature.
+    template<class Flee>
+    bool runSmartTimers(LocalRealmNpc& n,uint32_t elapsedMs,const LocalRealmPlayer* victim,
+                        const std::vector<LocalRealmPlayer*>& players,Flee&& flee) {
+        if(content->creatureTalk.empty() || n.scriptActorId || n.dead)return false;
+        if(!n.smartTimersReady)initSmartTimers(n,false);
+        const bool engaged=n.targetGuid!=0;bool acted=false;
+        const auto [begin,end]=talkRules(n);
+        for(auto it=begin;it!=end;++it) {
+            const auto& rule=*it;if(!smartTimed(rule))continue;
+            if((rule.event==LocalCreatureTalkEvent::UpdateOoc)==engaged)continue; // IC and HEALTH_PCT need combat
+            auto& timer=*smartTimer(n,rule.ownerIndex);
+            if(timer){timer-=std::min(timer,elapsedMs);if(timer)continue;}
+            if(rule.event==LocalCreatureTalkEvent::HealthPct) {
+                if(!n.maxHealth)continue;
+                const auto pct=uint32_t(uint64_t(n.health)*100/n.maxHealth);
+                if(pct>rule.maxPct || pct<rule.minPct)continue;
+            }
+            if(rule.once && ((n.talkOnceMask>>rule.ownerIndex)&1))continue;
+            // ProcessAction: chance, then runOnce; ProcessTimedAction re-arms.
+            if(rule.chance>=100 || std::uniform_int_distribution<uint32_t>(0,99)(talkRandom)<rule.chance) {
+                n.talkOnceMask|=uint64_t(1)<<rule.ownerIndex;
+                if(rule.action==LocalCreatureSmartAction::Talk)speak(n,rule,victim,players);
+                else flee(rule);
+                acted=true;
+            }
+            timer=std::uniform_int_distribution<uint32_t>(rule.repeatMinMs,rule.repeatMaxMs)(talkRandom);
+        }
+        return acted;
+    }
+    /// BROADCAST_TEXT_FLEE_FOR_ASSIST as a monster emote to nearby players.
+    void fleeEmote(const LocalRealmNpc& n,const std::vector<LocalRealmPlayer*>& players) {
+        for(const auto* viewer:players) {
+            if(!viewer || viewer->mapId!=n.mapId || viewer->instanceId!=n.instanceId)continue;
+            const float dx=viewer->x-n.x,dy=viewer->y-n.y,dz=viewer->z-n.z;
+            if(!std::isfinite(dx+dy+dz) || dx*dx+dy*dy+dz*dz>25.f*25.f)continue;
+            appendNpcDialogue(n.guid,*viewer,n.mapId,n.instanceId,n.name+" attempts to run away in fear!",kLocalChatMonsterEmote);
+        }
+    }
+    uint64_t talkKeepOnEvadeMask(const LocalRealmNpc& n) const {
+        uint64_t mask=0;const auto [begin,end]=talkRules(n);
+        for(auto it=begin;it!=end;++it)if(it->keepOnEvade)mask|=uint64_t(1)<<it->ownerIndex;
+        return mask;
+    }
     std::mt19937 meleeRandom{uint32_t(std::chrono::steady_clock::now().time_since_epoch().count())};
     uint32_t meleeRoll(uint32_t maximum=9999){return std::uniform_int_distribution<uint32_t>(0,maximum)(meleeRandom);}
     uint32_t stormstrikeEventOffsetMs=0; // Sub-frame periodic hit time; inherited by nested damage.
@@ -431,6 +805,17 @@ struct LocalGameplay::Impl {
     uint64_t pendingStatAuraOwner=0; // One cast reserves its new buff slot before callbacks.
     std::shared_ptr<LocalWorldContent> content = std::make_shared<LocalWorldContent>();
     std::vector<LocalRealmNpc> npcs;
+    std::vector<LocalScriptDialogue> scriptDialogues;
+    uint64_t scriptDialogueRevision=0,overwrittenScriptDialogues=0;
+    std::vector<LocalPendingScriptKill> pendingScriptCommits;
+    bool executeScriptActionsScoped(const std::vector<uint32_t>& actionIds,
+        const std::vector<LocalRealmPlayer*>& viewers,
+        const std::vector<LocalRealmPlayer*>& authorityPlayers,std::string& error);
+    std::vector<LocalVehicleProjectile> vehicleProjectiles;
+    std::vector<LocalVehicleCast> vehicleCasts;
+    std::vector<LocalGameObjectState> gameObjectStates;
+    std::map<uint64_t,LocalEscortCombatState> escortCombat;
+    uint32_t nextVehicleProjectile=0;
     // Owned creatures live outside the catalog-driven NPC roster: the spawn
     // refresher rebuilds that list from world queries and would evict a summon.
     std::vector<LocalRealmPet> pets;
@@ -469,7 +854,19 @@ struct LocalGameplay::Impl {
             const auto* d=content->spell(a.spell);if(!d||target->damageAuras.size()>=kLocalMaxNpcDamageAuras)continue;
             target->damageAuras.push_back({a.spell,a.remaining,d->durationMs,a.owner,a.stacks});
         }
-        for(auto* p:players)if(p)p->healingAuras.clear();
+        for(auto* p:players)if(p){p->healingAuras.clear();p->harmfulAuras.clear();}
+        for(const auto& a:npcPeriodic) {
+            auto* target=player(a.target,players);
+            if(!target||target->dead||!a.remaining||target->mapId!=a.mapId||target->instanceId!=a.instanceId)continue;
+            const auto* d=content->spell(a.spell);if(!d||target->harmfulAuras.size()>=kLocalMaxHealingAuraViews)continue;
+            LocalHealingAuraView view{a.spell,a.remaining,std::max(a.durationMs?a.durationMs:d->durationMs,a.remaining),a.caster,a.stacks,a.armor,a.slowPercent,a.armorPercent,a.control};
+            view.attackPower=a.attackPower;view.damageDoneFlat=a.damageDoneFlat;view.damageTakenFlat=a.damageTakenFlat;
+            view.damageDonePct=a.damageDonePct;view.damageTakenPct=a.damageTakenPct;view.healingPct=a.healingPct;view.hastePct=a.hastePct;
+            view.schoolMask=a.schoolMask;view.breakOnDamage=a.breakOnDamage;
+            view.castSpeedPct=a.castSpeedPct;view.hitChancePct=a.hitChancePct;view.dodgePct=a.dodgePct;view.parryPct=a.parryPct;view.blockPct=a.blockPct;
+            view.resistance=a.resistance;view.resistanceSchool=a.resistanceSchool;view.disarmed=a.disarmed;
+            target->harmfulAuras.push_back(view);
+        }
         for(const auto& a:periodicHeals){
             auto* target=player(a.target,players);auto* owner=player(a.owner,players);
             if(!target||!owner||target->dead||owner->dead||!target->health||!a.remaining||
@@ -482,6 +879,7 @@ struct LocalGameplay::Impl {
     std::unordered_map<uint64_t,double> respawnAt;
     std::vector<LocalAreaTriggerVolume> volumes;
     std::vector<LocalFactionTemplate> factions;
+    std::vector<LocalFactionReputationBase> factionReputationBases;
     std::vector<LocalGraveyardSite> graveyards;
     std::array<uint32_t, 12> raceFactions{};
     std::vector<LocalInstanceState> instances;
@@ -501,6 +899,8 @@ struct LocalGameplay::Impl {
     // decides, and without SkillLine.dbc the built-in professions stand.
     std::vector<LocalMapDefinition> maps;
     std::vector<LocalSkillLine> skills;
+    std::array<int32_t,10> questRepGains{}, questRepLosses{};
+    bool questRepRowsLoaded=false;
     // Taxi routes and world transports, from the player's own client DBCs.
     // Empty until the application supplies them, and everything that reads it
     // copes with that: with no client data there are no flights and no ships,
@@ -527,29 +927,37 @@ struct LocalGameplay::Impl {
     bool portalScanLogged=false;
     mutable std::unordered_map<uint64_t,uint32_t> portalExitLatch;
     void rebuild(bool replaceContent = false) {
-        grid.clear();npcs.clear();crewSpawns.clear();respawnAt.clear();periodicDamage.clear();pendingIgnites.clear();periodicHeals.clear();regionTimer=1;
+        grid.clear();npcs.clear();npcPeriodic.clear();vehicleProjectiles.clear();vehicleCasts.clear();escortCombat.clear();crewSpawns.clear();respawnAt.clear();periodicDamage.clear();pendingIgnites.clear();periodicHeals.clear();pendingScriptCommits.clear();regionTimer=1;
+        npcs.reserve(LocalGameplay::MaxNpcs); // Script spawns never invalidate live NPC references.
         // Travel data can arrive after a realm has loaded its stock ledger.
         // Reclassifying actors must not refill shops; only new content does.
-        if (replaceContent) vendorInventory.clear();
+        if (replaceContent) {
+            vendorInventory.clear();gameObjectStates.clear();scriptDialogues.clear();
+            scriptDialogueRevision=overwrittenScriptDialogues=0;
+            for(const auto& object:content->gameObjects)if(localGameObjectStateful(object.kind))
+                gameObjectStates.push_back({object.id,1,0,0});
+            for(const auto& pool:content->gameObjectPools)for(const auto id:pool.members)
+                if(auto* state=objectState(id))state->status=kLocalGameObjectDormant;
+            normalizeGameObjectPools();
+        }
         for(size_t i=0;i<content->spawns.size();++i) {
             const auto& s=content->spawns[i];grid[cell(s.mapId,int(std::floor(s.x/CellSize)),int(std::floor(s.y/CellSize)))].push_back(i);
         }
     }
-    LocalRealmNpc makeNpc(const LocalNpcSpawn& s, uint32_t instanceId) {
-        const auto& d=*content->npc(s.entry);LocalRealmNpc n;
-        n.guid=NpcPrefix|(uint64_t(instanceId)<<32)|s.id;n.instanceId=instanceId;n.spawnId=s.id;n.entry=s.entry;n.displayId=d.displayId;n.name=d.name;
-        n.mapId=s.mapId;n.x=n.homeX=s.x;n.y=n.homeY=s.y;n.z=n.homeZ=s.z;n.orientation=s.orientation;
-        n.level=d.level;n.health=n.maxHealth=d.health;n.hostile=d.hostile;n.questGiver=d.questGiver;
-        // What does this NPC do for a living?
-        //
-        // creature_template.npcflag answers it, and localEffectiveNpcFlags is
-        // where the two sources of that field are reconciled: the catalog's own
-        // value when it carries one, and otherwise the transcription of the
-        // same upstream column that ships beside this code. Everything below
-        // reads the reconciled value, so a re-imported catalog changes every
-        // service at once rather than half of them.
-        const uint32_t flags = localEffectiveNpcFlags(d);
+    /// What does this NPC do for a living?
+    ///
+    /// creature_template.npcflag answers it, and localEffectiveNpcFlags is
+    /// where the two sources of that field are reconciled: the catalog's own
+    /// value when it carries one, and otherwise the transcription of the
+    /// same upstream column that ships beside this code. Everything below
+    /// reads the reconciled value, so a re-imported catalog changes every
+    /// service at once rather than half of them. 2.39: a script's
+    /// SET/ADD/REMOVE_NPC_FLAG re-derives the services from its own flags
+    /// (`overridden`: a quest giver without UNIT_NPC_FLAG_QUESTGIVER offers
+    /// nothing).
+    void applyNpcServiceFlags(LocalRealmNpc& n,const LocalNpcDefinition& d,uint32_t flags,bool overridden) const {
         n.banker = (flags & kLocalNpcFlagBanker) != 0;
+        if(overridden)n.questGiver=d.questGiver&&(flags&0x2u);
         // Is this NPC a flight master, and for which node?
         //
         // Two sources, in order of authority. The npcflag is the server's own
@@ -561,8 +969,9 @@ struct LocalGameplay::Impl {
         // Either way the node has to exist in the client's data and be a flight
         // node: a boat stop has no flight master, and offering one there would
         // sell a flight with no route behind it.
+        n.flightMaster=false;n.taxiNodeId=0;
         if (const LocalTaxiNode* node = travel.flightNodeAt(n.mapId, n.x, n.y, n.z)) {
-            if ((flags & LocalTravelNetwork::NpcFlagFlightMaster) != 0 || flags == 0) {
+            if ((flags & LocalTravelNetwork::NpcFlagFlightMaster) != 0 || (flags == 0 && !overridden)) {
                 n.flightMaster = true;
                 n.taxiNodeId = node->id;
             }
@@ -574,7 +983,7 @@ struct LocalGameplay::Impl {
         // is inferred from position - an auction house is a building, not a
         // coordinate the client knows about.
         n.auctioneer = (flags & kLocalNpcFlagAuctioneer) != 0 ||
-                       (flags == 0 && d.subname.rfind("Auctioneer", 0) == 0);
+                       (flags == 0 && !overridden && d.subname.rfind("Auctioneer", 0) == 0);
         n.vendor = (flags & kLocalNpcFlagAnyVendor) != 0;
         n.vendorCategories = localVendorCategories(flags);
         n.repairer = (flags & kLocalNpcFlagRepair) != 0;
@@ -586,14 +995,57 @@ struct LocalGameplay::Impl {
         // there. Neither source knowing leaves these zero, and such a trainer
         // teaches nothing rather than teaching the wrong thing.
         const auto* row = localServiceNpcRecord(d.id);
+        n.trainerSkill=0;n.trainerClass=0;
         if (n.professionTrainer) n.trainerSkill = d.trainerSkill ? d.trainerSkill : (row ? row->trainerSkill : 0);
         if (n.classTrainer) n.trainerClass = d.trainerClass ? d.trainerClass : (row ? row->trainerClass : 0);
-        n.combatEpoch=allocateNpcEpoch();
+    }
+    /// 2.39: the creature's UNIT_NPC_FLAGS as the scripts see them.
+    uint32_t npcEffectiveFlags(const LocalRealmNpc& n) const {
+        if(n.npcFlagsOverridden)return n.npcFlagsOverride;
+        const auto* d=content?content->npc(n.entry):nullptr;
+        return d?npcBaseFlags(*d):0u;
+    }
+    void npcSetFlags(LocalRealmNpc& n,uint32_t flags) {
+        const auto* d=content?content->npc(n.entry):nullptr;if(!d)return;
+        n.npcFlagsOverridden=true;n.npcFlagsOverride=flags;
+        applyNpcServiceFlags(n,*d,flags,true);
+    }
+    LocalRealmNpc makeNpcAtEpoch(const LocalNpcSpawn& s, uint32_t instanceId, uint64_t epoch) const {
+        const auto& d=*content->npc(s.entry);LocalRealmNpc n;
+        n.guid=NpcPrefix|(uint64_t(instanceId)<<32)|s.id;n.instanceId=instanceId;n.spawnId=s.id;n.entry=s.entry;n.displayId=d.displayId;n.name=d.name;
+        n.requiredPhaseMask=s.requiredPhaseMask;n.excludedPhaseMask=s.excludedPhaseMask;
+        n.vehicleId=s.vehicleId;n.vehicleSeatCount=s.vehicleSeatCount;n.vehicleControllerSeat=s.vehicleControllerSeat;n.vehicleSeatOffsets=s.vehicleSeatOffsets;
+        if(const auto* kit=content->vehicleKit(n.vehicleId)) {
+            n.vehiclePower=kit->maxPower;
+            for(size_t i=0;i<n.vehicleSeatCount;++i)n.vehicleAim[i][1]=std::clamp(0.f,kit->minPitch,kit->maxPitch);
+        }
+        n.mapId=s.mapId;n.x=n.homeX=n.spawnX=s.x;n.y=n.homeY=n.spawnY=s.y;n.z=n.homeZ=n.spawnZ=s.z;n.orientation=n.spawnOrientation=s.orientation;
+        n.level=d.level;n.health=n.maxHealth=d.health;n.hostile=d.hostile;n.questGiver=d.questGiver;
+        applyNpcServiceFlags(n,d,npcBaseFlags(d),false);
+        n.combatEpoch=epoch;
+        // 2.39 Creature::LoadFromDB -> the default movement generator: random
+        // movement within the wander distance, or the creature_addon patrol.
+        if(s.movementType==1&&s.wanderDistance>0){n.npcDefaultMotion=1;n.npcWanderDistance=std::min(s.wanderDistance,1000.f);}
+        else if(s.movementType==2&&s.pathId){n.npcDefaultMotion=2;n.patrolPathId=n.patrolLoadedPath=s.pathId;n.patrolNode=n.patrolStartNode=s.currentWaypoint;n.patrolRepeat=true;}
         return n;
     }
+    LocalRealmNpc makeNpc(const LocalNpcSpawn& s, uint32_t instanceId) {
+        return makeNpcAtEpoch(s,instanceId,allocateNpcEpoch());
+    }
+    /// 2.39: the spawn's motion row of the catalog (tests carry it in the
+    /// content's spawns), read when the creature is streamed in.
+    void fillSpawnMotion(LocalNpcSpawn& s) const {
+        if(s.movementType||!content||!content->catalog)return;
+        LocalSpawnMotion m;
+        if(content->catalog->spawnMotion(s.id,m)){s.movementType=m.movementType;s.currentWaypoint=m.currentWaypoint;s.wanderDistance=m.wanderDistance;s.pathId=m.pathId;}
+    }
     void regions(const std::vector<LocalRealmPlayer*>& players) {
+        std::set<uint64_t> vehicleVictims;
+        for(const auto& n:npcs)if(const auto* target=npc(n.targetGuid);target && target->vehicleId)vehicleVictims.insert(target->guid);
         npcs.erase(std::remove_if(npcs.begin(), npcs.end(), [&](const LocalRealmNpc& n) {
-            if (n.targetGuid) return false;
+            if ((n.scriptActorId&&!n.scriptActorRetired) || n.targetGuid || n.escortOwner || vehicleVictims.count(n.guid)) return false;
+            // 2.38: a temporary summon lives until its own timer (TempSummon).
+            if (n.npcSummonType && !n.npcUnsummoned) return false;
             for (const auto* p : players) {
                 // The hull crosses the seam before player relocation below.
                 // Retain its passengers through that one authority tick.
@@ -694,16 +1146,46 @@ struct LocalGameplay::Impl {
         for (auto& space : spaces) std::sort(space.second.begin(),space.second.end());
         std::sort(candidates.begin(),candidates.end());
         std::set<uint64_t> selected;
-        for (size_t round=0;selected.size()<LocalGameplay::MaxNpcs;++round) {
+        for(const auto& scripted:npcs)if(scripted.scriptActorId&&!scripted.scriptActorRetired)selected.insert(scripted.guid);
+        for(const auto& summon:npcs)if(summon.npcSummonType&&!summon.npcUnsummoned)selected.insert(summon.guid);
+        // A driven actor may leave its authored spawn cell. Retain occupied
+        // vehicles before filling the remaining bounded streaming slots.
+        for(const auto* p:players)if(p && p->vehicleGuid && npc(p->vehicleGuid))selected.insert(p->vehicleGuid);
+        for(const auto& hull:npcs)if(hull.vehicleId && std::any_of(players.begin(),players.end(),[&](const auto* p){
+            return p && distance2(*p,hull)<=RetainRadius*RetainRadius;
+        }))selected.insert(hull.guid);
+        for(const auto& hostile:npcs)if(const auto* victim=npc(hostile.targetGuid);victim && victim->vehicleId)selected.insert(victim->guid);
+        // 2.39: a creature that has walked away from its spawn (a patrol, a
+        // random mover, a follower, an escort) stays while it stands within
+        // the active radius of a player even though its spawn no longer
+        // qualifies - the reference keeps it in the grid it walked into. Its
+        // corpse and its despawned state stay with it.
+        for(const auto& mover:npcs)if(!mover.transportEntry&&!mover.npcSummonType&&!byGuid.count(mover.guid)&&
+            std::any_of(players.begin(),players.end(),[&](const auto* p){
+                return p&&p->mapId==mover.mapId&&p->instanceId==mover.instanceId&&distance2(*p,mover)<=ActiveRadius*ActiveRadius;}))selected.insert(mover.guid);
+        for(const auto* p:players)if(p && p->escort.routeId)if(const auto* route=content->escortRoute(p->escort.routeId)) {
+            const auto spawn=std::find_if(content->spawns.begin(),content->spawns.end(),[&](const auto& s){return s.id==route->spawnId;});
+            if(spawn==content->spawns.end())continue;
+            const auto guid=NpcPrefix|route->spawnId;
+            if(!npc(guid) && npcs.size()<LocalGameplay::MaxNpcs)npcs.push_back(makeNpc(*spawn,0));
+            if(npc(guid))selected.insert(guid);
+        }
+        // 2.38: streamed spawns fill the roster up to the summon reserve, so a
+        // script's summons find room in a busy area (they and the script
+        // actors are retained above regardless).
+        constexpr size_t SpawnBudget=LocalGameplay::MaxNpcs-16;
+        for (size_t round=0;selected.size()<SpawnBudget;++round) {
             bool added=false;
             for (const auto& space : spaces) {
-                if (selected.size()>=LocalGameplay::MaxNpcs) break;
+                if (selected.size()>=SpawnBudget) break;
                 if (round<space.second.size()) {selected.insert(space.second[round].second);added=true;}
             }
             if (!added) break;
         }
         npcs.erase(std::remove_if(npcs.begin(), npcs.end(), [&](const LocalRealmNpc& n) {
-            return !selected.count(n.guid);
+            const bool drop=!selected.count(n.guid);
+            if(drop)LOG_DEBUG("[LOCAL_REGIONS] drop guid=",n.guid," entry=",n.entry," candidates=",candidates.size()," selected=",selected.size());
+            return drop;
         }), npcs.end());
         for (const auto& candidate : candidates) {
             if (npcs.size() >= LocalGameplay::MaxNpcs) break;
@@ -711,7 +1193,8 @@ struct LocalGameplay::Impl {
             if (!selected.count(guid)) continue;
             if (std::any_of(npcs.begin(), npcs.end(), [&](const LocalRealmNpc& n) { return n.guid == guid; })) continue;
             const auto death = respawnAt.find(guid); if (death != respawnAt.end() && death->second > now) continue;
-            const auto& entry = byGuid.at(guid);
+            auto& entry = byGuid.at(guid);
+            fillSpawnMotion(entry.spawn);
             auto npc=makeNpc(entry.spawn, entry.instanceId);
             npc.transportEntry=entry.transportEntry;
             if (entry.transportEntry) {
@@ -721,6 +1204,7 @@ struct LocalGameplay::Impl {
             npcs.push_back(std::move(npc));
         }
         for (auto it = respawnAt.begin(); it != respawnAt.end();) if (it->second <= now) it = respawnAt.erase(it); else ++it;
+        prunePatrolPaths(); // 2.39: the waypoint_data paths no roster creature walks
     }
     LocalRealmNpc* npc(uint64_t guid){for(auto& n:npcs)if(n.guid==guid)return &n;return nullptr;}
     LocalRealmPlayer* player(uint64_t guid,const std::vector<LocalRealmPlayer*>& players){for(auto* p:players)if(p->guid==guid)return p;return nullptr;}
@@ -847,8 +1331,19 @@ struct LocalGameplay::Impl {
     // that dealt the damage, not the player it belongs to.
     // `combatReach` is the contender's own UNIT_FIELD_COMBATREACH, which the
     // melee half of ThreatManager::SelectVictim reads through IsWithinMeleeRange.
+#include "local_escort_runtime.inc"
     struct ThreatActor { float x=0,y=0,z=0; bool valid=false; float combatReach=kLocalDefaultCombatReach; };
     ThreatActor threatActor(uint64_t guid,const LocalRealmNpc& n,const std::vector<LocalRealmPlayer*>& players) {
+        if(const auto* guide=npc(guid);guide && guide->escortOwner) {
+            const auto* owner=escortCombatOwner(*guide,players);
+            if(!owner || guide->mapId!=n.mapId || guide->instanceId!=n.instanceId ||
+               !localPhaseVisible(owner->phaseMask,n.requiredPhaseMask,n.excludedPhaseMask))return {};
+            return {guide->x,guide->y,guide->z,true,localCreatureCombatReach(content->npc(guide->entry))};
+        }
+        if(const auto* vehicle=npc(guid);vehicle && vehicle->vehicleId && content->vehicleKit(vehicle->vehicleId)) {
+            if(vehicle->dead || !vehicle->health || vehicle->mapId!=n.mapId || vehicle->instanceId!=n.instanceId)return {};
+            return {vehicle->x,vehicle->y,vehicle->z,true,localCreatureCombatReach(content->npc(vehicle->entry))};
+        }
         if(localPetGuid(guid)) {
             auto* summon=pet(guid);
             if(!summon||summon->dead||!summon->health||summon->mapId!=n.mapId||summon->instanceId!=n.instanceId)return {};
@@ -881,61 +1376,131 @@ struct LocalGameplay::Impl {
         }
         n.targetGuid=bestGuid;
     }
+    struct KillRewardPlan {
+        uint64_t lootOwner=0;uint32_t group=0;
+        std::vector<LocalRealmPlayer*> eligible;
+        std::vector<uint32_t> rewards;
+    };
+    // Build and reserve the immutable reward facts before publishing a death.
+    // Passing a copied queue makes this the exact dry-run used by atomic area
+    // vehicle effects; passing pendingScriptCommits performs the real reserve.
+    bool reserveKillFacts(const LocalRealmNpc& n,LocalRealmPlayer& killer,
+            const std::vector<LocalRealmPlayer*>& players,std::vector<LocalPendingScriptKill>& queue,
+            KillRewardPlan& plan,bool reportFailure) {
+        const auto* def=content->npc(n.entry);if(!def||n.dead)return false;
+        // The first engager owns the kill, even if an unrelated player lands
+        // the final blow. Only their actual party can share supported rewards.
+        plan.lootOwner=n.lootOwner?n.lootOwner:killer.guid;
+        const auto* owner=player(plan.lootOwner,players);
+        plan.group=owner?partyOf(owner->guid):0;
+        for(auto* p:players) {
+            if(owner && !p->dead && p->health && distance2(*p,n)<=60*60 &&
+               (p->guid==owner->guid || (plan.group && partyOf(p->guid)==plan.group)))plan.eligible.push_back(p);
+        }
+        std::sort(plan.eligible.begin(),plan.eligible.end(),[](auto* a,auto* b){return a->guid<b->guid;});
+        plan.eligible.erase(std::unique(plan.eligible.begin(),plan.eligible.end(),[](auto* a,auto* b){return a->guid==b->guid;}),plan.eligible.end());
+        // This local ruleset splits the existing catalog XP budget equally;
+        // deterministic remainder allocation conserves it exactly. It does not
+        // claim retail level scaling, gray-mob penalties or group multipliers.
+        const size_t xpCount=std::count_if(plan.eligible.begin(),plan.eligible.end(),[](auto* p){return p->level<80;});
+        uint32_t remainder=xpCount?def->xp%uint32_t(xpCount):0;
+        plan.rewards.reserve(plan.eligible.size());
+        for(const auto* p:plan.eligible) {
+            uint32_t reward=0;
+            if(p->level<80 && xpCount){reward=def->xp/uint32_t(xpCount);if(remainder){++reward;--remainder;}}
+            plan.rewards.push_back(reward);
+        }
+        // Only adjacent equal facts are run-length encoded. Thus A,B,A stays
+        // A,B,A and script-state/action ordering is unchanged. Admission
+        // happens before any death state is published: a full bounded queue
+        // refuses the lethal hit instead of dropping credit.
+        size_t newFacts=plan.eligible.size();
+        if(!plan.eligible.empty() && !queue.empty() &&
+           queue.back().playerGuid==plan.eligible.front()->guid && queue.back().npcEntry==n.entry) {
+            --newFacts;
+            if(queue.back().count==UINT32_MAX || queue.back().xp>UINT64_MAX-plan.rewards.front()) {
+                if(reportFailure)LOG_ERROR("[LOCAL_SCRIPT] reward aggregate overflow; lethal hit refused player=",plan.eligible.front()->guid," npc=",n.entry);
+                return false;
+            }
+        }
+        if(queue.size()>LocalGameplay::MaxPendingScriptKills ||
+           newFacts>LocalGameplay::MaxPendingScriptKills-queue.size()) {
+            if(reportFailure)LOG_ERROR("[LOCAL_SCRIPT] reward queue full; lethal hit refused npc=",n.entry," facts=",newFacts);
+            return false;
+        }
+        for(size_t i=0;i<plan.eligible.size();++i) {
+            const auto* p=plan.eligible[i];const uint32_t reward=plan.rewards[i];
+            auto* queued=!queue.empty() && queue.back().playerGuid==p->guid && queue.back().npcEntry==n.entry?&queue.back():nullptr;
+            if(queued){queued->xp+=reward;++queued->count;}
+            else queue.push_back({p->guid,n.entry,reward,1});
+        }
+        return true;
+    }
     // `killer` is the player the source credits with the reward - for an owned
     // creature that is Unit::GetCharmerOrOwnerPlayerOrPlayerItself, not the
     // actor. `actorGuid`/`actorLevel` keep the real killing blow's identity so
     // the KILL observation is not silently reattributed to the owner.
-    void kill(LocalRealmNpc& n,LocalRealmPlayer& killer,const std::vector<LocalRealmPlayer*>& players,
+    /// Creature::LowerPlayerDamageReq: the damage a player, a pet or a driven
+    /// vehicle dealt counts towards the reward requirement (Unit::DealDamage
+    /// counts it for player-controlled and player-created attackers and for
+    /// damage without an attacker; a creature's own damage never counts).
+    void npcLowerPlayerDamageReq(LocalRealmNpc& n,uint32_t damage,bool byPlayer) {
+        const uint32_t counted=std::min(damage,n.health);
+        n.npcPlayerDamage=uint32_t(std::min<uint64_t>(uint64_t(n.npcPlayerDamage)+counted,UINT32_MAX));
+        if(counted&&byPlayer)n.npcDamagedByPlayer=true;
+    }
+    /// Creature::IsDamageEnoughForLootingAndReward.
+    bool npcRewardAllowed(const LocalRealmNpc& n) const {
+        return localNpcNoPlayerDamageReq(n.entry)||(n.npcDamagedByPlayer&&n.npcPlayerDamage>=n.maxHealth/2);
+    }
+    bool kill(LocalRealmNpc& n,LocalRealmPlayer& killer,const std::vector<LocalRealmPlayer*>& players,
               uint64_t actorGuid=0,uint8_t actorLevel=0) {
-        const auto* def=content->npc(n.entry);if(!def||n.dead)return;
-        localResetNpcSpellState(n);n.health=0;n.dead=true;n.combatEpoch=allocateNpcEpoch();n.targetGuid=0;n.threat={};n.snares.clear();releaseNpcControls(n);n.diminishing.clear();n.damageAuras.clear();n.stormstrikeAuras.clear();n.lootable=!def->loot.empty()||def->money;
-        if(!n.lootOwner)n.lootOwner=killer.guid;
-        n.respawnTimer=def->respawnSeconds;respawnAt[n.guid]=now+def->respawnSeconds;
-        // The first engager owns the kill, even if an unrelated player lands
-        // the final blow. Only their actual party can share supported rewards.
-        const auto* owner=player(n.lootOwner,players);
-        const uint32_t group=owner?partyOf(owner->guid):0;
-        std::vector<LocalRealmPlayer*> eligible;
+        const auto* def=content->npc(n.entry);if(!def||n.dead)return false;
+        // 2.39 Unit::Kill: without half the health dealt by players (a player
+        // among them) the death rewards nobody - no loot recipient, no
+        // experience, no quest credit; the creature still dies as it does.
+        const bool rewarded=npcRewardAllowed(n);
+        KillRewardPlan plan;
+        if(rewarded&&!reserveKillFacts(n,killer,players,pendingScriptCommits,plan,true))return false;
+        if(!rewarded)LOG_INFO("[LOCAL_GROUP_REWARD] npc=",n.guid," entry=",n.entry," refused: player damage ",n.npcPlayerDamage," of ",n.maxHealth/2," byPlayer=",n.npcDamagedByPlayer);
+        npcCancelChannelOrCast(n);n.health=0;n.dead=true;n.combatEpoch=allocateNpcEpoch();n.targetGuid=0;n.threat={};n.snares.clear();releaseNpcControls(n);n.diminishing.clear();n.damageAuras.clear();n.stormstrikeAuras.clear();n.lootable=rewarded&&(!def->loot.empty()||def->money);
+        creatureTalk(n,LocalCreatureTalkEvent::Death,&killer,0,players);
+        // 2.38: the creature's owned summons leave with it (RemoveAllControlled).
+        npcSummonerDied(n,players);
+        // SmartAI::JustDied: the DEATH rows run on the corpse (a cast needs
+        // SPELL_ATTR0_CASTABLE_WHILE_DEAD or a triggered flag); the script state then resets.
+        smartFireEvents(n,kLocalSmartEventDeath,killer.guid,players);
+        localResetNpcSpellState(n);npcClearBuffs(n);
+        n.lootOwner=rewarded?plan.lootOwner:0;n.respawnTimer=def->respawnSeconds;respawnAt[n.guid]=now+def->respawnSeconds;
         for(auto& summon:pets)if(summon.targetGuid==n.guid)summon.targetGuid=0;
         for(auto* p:players) {
             if(p->attackTarget==n.guid)p->attackTarget=0;
             if(p->rangedTarget==n.guid)localStopRangedAuto(*p);
             if(p->comboTarget==n.guid)clearLocalCombo(*p);
-            if(owner && !p->dead && p->health && distance2(*p,n)<=60*60 &&
-               (p->guid==owner->guid || (group && partyOf(p->guid)==group)))eligible.push_back(p);
         }
-        std::sort(eligible.begin(),eligible.end(),[](auto* a,auto* b){return a->guid<b->guid;});
-        eligible.erase(std::unique(eligible.begin(),eligible.end(),[](auto* a,auto* b){return a->guid==b->guid;}),eligible.end());
-        // This local ruleset splits the existing catalog XP budget equally;
-        // deterministic remainder allocation conserves it exactly. It does not
-        // claim retail level scaling, gray-mob penalties or group multipliers.
-        const size_t xpCount=std::count_if(eligible.begin(),eligible.end(),[](auto* p){return p->level<80;});
-        uint32_t remainder=xpCount?def->xp%uint32_t(xpCount):0;
-        for(auto* p:eligible) {
-            uint32_t reward=0;
-            if(p->level<80 && xpCount){reward=def->xp/uint32_t(xpCount);if(remainder){++reward;--remainder;}}
-            if(reward)experience(*p,*content,reward);
-            objectiveCredit(*p,*content,LocalQuestObjective::Type::Kill,n.entry);
-            LOG_INFO("[LOCAL_GROUP_REWARD] npc=",n.guid," tag=",owner->guid," party=",group,
-                " player=",p->guid," xp=",reward," eligible=",eligible.size());
+        for(size_t i=0;i<plan.eligible.size();++i) {
+            const auto* p=plan.eligible[i];
+            LOG_INFO("[LOCAL_GROUP_REWARD] npc=",n.guid," tag=",plan.lootOwner," party=",plan.group,
+                " player=",p->guid," xp=",plan.rewards[i]," eligible=",plan.eligible.size());
         }
         n.lootCandidates.fill(0);
-        if(n.lootable && group && !eligible.empty()) {
-            const uint64_t last=lastPartyLooter[group];
-            auto chosen=std::find_if(eligible.begin(),eligible.end(),[&](auto* p){return p->guid>last;});
-            if(chosen==eligible.end())chosen=eligible.begin();
-            n.lootOwner=(*chosen)->guid;lastPartyLooter[group]=n.lootOwner;
-            for(size_t i=0;i<std::min(eligible.size(),n.lootCandidates.size());++i)n.lootCandidates[i]=eligible[i]->guid;
-            LOG_INFO("[LOCAL_GROUP_LOOT] npc=",n.guid," party=",group," owner=",n.lootOwner," mode=roundrobin");
+        if(n.lootable && plan.group && !plan.eligible.empty()) {
+            const uint64_t last=lastPartyLooter[plan.group];
+            auto chosen=std::find_if(plan.eligible.begin(),plan.eligible.end(),[&](auto* p){return p->guid>last;});
+            if(chosen==plan.eligible.end())chosen=plan.eligible.begin();
+            n.lootOwner=(*chosen)->guid;lastPartyLooter[plan.group]=n.lootOwner;
+            for(size_t i=0;i<std::min(plan.eligible.size(),n.lootCandidates.size());++i)n.lootCandidates[i]=plan.eligible[i]->guid;
+            LOG_INFO("[LOCAL_GROUP_LOOT] npc=",n.guid," party=",plan.group," owner=",n.lootOwner," mode=roundrobin");
         }
         // Source ordering: finish reward distribution, then killing-blow
         // owner KILL/victim KILLED, then victim-only DEATH. Party and loot
         // ownership do not substitute for the actor who dealt the final hit.
         const auto blowGuid=actorGuid?actorGuid:killer.guid;
         const auto blowLevel=actorGuid?actorLevel:killer.level;
-        emitCombatEvent(localKillProcEvent(blowGuid,n.guid,n.mapId,n.instanceId,true,blowLevel,
-            localNpcExperienceTargetEligible(n.entry,killer.level,n.level)),players);
+        emitCombatEvent(localKillProcEvent(blowGuid,n.guid,n.mapId,n.instanceId,blowGuid==killer.guid,blowLevel,
+            rewarded&&localNpcExperienceTargetEligible(n.entry,killer.level,n.level)),players);
         emitCombatEvent(localDeathProcEvent(n.guid,n.mapId,n.instanceId,false,n.level),players);
+        return true;
     }
     bool rollSpellCritical(const LocalRealmPlayer& caster,const LocalSpellDefinition& d,const LocalRealmNpc* target=nullptr) {
         if(!localDirectMagicCritEligible(d))return false;
@@ -951,7 +1516,7 @@ struct LocalGameplay::Impl {
                        dot->spellFamily==11&&(dot->spellFamilyFlags[0]&0x10000000))return true;
                 }
         }
-        const float chance=localSpellCritChance(caster,*content,d.schoolMask);
+        const float chance=localSpellCritChance(caster,*content,d);
         return std::isfinite(chance)&&chance>0&&meleeRoll()<std::clamp(chance,0.f,100.f)*100;
     }
     // Unit::DealDamage break-on-damage, rule 1. Binary: no threshold and no
@@ -1004,11 +1569,21 @@ struct LocalGameplay::Impl {
         if(spell&&(physical||(definition&&(definition->schoolMask&1)))&&!periodic&&!procAura&&!weaponModifiersApplied)
             damage=localPhysicalDamageAfterTalents(attacker,*content,damage);
         if(!igniteTick)damage=localStormstrikeDamage(n,attacker,definition,damage,stormstrikeEventOffsetMs);
+        // MOD_DAMAGE_PERCENT_DONE from creature views on the attacker
+        // (Unit::MeleeDamageBonusDone / SpellDamageBonusDone's DoneTotalMod).
+        if(!procAura&&!periodic)if(const auto mods=localPlayerViewModifiers(attacker,uint8_t(definition&&definition->schoolMask?definition->schoolMask&127u:1u));mods.damageDonePct)
+            damage=uint32_t(std::clamp<int64_t>(int64_t(float(damage)*(1.f+float(std::max(-99,mods.damageDonePct))/100.f)),0,1000000));
+        // 2.37: a white swing or auto shot against a creature immune to physical
+        // damage (Unit::CalculateMeleeDamage's IsImmunedToDamageOrSchool:
+        // VICTIMSTATE_IS_IMMUNE, nothing dealt); a cast decided this at its site.
+        const bool whiteSwing=!spell&&!procAura&&!periodic;
+        if((whiteSwing||rangedAuto)&&!localOutcomeNullifiesDamage(outcome)&&localNpcImmuneToMelee(*def,n)){outcome=LocalMeleeOutcome::Immune;damage=0;magicDamage=0;blockValue=0;}
         // P06 : armour penetration is taken off the victim's armour
         // before the curve, exactly as Unit::CalcArmorReducedDamage does
         // (Unit.cpp:2256-2267) - the cap is a function of the VICTIM's level.
+        // 2.37: the creature's own MOD_RESISTANCE (armor) buffs add to the template's.
         if(physical)damage=localArmorReducedDamage(damage,
-            localArmorAfterPenetration(def->armor,uint8_t(std::min<uint32_t>(n.level,255)),
+            localArmorAfterPenetration(uint32_t(std::max<int64_t>(0,int64_t(def->armor)+npcBuffResistance(n,1))),uint8_t(std::min<uint32_t>(n.level,255)),
                                        localFormArmorPenetrationPct(attacker,*content)),attacker.level);
         // SpellAuraEffects.cpp:6355-6368 applies the periodic critical
         // multiplier AFTER armor, so the roll lives here rather than at the
@@ -1041,7 +1616,7 @@ struct LocalGameplay::Impl {
         uint32_t resisted=0;
         if(damage&&definition&&definition->clientSpell&&
            localPartialResistApplies(definition->schoolMask,true,definition->sourceNoCastLog,definition->sourceBinary)) {
-            const auto average=localAverageResist(localResistanceForMask(def->resistances,definition->schoolMask),
+            const auto average=localAverageResist(uint32_t(std::max<int64_t>(0,int64_t(localResistanceForMask(def->resistances,definition->schoolMask))+npcBuffResistance(n,definition->schoolMask))),
                                                   attacker.level,n.level,false);
             const auto bucket=localPartialResistBucket(average,float(meleeRoll())/10000.f);
             resisted=localResistedAmount(damage,bucket);
@@ -1055,6 +1630,27 @@ struct LocalGameplay::Impl {
         // interrupt runs on `Resist` from the bucket and not on any other
         // nullifying outcome.
         if(!localOutcomeNullifiesDamage(outcome)||(outcome==LocalMeleeOutcome::Resist&&resisted))breakNpcControlsOnDamage(n,spell,definition);
+        // MOD_DAMAGE_TAKEN / MOD_DAMAGE_PERCENT_TAKEN from the creature's own buffs.
+        const uint8_t hitSchool=uint8_t(definition&&definition->schoolMask?definition->schoolMask&127u:1u);
+        damage=npcDamageTaken(n,damage,hitSchool);
+        // 2.37: SCHOOL_ABSORB on the creature (Unit::CalcAbsorbResist).
+        uint32_t absorbed=0;
+        if(!localOutcomeNullifiesDamage(outcome))damage=npcAbsorbDamage(n,damage,hitSchool,absorbed);
+        // Unit::DealDamage: the loot recipient and the player damage
+        // requirement first, then SmartAI::DamageTaken (the DAMAGED rows) and
+        // the TAKEN procs of the creature's auras for every hit that landed,
+        // then the invincibility floor (SET_INVINCIBILITY_HP_LEVEL: the damage
+        // stops at the level, never nullified).
+        const bool spellHit=spell&&!periodic&&!procAura&&definition&&!localOutcomeNullifiesDamage(outcome);
+        if(!localOutcomeNullifiesDamage(outcome)||(outcome==LocalMeleeOutcome::Resist&&resisted)) {
+            if(damage&&!n.lootOwner)n.lootOwner=attacker.guid;
+            npcLowerPlayerDamageReq(n,damage,true);
+            const uint32_t procFlag=procAura?0u:periodic?0x80000u:rangedAuto?0x80u:whiteSwing?0x8u:
+                definition&&definition->sourceDamageClass==2?0x20u:definition&&definition->sourceDamageClass==3?0x200u:definition&&definition->sourceDamageClass==1?0x20000u:0x2000u;
+            npcTakenDamage(n,attacker,damage,procFlag,players);
+            if(n.dead)return;
+            if(n.npcInvincibleHp&&n.health>n.npcInvincibleHp&&damage>=n.health-n.npcInvincibleHp)damage=n.health-n.npcInvincibleHp;
+        }
         if (damage && !spell && !procAura && attacker.resourceType == LocalResourceType::Rage)
             attacker.mana = std::min(attacker.maxMana, attacker.mana + std::min(15U, damage / 3 + 1));
         if(damage&&!n.lootOwner)n.lootOwner=attacker.guid;
@@ -1067,10 +1663,10 @@ struct LocalGameplay::Impl {
         if(!(definition&&definition->clientSpell&&definition->sourceNoThreat))
             addThreat(n,attacker.guid,std::max(uint64_t(1),localTalentThreat(attacker,*content,threatSpell?threatSpell:content->spell(spell),uint64_t(damage)*1000)));
         selectThreatTarget(n,players);
-        const auto effective=std::min(damage,n.health);
+        auto effective=std::min(damage,n.health);
         consumeLocalStormstrikeCharge(n,attacker,definition,damage,outcome,procAura,periodic,stormstrikeEventOffsetMs);
-        if(damage>=n.health)kill(n,attacker,players);else n.health-=damage;
-        LocalCombatEvent event{0,attacker.guid,n.guid,spell,n.mapId,n.instanceId,damage+blocked+resisted,effective,0,
+        if(damage>=n.health) { if(!kill(n,attacker,players))effective=0; } else n.health-=damage;
+        LocalCombatEvent event{0,attacker.guid,n.guid,spell,n.mapId,n.instanceId,damage+blocked+resisted+absorbed,effective,absorbed,
             procAura?LocalCombatEventKind::ProcDamage:(periodic?LocalCombatEventKind::PeriodicDamage:
                 (rangedAuto?LocalCombatEventKind::PlayerRanged:spell?LocalCombatEventKind::SpellDamage:LocalCombatEventKind::PlayerMelee)),n.dead,procAura,outcome,blocked,offHand};
         event.resisted=resisted;
@@ -1084,6 +1680,27 @@ struct LocalGameplay::Impl {
             if(const auto* weapon=localMeleeItem(attacker.equipment[17]))event.weaponPeriodMs=weapon->delay;
         }
         emitCombatEvent(event,players);
+        // SmartAI::SpellHit: a direct player spell that reached the creature
+        // (Spell::DoAllEffectOnTarget calls it after the damage is dealt; a
+        // creature the damage killed has reset its script).
+        if(spellHit&&!n.dead)smartFireEvents(n,kLocalSmartEventSpellHit,attacker.guid,players,spell,definition->schoolMask);
+        // Unit::DealMeleeDamage: the creature's damage shields answer a swing
+        // that dealt damage, after the swing is resolved.
+        if(whiteSwing&&damage&&!n.dead)npcDamageShields(n,attacker,players);
+    }
+    void damageNpcByVehicle(LocalRealmNpc& victim,LocalRealmNpc& hull,LocalRealmPlayer& owner,uint32_t raw,uint32_t spell,uint8_t schoolMask,
+                            const std::vector<LocalRealmPlayer*>& players) {
+        const auto* def=content->npc(victim.entry);if(!def || victim.dead || hull.dead)return;
+        const auto damage=schoolMask==kLocalVehiclePhysicalSchool?localArmorReducedDamage(raw,def->armor,hull.level):raw;
+        auto effective=std::min(damage,victim.health);
+        if(damage)breakNpcControlsOnDamage(victim,0,nullptr);
+        if(damage && !victim.lootOwner)victim.lootOwner=owner.guid;
+        npcLowerPlayerDamageReq(victim,damage,true); // m_movedByPlayer
+        addThreat(victim,hull.guid,std::max<uint64_t>(1,uint64_t(damage)*1000));selectThreatTarget(victim,players);
+        if(damage>=victim.health) { if(!kill(victim,owner,players,hull.guid,hull.level))effective=0; } else victim.health-=damage;
+        LocalCombatEvent event{0,hull.guid,victim.guid,spell,hull.mapId,hull.instanceId,damage,effective,0,LocalCombatEventKind::SpellDamage,victim.dead};
+        event.schoolMask=schoolMask;event.attackType=schoolMask==kLocalVehiclePhysicalSchool?
+            LocalCombatAttackType::Ranged:LocalCombatAttackType::Magic;emitCombatEvent(event,players);
     }
     // --- Owned creatures ---------------------------------------------------
     // The summon is the source of its own combat events and holds its own
@@ -1098,10 +1715,11 @@ struct LocalGameplay::Impl {
         if(localOutcomeNullifiesDamage(outcome))damage=0;
         if(!localOutcomeNullifiesDamage(outcome))breakNpcControlsOnDamage(n,0,nullptr);
         if(damage&&!n.lootOwner)n.lootOwner=owner.guid;
+        npcLowerPlayerDamageReq(n,damage,false); // a pet lowers the requirement, a player must still strike
         addThreat(n,summon.guid,std::max<uint64_t>(1,uint64_t(damage)*1000));
         selectThreatTarget(n,players);
-        const auto effective=std::min(damage,n.health);
-        if(damage>=n.health)kill(n,owner,players,summon.guid,summon.level);else n.health-=damage;
+        auto effective=std::min(damage,n.health);
+        if(damage>=n.health) { if(!kill(n,owner,players,summon.guid,summon.level))effective=0; } else n.health-=damage;
         LocalCombatEvent event{0,summon.guid,n.guid,0,n.mapId,n.instanceId,damage+blocked,effective,0,
             LocalCombatEventKind::PetMelee,n.dead,0,outcome,blocked};
         event.schoolMask=1;event.attackType=LocalCombatAttackType::Melee;event.weaponPeriodMs=summon.attackPeriodMs;
@@ -1276,6 +1894,9 @@ struct LocalGameplay::Impl {
         return true;
     }
     #include "game/local_npc_spell_impact.inc"
+    #include "game/local_npc_smart.inc"
+    #include "game/local_npc_smart_motion.inc"
+    #include "game/local_npc_gossip.inc"
     #include "game/local_pet_spell_runtime.inc"
     void emitCombatEvent(LocalCombatEvent event,const std::vector<LocalRealmPlayer*>& players) {
         localHydrateProcEventMetadata(event,content->spell(event.spell));
@@ -1333,7 +1954,8 @@ struct LocalGameplay::Impl {
             uint64_t petViewer=0;
             if(const auto* actor=pet(event.source))petViewer=actor->ownerGuid;
             else if(const auto* victim=pet(event.target))petViewer=victim->ownerGuid;
-            for(auto* p:players)if(p&&(p->guid==event.source||p->guid==event.target||p->guid==event.reflectionSource||(petViewer&&p->guid==petViewer))){
+            for(auto* p:players)if(p&&(p->guid==event.source||p->guid==event.target||p->guid==event.reflectionSource||(petViewer&&p->guid==petViewer)||
+                (p->vehicleGuid && (p->vehicleGuid==event.source || p->vehicleGuid==event.target)))){
                 if(p->meleeViewPositionRevision!=p->positionRevision){p->meleeViews={};p->meleeViewPositionRevision=p->positionRevision;}
                 for(size_t i=1;i<p->meleeViews.size();++i)p->meleeViews[i-1]=p->meleeViews[i];
                 if(!++p->meleeSerial)++p->meleeSerial;
@@ -1692,15 +2314,29 @@ struct LocalGameplay::Impl {
 };
 
 LocalGameplay::LocalGameplay():impl_(std::make_unique<Impl>()){}
+// Tests only: also makes the combat rolls (hit, chance, damage dice) reproducible.
+void LocalGameplay::seedGameObjectRandom(uint32_t seed){impl_->objectRandom.seed(seed);impl_->talkRandom.seed(seed^0x9e3779b9u);impl_->meleeRandom.seed(seed^0x85ebca6bu);}
 LocalGameplay::~LocalGameplay()=default;
 void LocalGameplay::setAuraOwnerProvider(std::function<std::vector<LocalRealmPlayer*>()> provider){impl_->auraOwnerProvider=std::move(provider);}
 LocalGameplay::LocalGameplay(LocalGameplay&&) noexcept=default;
 LocalGameplay& LocalGameplay::operator=(LocalGameplay&&) noexcept=default;
+#include "local_gameobject_runtime.inc"
+#include "local_script_actions.inc"
 const LocalWorldContent& LocalGameplay::content()const{return *impl_->content;}
 std::shared_ptr<LocalWorldContent> LocalGameplay::sharedContent()const{return impl_->content;}
 void LocalGameplay::useContent(std::shared_ptr<LocalWorldContent> c){impl_->content=std::move(c);impl_->rebuild(true);impl_->combatHistory.clear();}
+const std::vector<LocalVehicleProjectile>& LocalGameplay::vehicleProjectiles()const{return impl_->vehicleProjectiles;}
+void LocalGameplay::setRemoteVehicleProjectiles(std::vector<LocalVehicleProjectile> shots){impl_->vehicleProjectiles=std::move(shots);}
+const std::vector<LocalVehicleCast>& LocalGameplay::vehicleCasts()const{return impl_->vehicleCasts;}
+void LocalGameplay::setRemoteVehicleCasts(std::vector<LocalVehicleCast> casts){
+    if(casts.size()>kLocalMaxVehicleCasts)return;
+    std::set<uint64_t> sources,owners;
+    for(const auto& cast:casts)if(!validLocalVehicleCastView(cast,*impl_->content) ||
+        !sources.insert(cast.sourceGuid).second || !owners.insert(cast.ownerGuid).second)return;
+    impl_->vehicleCasts=std::move(casts);
+}
 const std::vector<LocalRealmNpc>& LocalGameplay::npcs()const{return impl_->npcs;}
-void LocalGameplay::setRemoteNpcs(std::vector<LocalRealmNpc> n){impl_->npcs=std::move(n);}
+void LocalGameplay::setRemoteNpcs(std::vector<LocalRealmNpc> n){impl_->npcs=std::move(n);impl_->npcs.reserve(MaxNpcs);}
 const std::vector<LocalRealmPet>& LocalGameplay::pets()const{return impl_->pets;}
 void LocalGameplay::setRemotePets(std::vector<LocalRealmPet> v){if(validLocalPets(v))impl_->pets=std::move(v);}
 bool LocalGameplay::restorePets(std::vector<LocalRealmPet> v,std::string& error) {
@@ -1817,6 +2453,28 @@ bool LocalGameplay::setStarterSpells(const std::vector<LocalSpellDefinition>& sp
         for(auto percent:d.passiveTotalStatPct)hash(percent);hash(d.passiveSpellCritPct);
         hash(d.passiveArmorAttackPowerDivisor);hash(d.passiveOffhandDamagePct);hash(d.passiveWeaponHitPct);
         hash(d.passivePhysicalDamagePct);hash(d.physicalDamageDonePct);hash(d.damageTakenPct);
+        {uint32_t perLevel;std::memcpy(&perLevel,&d.npcArmorPerLevel,4);hash(d.npcSlowPercent);hash(uint32_t(d.npcArmorAmount));hash(perLevel);}
+        {uint32_t weaponPerLevel;std::memcpy(&weaponPerLevel,&d.npcWeaponBonusPerLevel,4);
+         hash(uint32_t(int32_t(d.npcArmorPercent)));hash(uint32_t(d.npcWeaponEffect)|uint32_t(d.npcWeaponScales)<<1|uint32_t(d.npcWeaponPercentFirst)<<2|uint32_t(d.npcNextSwing)<<3|
+              uint32_t(d.sourceNoAttackDodge)<<4|uint32_t(d.sourceNoAttackParry)<<5|uint32_t(d.sourceNoAttackMiss)<<6);
+         hash(d.npcWeaponBonus);hash(d.npcWeaponBonusMax);hash(weaponPerLevel);hash(d.npcWeaponPercent);hash(d.npcPlayerControl);}
+        {
+            // 2.36 creature caster profile.
+            const auto hashFloat=[&](float f){uint32_t bits;std::memcpy(&bits,&f,4);hash(bits);};
+            const auto hashAmount=[&](const LocalSpellDefinition::NpcAmount& a){hash(uint32_t(a.low));hash(uint32_t(a.high));hashFloat(a.perLevel);hash(uint32_t(a.scales)|uint32_t(a.set)<<1);};
+            hash(uint32_t(d.npcTargetShape)|uint32_t(d.npcChainTargets)<<8|uint32_t(d.npcMaxTargets)<<16|uint32_t(d.npcPositive)<<24|uint32_t(d.npcChannel)<<25|
+                 uint32_t(d.npcCosmetic)<<26|uint32_t(d.npcScales)<<27|uint32_t(d.npcCostScales)<<28|uint32_t(d.npcBreakOnDamage)<<29|uint32_t(d.npcInterrupt)<<30|uint32_t(d.npcLeech)<<31);
+            hash(uint32_t(d.npcPeriodicLeech));hashFloat(d.npcAreaRadius);hashFloat(d.npcConeDegrees);hashFloat(d.npcJumpDistance);hashFloat(d.npcChainMultiplier);
+            hashFloat(d.npcSlowPerLevel);hashFloat(d.npcArmorPercentPerLevel);hashFloat(d.npcKnockbackSpeedXY);hashFloat(d.npcLeechMultiplier);
+            for(const auto* a:{&d.npcDamageTakenFlat,&d.npcDamageTakenPct,&d.npcHealingPct,&d.npcHaste,&d.npcDamagePct,&d.npcDamageFlat,&d.npcAttackPower,&d.npcKnockbackZ,&d.npcPeriodicHealAmount,&d.npcHealAmount})hashAmount(*a);
+            hash(uint32_t(d.npcDamageTakenSchool)|uint32_t(d.npcDamagePctSchool)<<8|uint32_t(d.npcDamageFlatSchool)<<16);
+            hash(d.npcTriggerSpellId);hash(d.npcPeriodicTriggerSpellId);hash(d.npcPeriodicTriggerIntervalMs);
+            // 2.38 / 2.39 creature-side fields.
+            hash(d.npcSummonEntry);hash(uint32_t(d.npcSummonCount)|uint32_t(d.npcSummonCategory)<<8|uint32_t(d.npcSummonType)<<16|uint32_t(d.npcSummonDest)<<24);
+            hash(uint32_t(d.npcGroundDest)|uint32_t(d.npcSummonOwnerFaction)<<8|uint32_t(d.npcGroundAura)<<9|uint32_t(d.npcCastableWhileDead)<<10|
+                 uint32_t(d.npcInstakillSelf)<<11|uint32_t(d.npcInvisible)<<12|uint32_t(d.npcSelfControl)<<16);
+            hashFloat(d.npcSummonRadius);hashFloat(d.npcGroundRadius);
+        }
         hash(d.passiveEquipmentArmorPct);hash(d.passiveFeralCritPct);hash(d.passiveFeralDodgePct);hash(d.passiveCatRunPct);
         hash(d.directEffectSlot);hash(d.periodicEffectSlot);hash(d.stormstrikeProfile);hash(d.stormstrikeManaChancePct);
         hash(d.passiveIntellectAttackPowerPct);hash(d.passiveDualWieldHitPct);hash(uint32_t(d.passiveCanParry));hash(uint32_t(d.passiveCanDualWield));
@@ -2118,12 +2776,19 @@ const std::vector<LocalSkillLine>& LocalGameplay::skillLines() const {
     // knows what a Blacksmithing trainer is offering.
     return impl_->skills.empty() ? localBuiltinProfessions() : impl_->skills;
 }
+bool LocalGameplay::setQuestFactionRewards(const std::array<int32_t,10>& gains,
+                                              const std::array<int32_t,10>& losses) {
+    impl_->questRepGains = gains;
+    impl_->questRepLosses = losses;
+    impl_->questRepRowsLoaded = true;
+    return true;
+}
 const LocalRealmNpc* LocalGameplay::serviceNpc(const LocalRealmPlayer& p, uint32_t npcFlag, uint64_t npcGuid) const {
     const LocalRealmNpc* best = nullptr;
     float bestDistance = ServiceRange * ServiceRange;
     for (const auto& npc : impl_->npcs) {
         if (npcGuid && npc.guid != npcGuid) continue;
-        if (npc.dead || npc.mapId != p.mapId || npc.instanceId != p.instanceId) continue;
+        if (npc.dead || npc.mapId != p.mapId || npc.instanceId != p.instanceId || !npcVisibleTo(p, npc)) continue;
         const bool offers =
             (npcFlag == kLocalNpcFlagAnyVendor && npc.vendor) ||
             (npcFlag == kLocalNpcFlagRepair && npc.repairer) ||
@@ -2137,6 +2802,7 @@ const LocalRealmNpc* LocalGameplay::serviceNpc(const LocalRealmPlayer& p, uint32
         // A merchant that is hostile to this character is not open for
         // business, the same way a hostile quest contact refuses to talk.
         const auto* def = content().npc(npc.entry);
+        if (def && !localMeetsReputation(p, def->requiredReputationFaction, def->requiredReputationRank)) continue;
         const auto* npcFaction = def ? definition(impl_->factions, def->faction) : nullptr;
         const auto* playerFaction = p.race < impl_->raceFactions.size() ? definition(impl_->factions, impl_->raceFactions[p.race]) : nullptr;
         if (npcFaction && playerFaction) {
@@ -2156,7 +2822,14 @@ std::vector<uint32_t> LocalGameplay::vendorStock(const LocalRealmPlayer& p, uint
     // flag cannot distinguish a blacksmith from a food seller.
     const auto* def = content().npc(merchant->entry);
     static const std::vector<uint32_t> none;
-    return localVendorStockForNpc(merchant->entry, def ? def->vendorItems : none, content());
+    auto stock = localVendorStockForNpc(merchant->entry, def ? def->vendorItems : none, content());
+    stock.erase(std::remove_if(stock.begin(), stock.end(), [&](uint32_t itemId) {
+        const auto* item = content().item(itemId);
+        if (item && !localMeetsReputation(p, item->requiredReputationFaction, item->requiredReputationRank)) return true;
+        const auto* offer = localVendorOffer(merchant->entry, itemId);
+        return offer && !localMeetsReputation(p, offer->requiredReputationFaction, offer->requiredReputationRank);
+    }), stock.end());
+    return stock;
 }
 int32_t LocalGameplay::vendorRemaining(const LocalRealmPlayer& p, uint32_t itemId, uint64_t npcGuid) const {
     const auto* merchant = serviceNpc(p, kLocalNpcFlagAnyVendor, npcGuid);
@@ -2165,7 +2838,8 @@ int32_t LocalGameplay::vendorRemaining(const LocalRealmPlayer& p, uint32_t itemI
     if (definition && !definition->vendorItems.empty())
         return std::find(definition->vendorItems.begin(), definition->vendorItems.end(), itemId) != definition->vendorItems.end() ? -1 : 0;
     const auto* offer = localVendorOffer(merchant->entry, itemId);
-    if (!offer) return 0;
+    if (!offer || !localMeetsReputation(p, offer->requiredReputationFaction, offer->requiredReputationRank)) return 0;
+    if (const auto* item = content().item(itemId); item && !localMeetsReputation(p, item->requiredReputationFaction, item->requiredReputationRank)) return 0;
     if (!offer->maxCount) return -1;
     return int32_t(std::min<uint32_t>(INT32_MAX,
         impl_->vendorInventory.available(merchant->guid, *offer, localVendorBuyCount(itemId), impl_->now)));
@@ -2336,6 +3010,19 @@ bool LocalGameplay::setFactionTemplates(const std::vector<LocalFactionTemplate>&
     std::sort(impl_->factions.begin(), impl_->factions.end(), [](const auto& a, const auto& b) { return a.id < b.id; });
     impl_->raceFactions = races; error.clear(); return true;
 }
+bool LocalGameplay::setFactionReputationBases(const std::vector<LocalFactionReputationBase>& rows, std::string& error) {
+    if (rows.size() > kLocalMaxReputations) { error = "Faction reputation base limit exceeded"; return false; }
+    std::vector<LocalFactionReputationBase> copy = rows;
+    std::sort(copy.begin(), copy.end(), [](const auto& a, const auto& b) { return a.factionId < b.factionId; });
+    uint32_t previous = 0;
+    for (const auto& row : copy) {
+        if (!row.factionId || row.factionId == previous) { error = "Duplicate/zero faction reputation base"; return false; }
+        previous = row.factionId;
+        for (auto base : row.base) if (base < -42000 || base > 42999) { error = "Faction base reputation out of range"; return false; }
+    }
+    impl_->factionReputationBases = std::move(copy); error.clear(); return true;
+}
+const std::vector<LocalFactionReputationBase>& LocalGameplay::factionReputationBases() const { return impl_->factionReputationBases; }
 const std::vector<LocalFactionTemplate>& LocalGameplay::factionTemplates() const { return impl_->factions; }
 const std::array<uint32_t, 12>& LocalGameplay::raceFactionTemplates() const { return impl_->raceFactions; }
 namespace {
@@ -2350,11 +3037,37 @@ int factionRelation(const LocalFactionTemplate& from, const LocalFactionTemplate
     return 0;
 }
 }
+bool LocalGameplay::gossipTextFor(uint32_t textId, LocalGossipText& out) const {
+    const auto* text=impl_->gossipText(textId);if(!text)return false;out=*text;return true;
+}
+bool LocalGameplay::gossipMenuFor(uint32_t menuId, LocalGossipMenu& out) const {
+    const auto* menu=impl_->gossipMenu(menuId);if(!menu)return false;out=*menu;return true;
+}
+void LocalGameplay::resolveGossipOptions(LocalGossipState& state) const {
+    if(state.options.empty())return;
+    // The creature's own menu first, then menu 0 (the default options a menu
+    // without options falls back to, PrepareGossipMenu).
+    const LocalGossipMenu* menus[2]={impl_->gossipMenu(state.menuId),state.menuId?impl_->gossipMenu(0):nullptr};
+    for(auto& shown:state.options) {
+        shown.text.clear();shown.boxText.clear();
+        for(const auto* menu:menus)if(menu&&shown.text.empty())for(const auto& o:menu->options)if(o.id==shown.id&&o.type==shown.type){shown.text=o.text;shown.boxText=o.boxText;break;}
+        if(shown.text.empty())shown.text="Option "+std::to_string(shown.id);
+    }
+}
+void LocalGameplay::setActiveWorldEvents(std::vector<uint32_t> ids) {
+    std::sort(ids.begin(),ids.end());ids.erase(std::unique(ids.begin(),ids.end()),ids.end());
+    impl_->activeWorldEvents=std::move(ids);
+}
+bool LocalGameplay::npcVisibleTo(const LocalRealmPlayer& p, const LocalRealmNpc& n) const {
+    return !n.scriptActorRetired && !n.npcDespawned && !n.npcUnsummoned && !n.npcHidden && !impl_->npcInvisible(n) && localPhaseVisible(p.phaseMask, n.requiredPhaseMask, n.excludedPhaseMask);
+}
 LocalGameplay::NpcDisposition LocalGameplay::npcDisposition(
     const LocalRealmPlayer& p, const LocalRealmNpc& n) const {
+    if (!npcVisibleTo(p, n)) return {};
     const auto* d = content().npc(n.entry);
-    if (!d || (d->unitFlags & (0x2U | 0x100U | 0x02000000U))) return {};
-    const auto* npcFaction = definition(impl_->factions, d->faction);
+    // 2.37: the script's UNIT_FIELD_FLAGS and SET_FACTION override the template's.
+    if (!d || (impl_->npcUnitFlags(n) & (0x2U | 0x100U | 0x02000000U)) || n.npcDespawned) return {};
+    const auto* npcFaction = definition(impl_->factions, impl_->npcFaction(n));
     const auto* playerFaction = p.race < impl_->raceFactions.size() ? definition(impl_->factions, impl_->raceFactions[p.race]) : nullptr;
     if (!npcFaction || !playerFaction) {
         const bool attackable = n.hostile && !n.questGiver;
@@ -2379,13 +3092,186 @@ bool LocalGameplay::loadContent(const std::string& path,std::string& error) {
         std::ifstream f(path,std::ios::binary|std::ios::ate);if(!f)throw std::runtime_error("Cannot open "+path);
         const auto length=f.tellg();if(length<=0||length>32*1024*1024)throw std::runtime_error("World content must be 1 byte to 32 MiB");
         std::string text(size_t(length),'\0');f.seekg(0);if(!f.read(text.data(),length))throw std::runtime_error("Cannot read world content");
-        const Json j=Json::parse(text);if(!j.is_object()||number(j,"schemaVersion",0)!=1)throw std::runtime_error("Unsupported local world schemaVersion");
+        Json j=Json::parse(text);if(!j.is_object()||number(j,"schemaVersion",0)!=1)throw std::runtime_error("Unsupported local world schemaVersion");
         auto c=std::make_shared<LocalWorldContent>();c->sourcePath=path;c->classResources=j.value("classResources",false);c->fingerprint=2166136261U;
         for(unsigned char b:text)c->fingerprint=(c->fingerprint^b)*16777619U;
+        if(j.contains("reviewedOriginalContent")) {
+            const auto name=label(j,"reviewedOriginalContent",128);
+            if(name.empty() || name=="." || name==".." || name.find('/')!=std::string::npos || name.find('\\')!=std::string::npos)
+                throw std::runtime_error("Reviewed original content must be a sibling filename");
+            const auto companionPath=std::filesystem::path(path).parent_path()/name;
+            std::ifstream input(companionPath,std::ios::binary|std::ios::ate);
+            if(!input)throw std::runtime_error("Cannot open reviewed original content "+companionPath.string());
+            const auto companionLength=input.tellg();
+            if(companionLength<=0 || companionLength>8*1024*1024)throw std::runtime_error("Reviewed original content must be 1 byte to 8 MiB");
+            std::string companionText(size_t(companionLength),'\0');input.seekg(0);
+            if(!input.read(companionText.data(),companionLength))throw std::runtime_error("Cannot read reviewed original content");
+            const auto companion=Json::parse(companionText);
+            const auto companionSchema=companion.is_object()?number(companion,"schemaVersion",0):0;
+            if(!companion.is_object() || companionSchema<1 || companionSchema>2 ||
+               label(companion,"kind",64)!="reviewed-original-runtime-content")
+                throw std::runtime_error("Unsupported reviewed original content schema");
+            // Schema 2 adds Lock.dbc provenance and exclusive object pools.
+            static const std::set<std::string> allowedV1={"schemaVersion","kind","sourceCommit","sourceSha256","worldEvents","gameObjects"};
+            static const std::set<std::string> allowedV2={"schemaVersion","kind","sourceCommit","sourceSha256","lockDbcSha256","worldEvents","gameObjects","gameObjectPools"};
+            const auto& allowed=companionSchema==1?allowedV1:allowedV2;
+            for(auto it=companion.begin();it!=companion.end();++it)if(!allowed.count(it.key()))
+                throw std::runtime_error("Unknown reviewed original content field "+it.key());
+            if(!j.contains("provenance") || !j["provenance"].is_object() ||
+               label(companion,"sourceCommit",64)!=label(j["provenance"],"commit",64) ||
+               label(companion,"sourceSha256",64).size()!=64)
+                throw std::runtime_error("Reviewed original content provenance mismatch");
+            const auto& importedEvents=array(companion,"worldEvents",kLocalMaxWorldEvents,true);
+            if(!j.contains("worldEvents"))j["worldEvents"]=Json::array();
+            if(!j["worldEvents"].is_array() || j["worldEvents"].size()+importedEvents.size()>kLocalMaxWorldEvents)
+                throw std::runtime_error("Combined world event limit exceeded");
+            for(const auto& event:importedEvents)j["worldEvents"].push_back(event);
+            const auto& imported=array(companion,"gameObjects",kLocalMaxGameObjects,true);
+            if(!j.contains("gameObjects"))j["gameObjects"]=Json::array();
+            if(!j["gameObjects"].is_array() || j["gameObjects"].size()+imported.size()>kLocalMaxGameObjects)
+                throw std::runtime_error("Combined game object limit exceeded");
+            for(const auto& object:imported)j["gameObjects"].push_back(object);
+            if(companionSchema==2) {
+                if(label(companion,"lockDbcSha256",64).size()!=64)throw std::runtime_error("Reviewed original content provenance mismatch");
+                const auto& importedPools=array(companion,"gameObjectPools",kLocalMaxGameObjectPools,true);
+                if(!j.contains("gameObjectPools"))j["gameObjectPools"]=Json::array();
+                if(!j["gameObjectPools"].is_array() || j["gameObjectPools"].size()+importedPools.size()>kLocalMaxGameObjectPools)
+                    throw std::runtime_error("Combined game object pool limit exceeded");
+                for(const auto& pool:importedPools)j["gameObjectPools"].push_back(pool);
+            }
+            for(unsigned char b:companionText)c->fingerprint=(c->fingerprint^b)*16777619U;
+        }
+        if(j.contains("questChains")) {
+            const auto name=label(j,"questChains",128);
+            if(name.empty() || name=="." || name==".." || name.find('/')!=std::string::npos || name.find('\\')!=std::string::npos)
+                throw std::runtime_error("Quest chain companion must be a sibling filename");
+            const auto chainPath=std::filesystem::path(path).parent_path()/name;
+            std::ifstream chains(chainPath,std::ios::binary|std::ios::ate);
+            if(!chains)throw std::runtime_error("Cannot open required quest chain companion "+chainPath.string());
+            const auto chainLength=chains.tellg();
+            if(chainLength<=0 || chainLength>8*1024*1024)throw std::runtime_error("Quest chain companion must be 1 byte to 8 MiB");
+            std::string chainText(size_t(chainLength),'\0');chains.seekg(0);
+            if(!chains.read(chainText.data(),chainLength))throw std::runtime_error("Cannot read quest chain companion");
+            c->questChainGates=parseLocalQuestChainCatalog(Json::parse(chainText));
+            c->questChainCatalogRequired=true;
+            for(unsigned char b:chainText)c->fingerprint=(c->fingerprint^b)*16777619U;
+        }
+        if(j.contains("creatureTalk")) {
+            // Original SmartAI speech companion (compile_creature_talk.py).
+            const auto name=label(j,"creatureTalk",128);
+            if(name.empty() || name=="." || name==".." || name.find('/')!=std::string::npos || name.find('\\')!=std::string::npos)
+                throw std::runtime_error("Creature talk companion must be a sibling filename");
+            const auto talkPath=std::filesystem::path(path).parent_path()/name;
+            std::ifstream talkInput(talkPath,std::ios::binary|std::ios::ate);
+            if(!talkInput)throw std::runtime_error("Cannot open required creature talk companion "+talkPath.string());
+            const auto talkLength=talkInput.tellg();
+            if(talkLength<=0 || talkLength>8*1024*1024)throw std::runtime_error("Creature talk companion must be 1 byte to 8 MiB");
+            std::string talkText(size_t(talkLength),'\0');talkInput.seekg(0);
+            if(!talkInput.read(talkText.data(),talkLength))throw std::runtime_error("Cannot read creature talk companion");
+            const auto talk=Json::parse(talkText);
+            if(!talk.is_object() || number(talk,"schemaVersion",0)<1 || number(talk,"schemaVersion",0)>3 || label(talk,"kind",64)!="original-creature-talk")
+                throw std::runtime_error("Unsupported creature talk schema");
+            static const std::set<std::string> talkFields={"schemaVersion","kind","sourceCommit","sourceSha256","rules","guidScriptedSpawns","textGroups"};
+            for(auto it=talk.begin();it!=talk.end();++it)if(!talkFields.count(it.key()))throw std::runtime_error("Unknown creature talk field "+it.key());
+            if(!j.contains("provenance") || !j["provenance"].is_object() ||
+               label(talk,"sourceCommit",64)!=label(j["provenance"],"commit",64) || label(talk,"sourceSha256",64).size()!=64)
+                throw std::runtime_error("Creature talk provenance mismatch");
+            for(const auto& id:array(talk,"guidScriptedSpawns",65536,true)) {
+                if(!id.is_number_integer()||id.get<int64_t>()<1||id.get<uint64_t>()>UINT32_MAX)throw std::runtime_error("Invalid guid-scripted spawn");
+                c->creatureGuidScripts.push_back(id.get<uint32_t>());
+            }
+            std::sort(c->creatureGuidScripts.begin(),c->creatureGuidScripts.end());
+            if(std::adjacent_find(c->creatureGuidScripts.begin(),c->creatureGuidScripts.end())!=c->creatureGuidScripts.end())
+                throw std::runtime_error("Duplicate guid-scripted spawn");
+            for(const auto& v:array(talk,"rules",kLocalMaxCreatureTalkRules,true)) {
+                LocalCreatureTalkRule rule;
+                if(!v.contains("owner")||!v["owner"].is_number_integer())throw std::runtime_error("Creature talk owner missing");
+                rule.owner=v["owner"].get<int64_t>();
+                if(!rule.owner || rule.owner<-int64_t(UINT32_MAX) || rule.owner>int64_t(UINT32_MAX))throw std::runtime_error("Invalid creature talk owner");
+                rule.entry=number(v,"entry",0,UINT32_MAX);if(!rule.entry || (rule.owner>0 && uint64_t(rule.owner)!=rule.entry))throw std::runtime_error("Invalid creature talk entry");
+                if(rule.owner<0 && !std::binary_search(c->creatureGuidScripts.begin(),c->creatureGuidScripts.end(),uint32_t(-rule.owner)))
+                    throw std::runtime_error("Creature talk guid owner is not guid-scripted");
+                const auto event=label(v,"event",16);
+                if(event=="aggro")rule.event=LocalCreatureTalkEvent::Aggro;
+                else if(event=="kill")rule.event=LocalCreatureTalkEvent::Kill;
+                else if(event=="death")rule.event=LocalCreatureTalkEvent::Death;
+                else if(event=="questAccept")rule.event=LocalCreatureTalkEvent::QuestAccept;
+                else if(event=="questReward")rule.event=LocalCreatureTalkEvent::QuestReward;
+                else if(event=="updateIc")rule.event=LocalCreatureTalkEvent::UpdateIc;
+                else if(event=="updateOoc")rule.event=LocalCreatureTalkEvent::UpdateOoc;
+                else if(event=="healthPct")rule.event=LocalCreatureTalkEvent::HealthPct;
+                else throw std::runtime_error("Unknown creature talk event");
+                const auto action=v.contains("action")?label(v,"action",16):std::string("talk");
+                if(action=="talk")rule.action=LocalCreatureSmartAction::Talk;
+                else if(action=="fleeForAssist")rule.action=LocalCreatureSmartAction::FleeForAssist;
+                else throw std::runtime_error("Unknown creature smart action");
+                rule.withEmote=v.value("withEmote",false);
+                const bool timed=rule.event==LocalCreatureTalkEvent::UpdateIc||rule.event==LocalCreatureTalkEvent::UpdateOoc;
+                rule.initialMinMs=number(v,"initialMinMs",0,3600000);rule.initialMaxMs=number(v,"initialMaxMs",rule.initialMinMs,3600000);
+                rule.repeatMinMs=number(v,"repeatMinMs",0,3600000);rule.repeatMaxMs=number(v,"repeatMaxMs",rule.repeatMinMs,3600000);
+                rule.minPct=uint8_t(number(v,"minPct",0,100));rule.maxPct=uint8_t(number(v,"maxPct",100,100));
+                if(rule.initialMaxMs<rule.initialMinMs || rule.repeatMaxMs<rule.repeatMinMs || rule.maxPct<rule.minPct ||
+                   (!timed && (rule.initialMinMs||rule.initialMaxMs)) ||
+                   (!timed && rule.event!=LocalCreatureTalkEvent::HealthPct && (rule.repeatMinMs||rule.repeatMaxMs)) ||
+                   (rule.event!=LocalCreatureTalkEvent::HealthPct && (rule.minPct||rule.maxPct!=100)) ||
+                   ((timed||rule.event==LocalCreatureTalkEvent::HealthPct) && !rule.repeatMaxMs && !v.value("once",false)) ||
+                   (rule.action!=LocalCreatureSmartAction::FleeForAssist && rule.withEmote))
+                    throw std::runtime_error("Invalid creature smart timer");
+                rule.chance=uint8_t(number(v,"chance",100,100));if(!rule.chance)throw std::runtime_error("Zero creature talk chance");
+                rule.questId=number(v,"questId",0,UINT32_MAX);
+                rule.cooldownMinMs=number(v,"cooldownMinMs",0,3600000);rule.cooldownMaxMs=number(v,"cooldownMaxMs",rule.cooldownMinMs,3600000);
+                rule.once=v.value("once",false);rule.keepOnEvade=v.value("keepOnEvade",false);rule.invokerTarget=v.value("invokerTarget",false);
+                number(v,"row",0,65535);
+                if(rule.cooldownMaxMs<rule.cooldownMinMs || (rule.event!=LocalCreatureTalkEvent::Kill && (rule.cooldownMinMs||rule.cooldownMaxMs)) ||
+                   (rule.questId && rule.event!=LocalCreatureTalkEvent::QuestAccept && rule.event!=LocalCreatureTalkEvent::QuestReward) ||
+                   (rule.keepOnEvade && !rule.once))throw std::runtime_error("Invalid creature talk rule");
+                for(const auto& line:array(v,"texts",32,rule.action==LocalCreatureSmartAction::Talk)) {
+                    LocalCreatureTalkLine out;out.text=label(line,"text",255);
+                    const auto type=label(line,"type",16);
+                    if(type=="say")out.chatType=kLocalChatMonsterSay;else if(type=="yell")out.chatType=kLocalChatMonsterYell;
+                    else if(type=="emote")out.chatType=kLocalChatMonsterEmote;else if(type=="whisper")out.chatType=kLocalChatMonsterWhisper;
+                    else if(type=="bossEmote")out.chatType=kLocalChatRaidBossEmote;else throw std::runtime_error("Unknown creature text type");
+                    out.weight=real(line,"weight",100,0,100);
+                    rule.lines.push_back(std::move(out));
+                }
+                if((rule.action==LocalCreatureSmartAction::Talk)==rule.lines.empty())throw std::runtime_error("Creature talk rule text mismatch");
+                c->creatureTalk.push_back(std::move(rule));
+            }
+            std::stable_sort(c->creatureTalk.begin(),c->creatureTalk.end(),[](const auto& a,const auto& b){return a.owner<b.owner;});
+            // Per-owner once-bit index; bounded by the 64-bit NPC mask.
+            for(size_t i=0;i<c->creatureTalk.size();++i) {
+                const size_t index=i&&c->creatureTalk[i-1].owner==c->creatureTalk[i].owner?size_t(c->creatureTalk[i-1].ownerIndex)+1:0;
+                if(index>=64)throw std::runtime_error("Too many creature talk rules for one owner");
+                c->creatureTalk[i].ownerIndex=uint8_t(index);
+            }
+            // 2.37: the creature_text groups the generated SmartAI family's
+            // TALK action names (schema 3), keyed by (entry, group).
+            for(const auto& v:array(talk,"textGroups",kLocalMaxCreatureTextGroups,false)) {
+                LocalCreatureTextGroup group;
+                group.entry=number(v,"entry",0,UINT32_MAX);if(!group.entry)throw std::runtime_error("Invalid creature text group entry");
+                group.group=uint8_t(number(v,"group",0,255));
+                for(const auto& line:array(v,"texts",32,true)) {
+                    LocalCreatureTalkLine out;out.text=label(line,"text",255);
+                    const auto type=label(line,"type",16);
+                    if(type=="say")out.chatType=kLocalChatMonsterSay;else if(type=="yell")out.chatType=kLocalChatMonsterYell;
+                    else if(type=="emote")out.chatType=kLocalChatMonsterEmote;else if(type=="whisper")out.chatType=kLocalChatMonsterWhisper;
+                    else if(type=="bossEmote")out.chatType=kLocalChatRaidBossEmote;else throw std::runtime_error("Unknown creature text type");
+                    out.weight=real(line,"weight",100,0,100);
+                    group.lines.push_back(std::move(out));
+                }
+                if(group.lines.empty())throw std::runtime_error("Empty creature text group");
+                c->creatureTextGroups.push_back(std::move(group));
+            }
+            std::sort(c->creatureTextGroups.begin(),c->creatureTextGroups.end(),[](const auto& a,const auto& b){return a.entry!=b.entry?a.entry<b.entry:a.group<b.group;});
+            if(std::adjacent_find(c->creatureTextGroups.begin(),c->creatureTextGroups.end(),[](const auto& a,const auto& b){return a.entry==b.entry&&a.group==b.group;})!=c->creatureTextGroups.end())
+                throw std::runtime_error("Duplicate creature text group");
+            for(unsigned char b:talkText)c->fingerprint=(c->fingerprint^b)*16777619U;
+        }
         std::set<uint32_t> seen;
         for(const auto& v:array(j,"items",16384)) {
             LocalItemDefinition d;d.id=number(v,"id",0,UINT32_MAX);requiredId(d.id,seen,"item");d.name=label(v,"name",96);
             d.displayId=number(v,"displayId",0);d.slot=uint8_t(number(v,"slot",0,4));d.inventoryType=uint8_t(number(v,"inventoryType",0,28));d.stack=uint16_t(number(v,"stack",1,65535));if(!d.stack)throw std::runtime_error("Zero item stack size");
+            d.requiredReputationFaction=number(v,"requiredReputationFaction",0,UINT32_MAX);d.requiredReputationRank=uint8_t(number(v,"requiredReputationRank",0,7));
             d.maxHealth=number(v,"maxHealth",0,10000);d.attack=number(v,"attack",0,10000);d.armor=number(v,"armor",0,10000);d.heal=number(v,"heal",0,100000);d.mana=number(v,"mana",0,100000);d.value=number(v,"value",0);c->items.push_back(std::move(d));
         }
         seen.clear();for(const auto& v:array(j,"spells",4096)) {
@@ -2397,7 +3283,7 @@ bool LocalGameplay::loadContent(const std::string& path,std::string& error) {
         }
         seen.clear();for(const auto& v:array(j,"npcs",16384)) {
             LocalNpcDefinition d;d.id=number(v,"id",0,UINT32_MAX);requiredId(d.id,seen,"NPC");d.name=label(v,"name",96);d.displayId=number(v,"displayId",0);
-            d.unitFlags=number(v,"unitFlags",0,UINT32_MAX);d.faction=number(v,"faction",0,UINT32_MAX);d.level=uint8_t(number(v,"level",1,83));d.health=number(v,"health",40,1000000000);if(!d.health||!d.level)throw std::runtime_error("Invalid NPC health/level");
+            d.unitFlags=number(v,"unitFlags",0,UINT32_MAX);d.faction=number(v,"faction",0,UINT32_MAX);d.requiredReputationFaction=number(v,"requiredReputationFaction",0,UINT32_MAX);d.requiredReputationRank=uint8_t(number(v,"requiredReputationRank",0,7));d.level=uint8_t(number(v,"level",1,83));d.health=number(v,"health",40,1000000000);if(!d.health||!d.level)throw std::runtime_error("Invalid NPC health/level");
             d.damage=number(v,"damage",4,100000);d.armor=number(v,"armor",0,10000);d.xp=number(v,"xp",50,1000000);d.money=number(v,"money",0,1000000);
             d.gossipText=label(v,"gossipText",4096,false);d.subname=label(v,"subname",128,false);
             // Same two optional server fields the catalog reader takes; see the
@@ -2431,22 +3317,353 @@ bool LocalGameplay::loadContent(const std::string& path,std::string& error) {
         seen.clear();for(const auto& v:array(j,"quests",16384)) {
             LocalQuestDefinition d;d.id=number(v,"id",0,UINT32_MAX);requiredId(d.id,seen,"quest");d.title=label(v,"title",96);d.description=label(v,"description",1024,false);
             d.allowableRaces=number(v,"allowableRaces",0,UINT32_MAX);d.allowableClasses=number(v,"allowableClasses",0,UINT32_MAX);d.requiredSkill=number(v,"requiredSkill",0,UINT32_MAX);
+            d.requiredMinRepFaction=number(v,"requiredMinRepFaction",0,UINT32_MAX);d.requiredMaxRepFaction=number(v,"requiredMaxRepFaction",0,UINT32_MAX);
+            d.requiredMinRepValue=signedNumber(v,"requiredMinRepValue",0);d.requiredMaxRepValue=signedNumber(v,"requiredMaxRepValue",0);
+            if(v.contains("reputationRequirements")){size_t ri=0;for(const auto& r:array(v,"reputationRequirements",2)){d.requiredReputationFactions[ri]=number(r,"factionId",1,UINT32_MAX);d.requiredReputationValues[ri]=signedNumber(r,"value",0,-42000,42999);++ri;}}
             d.giverEntry=number(v,"giverEntry",0,UINT32_MAX);d.turnInEntry=number(v,"turnInEntry",d.giverEntry,UINT32_MAX);d.minLevel=uint8_t(number(v,"minLevel",1,80));d.prerequisite=number(v,"prerequisite",0,UINT32_MAX);
             d.xp=number(v,"xp",0,1000000);d.money=number(v,"money",0,1000000);d.rewardItem=number(v,"rewardItem",0,UINT32_MAX);d.rewardCount=uint16_t(number(v,"rewardCount",d.rewardItem?1:0,65535));
             for(const auto& r:array(v,"additionalRewards",3))d.additionalRewards.push_back(parseStack(r));
             for(const auto& r:array(v,"rewardChoices",6))d.rewardChoices.push_back(parseStack(r));
+            for(const auto& r:array(v,"reputationRewards",5)){LocalQuestReputationReward rr;rr.factionId=number(r,"factionId",0,UINT32_MAX);rr.valueId=signedNumber(r,"valueId",0,-9,9);rr.overrideValue=signedNumber(r,"overrideValue",0,-4200000,4200000);d.reputationRewards.push_back(rr);}
             if(!validLocalQuestRewards(d))throw std::runtime_error("Invalid quest reward bundle");
             for(const auto& objective:array(v,"objectives",4)) {
                 LocalQuestObjective o;const auto type=label(objective,"type",16);
-                if(type=="kill")o.type=LocalQuestObjective::Type::Kill;else if(type=="collect")o.type=LocalQuestObjective::Type::Collect;else if(type=="talk")o.type=LocalQuestObjective::Type::Talk;else throw std::runtime_error("Unknown quest objective type");
-                o.entry=number(objective,"entry",0,UINT32_MAX);o.count=uint16_t(number(objective,"count",1,65535));if(!o.count)throw std::runtime_error("Zero objective count");d.objectives.push_back(o);
+                if(type=="kill")o.type=LocalQuestObjective::Type::Kill;else if(type=="collect")o.type=LocalQuestObjective::Type::Collect;else if(type=="talk")o.type=LocalQuestObjective::Type::Talk;else if(type=="script")o.type=LocalQuestObjective::Type::Script;else throw std::runtime_error("Unknown quest objective type");
+                o.entry=number(objective,"entry",0,UINT32_MAX);o.count=uint16_t(number(objective,"count",1,65535));o.text=label(objective,"text",128,false);if(o.type==LocalQuestObjective::Type::Script && (!o.entry || o.text.empty()))throw std::runtime_error("Script objective needs a state ID and text");if(!o.count)throw std::runtime_error("Zero objective count");d.objectives.push_back(o);
             }
-            c->quests.push_back(std::move(d));
+            attachQuestChain(*c,d);c->quests.push_back(std::move(d));
         }
+        seen.clear();
+        for(const auto& v:array(j,"scriptAreas",kLocalMaxScriptAreas)) {
+            LocalScriptArea area;area.id=number(v,"id",0,UINT32_MAX);requiredId(area.id,seen,"script area");
+            area.mapId=number(v,"mapId",0,10000);
+            area.x=real(v,"x",0,-100000,100000);area.y=real(v,"y",0,-100000,100000);area.z=real(v,"z",0,-20000,20000);
+            area.radius=real(v,"radius",1,.1f,500);area.hysteresis=real(v,"hysteresis",.5f,0,10);
+            area.requiredPhaseMask=number(v,"requiredPhaseMask",0,UINT32_MAX);
+            area.excludedPhaseMask=number(v,"excludedPhaseMask",0,UINT32_MAX);
+            if(area.requiredPhaseMask&area.excludedPhaseMask)throw std::runtime_error("Script area phase masks overlap");
+            c->scriptAreas.push_back(area);
+        }
+        std::sort(c->scriptAreas.begin(),c->scriptAreas.end(),[](const auto& a,const auto& b){return a.id<b.id;});
+        seen.clear();
+        for(const auto& v:array(j,"gameObjects",kLocalMaxGameObjects)) {
+            LocalGameObject object;object.id=number(v,"id",0,UINT32_MAX);requiredId(object.id,seen,"game object");
+            object.entry=number(v,"entry",0,UINT32_MAX);object.displayId=number(v,"displayId",0,UINT32_MAX);
+            if(!object.entry || !object.displayId)throw std::runtime_error("Game object needs entry and displayId");
+            object.name=label(v,"name",96);object.mapId=number(v,"mapId",0,10000);
+            object.x=real(v,"x",0,-100000,100000);object.y=real(v,"y",0,-100000,100000);object.z=real(v,"z",0,-20000,20000);
+            object.orientation=real(v,"orientation",0,-100,100);object.scale=real(v,"scale",1,.1f,10);
+            object.useRadius=real(v,"useRadius",5,.1f,5);
+            object.requiredPhaseMask=number(v,"requiredPhaseMask",0,UINT32_MAX);object.excludedPhaseMask=number(v,"excludedPhaseMask",0,UINT32_MAX);
+            object.requiredScriptId=number(v,"requiredScriptId",0,UINT32_MAX);object.requiredValue=signedNumber(v,"requiredValue",0,INT32_MIN,INT32_MAX);
+            object.requiredQuestId=number(v,"requiredQuestId",0,UINT32_MAX);
+            const auto kind=v.value("kind",std::string("script"));
+            if(kind=="script")object.kind=LocalGameObjectKind::Script;
+            else if(kind=="door")object.kind=LocalGameObjectKind::Door;
+            else if(kind=="chest")object.kind=LocalGameObjectKind::Chest;
+            else if(kind=="resource")object.kind=LocalGameObjectKind::Resource;
+            else if(kind=="decorative")object.kind=LocalGameObjectKind::Decorative;
+            else if(kind=="chair")object.kind=LocalGameObjectKind::Chair;
+            else throw std::runtime_error("Unknown game object kind");
+            const bool stateless=!localGameObjectStateful(object.kind);
+            object.respawnMs=number(v,"respawnMs",object.kind==LocalGameObjectKind::Script||stateless?0:object.kind==LocalGameObjectKind::Door?5000:60000,86400000);
+            object.money=number(v,"money",0,1000000000);
+            object.requiredSkillId=number(v,"requiredSkillId",0,65535);object.requiredSkill=number(v,"requiredSkill",0,450);
+            object.toolItemId=number(v,"toolItemId",0,UINT32_MAX);
+            for(const auto& id:array(v,"toolItemIds",kLocalMaxGameObjectToolItems)) {
+                if(!id.is_number_integer()||id.get<int64_t>()<1||id.get<uint64_t>()>UINT32_MAX)throw std::runtime_error("Invalid game object tool");
+                if(std::find(object.toolItemIds.begin(),object.toolItemIds.end(),id.get<uint32_t>())!=object.toolItemIds.end())throw std::runtime_error("Duplicate game object tool");
+                object.toolItemIds.push_back(id.get<uint32_t>());
+            }
+            for(const auto& row:array(v,"lootTable",kLocalMaxGameObjectLootRows)) {
+                LocalGameObjectLootRow loot;loot.itemId=number(row,"itemId",0,UINT32_MAX);
+                loot.chance=real(row,"chance",100,0,100);loot.group=uint8_t(number(row,"group",0,255));
+                loot.minCount=uint16_t(number(row,"minCount",1,255));loot.maxCount=uint16_t(number(row,"maxCount",loot.minCount,255));
+                loot.questRequired=row.value("questRequired",false);
+                object.lootTable.push_back(loot);
+            }
+            if(!validLocalGameObjectLootTable(object.lootTable))throw std::runtime_error("Invalid game object loot table");
+            object.questLootOnly=v.value("questLootOnly",false);object.persistent=v.value("persistent",false);
+            if(object.persistent && !v.contains("respawnMs"))object.respawnMs=0; // never depletes
+            object.poolId=number(v,"poolId",0,UINT32_MAX);
+            object.chairSlots=uint8_t(number(v,"chairSlots",0,kLocalMaxChairSlots));object.chairHeight=uint8_t(number(v,"chairHeight",0,2));
+            std::set<uint32_t> lootIds;
+            for(const auto& row:array(v,"loot",16)) {
+                LocalItemStack item;item.itemId=number(row,"itemId",0,UINT32_MAX);item.count=uint16_t(number(row,"count",1,65535));
+                if(!item.itemId || !item.count || !lootIds.insert(item.itemId).second)throw std::runtime_error("Invalid object loot");
+                object.loot.push_back(item);
+            }
+            const bool lootKind=object.kind==LocalGameObjectKind::Chest || object.kind==LocalGameObjectKind::Resource;
+            if(((object.kind==LocalGameObjectKind::Script || stateless) && (object.respawnMs || object.money || !object.loot.empty())) ||
+               (object.kind==LocalGameObjectKind::Door && (object.money || !object.loot.empty())) ||
+               (!lootKind && (!object.lootTable.empty() || object.questLootOnly || object.persistent || object.poolId)) ||
+               (object.kind!=LocalGameObjectKind::Resource && (object.requiredSkillId || object.requiredSkill || object.toolItemId || !object.toolItemIds.empty())) ||
+               (!object.requiredSkillId && object.requiredSkill) ||
+               (lootKind && !object.money && object.loot.empty() && object.lootTable.empty()) ||
+               (object.questLootOnly && std::none_of(object.lootTable.begin(),object.lootTable.end(),[](const auto& row){return row.questRequired;})) ||
+               (object.persistent && (object.poolId || object.respawnMs)) ||
+               ((object.kind==LocalGameObjectKind::Chair)!=(object.chairSlots>0)) || (object.kind!=LocalGameObjectKind::Chair && object.chairHeight))
+                throw std::runtime_error("Game object kind does not support its loot or requirements");
+            if((object.requiredPhaseMask&object.excludedPhaseMask) || (!object.requiredScriptId && object.requiredValue))
+                throw std::runtime_error("Invalid game object state/phase gate");
+            if(object.kind==LocalGameObjectKind::Decorative && (object.requiredScriptId || object.requiredQuestId))
+                throw std::runtime_error("Decorative game object cannot have interaction gates");
+            c->gameObjects.push_back(std::move(object));
+        }
+        std::sort(c->gameObjects.begin(),c->gameObjects.end(),[](const auto& a,const auto& b){return a.id<b.id;});
+        // Pools own membership exclusively: each pooled spawn names exactly one
+        // pool and every member is a loot-bearing shared object.
+        seen.clear();
+        for(const auto& v:array(j,"gameObjectPools",kLocalMaxGameObjectPools)) {
+            LocalGameObjectPool pool;pool.id=number(v,"id",0,UINT32_MAX);requiredId(pool.id,seen,"game object pool");
+            pool.maxActive=number(v,"maxActive",1,kLocalMaxGameObjects);
+            for(const auto& id:array(v,"members",kLocalMaxGameObjects)) {
+                if(!id.is_number_integer()||id.get<int64_t>()<1||id.get<uint64_t>()>UINT32_MAX)throw std::runtime_error("Invalid pool member");
+                pool.members.push_back(id.get<uint32_t>());
+            }
+            std::sort(pool.members.begin(),pool.members.end());
+            if(!pool.maxActive || pool.members.empty() || std::adjacent_find(pool.members.begin(),pool.members.end())!=pool.members.end())
+                throw std::runtime_error("Invalid game object pool");
+            for(const auto id:pool.members) {
+                const auto* object=c->gameObject(id);
+                if(!object || object->poolId!=pool.id)throw std::runtime_error("Pool member does not belong to its pool");
+            }
+            c->gameObjectPools.push_back(std::move(pool));
+        }
+        std::sort(c->gameObjectPools.begin(),c->gameObjectPools.end(),[](const auto& a,const auto& b){return a.id<b.id;});
+        for(const auto& object:c->gameObjects)if(object.poolId) {
+            const auto* pool=c->gameObjectPool(object.poolId);
+            if(!pool || !std::binary_search(pool->members.begin(),pool->members.end(),object.id))throw std::runtime_error("Pooled game object has no pool");
+        }
+        // Immutable action deck. Runtime actor instances are bounded and
+        // transient; these rows are the only authored source of their state.
+        seen.clear();
+        for(const auto& v:array(j,"scriptActions",kLocalMaxScriptActions)) {
+            LocalScriptAction action;action.id=number(v,"id",0,UINT32_MAX);requiredId(action.id,seen,"script action");
+            const auto kind=label(v,"action",16);
+            if(kind=="dialogue")action.kind=LocalScriptActionKind::Dialogue;
+            else if(kind=="spawn")action.kind=LocalScriptActionKind::Spawn;
+            else if(kind=="despawn")action.kind=LocalScriptActionKind::Despawn;
+            else if(kind=="move")action.kind=LocalScriptActionKind::Move;
+            else if(kind=="combat")action.kind=LocalScriptActionKind::Combat;
+            else throw std::runtime_error("Unknown script action kind");
+            action.actorId=number(v,"actorId",0,UINT32_MAX);
+            action.targetActorId=number(v,"targetActorId",0,0x7fffffffu);
+            action.npcEntry=number(v,"npcEntry",0,UINT32_MAX);
+            action.mapId=number(v,"mapId",0,10000);action.instanceId=number(v,"instanceId",0,65535);
+            action.lifetimeMs=number(v,"lifetimeMs",0,600000);
+            action.x=real(v,"x",0,-100000,100000);action.y=real(v,"y",0,-100000,100000);
+            action.z=real(v,"z",0,-20000,20000);action.orientation=real(v,"orientation",0,-100000,100000);
+            action.text=label(v,"text",255,false);
+            if(!validLocalScriptAction(action))throw std::runtime_error("Invalid script action");
+            c->scriptActions.push_back(std::move(action));
+        }
+        std::sort(c->scriptActions.begin(),c->scriptActions.end(),[](const auto& a,const auto& b){return a.id<b.id;});
+        // Shared authority schedules. Simulation events use active realm time;
+        // reviewed original calendar rows use Holiday.dbc stage lengths and the
+        // host console's local wall clock. Both own the same bounded phase path.
+        seen.clear();
+        for(const auto& v:array(j,"worldEvents",kLocalMaxWorldEvents)) {
+            LocalWorldEventSchedule event;event.id=number(v,"id",0,UINT32_MAX);requiredId(event.id,seen,"world event");
+            event.name=label(v,"name",96);event.mapId=number(v,"mapId",0,10000);event.instanceId=number(v,"instanceId",0,65535);
+            const auto clock=label(v,"clock",16,false);
+            if(clock.empty()||clock=="simulation")event.clock=LocalWorldEventClock::Simulation;
+            else if(clock=="holiday")event.clock=LocalWorldEventClock::Holiday;
+            else if(clock=="interval")event.clock=LocalWorldEventClock::Interval;
+            else throw std::runtime_error("Unsupported world event clock");
+            event.enabled=v.value("enabled",true);event.repeat=v.value("repeat",false);
+            event.holidayId=number(v,"holidayId",0,UINT32_MAX);
+            event.holidayStage=uint8_t(number(v,"holidayStage",0,kLocalMaxHolidayDurations));
+            {
+                const auto seconds=[&](const char* key)->int64_t{
+                    if(!v.contains(key))return 0;
+                    if(!v[key].is_number_integer()||v[key].get<int64_t>()<kLocalIntervalMinSeconds||v[key].get<int64_t>()>kLocalIntervalMaxSeconds)
+                        throw std::runtime_error("Invalid interval event bound");
+                    return v[key].get<int64_t>();
+                };
+                event.intervalStartSeconds=seconds("intervalStartSeconds");event.intervalEndSeconds=seconds("intervalEndSeconds");
+                event.occurrenceMinutes=number(v,"occurrenceMinutes",0,kLocalIntervalMaxMinutes);
+                event.lengthMinutes=number(v,"lengthMinutes",0,kLocalIntervalMaxMinutes);
+            }
+            event.initialDelayMs=number(v,"initialDelayMs",0,kLocalWorldEventMaxInitialDelayMs);
+            event.activeDurationMs=number(v,"activeDurationMs",0,kLocalWorldEventMaxActiveMs);
+            event.cooldownMs=number(v,"cooldownMs",0,kLocalWorldEventMaxCooldownMs);
+            event.activePhaseMask=number(v,"activePhaseMask",0,UINT32_MAX);
+            event.inactivePhaseMask=number(v,"inactivePhaseMask",0,UINT32_MAX);
+            const auto readActions=[&](const char* key,std::vector<uint32_t>& out) {
+                for(const auto& id:array(v,key,kLocalMaxWorldEventActions)) {
+                    if(!id.is_number_integer()||id.get<int64_t>()<=0||id.get<uint64_t>()>UINT32_MAX)
+                        throw std::runtime_error("Invalid world event action reference");
+                    out.push_back(id.get<uint32_t>());
+                }
+            };
+            readActions("startActionIds",event.startActionIds);readActions("endActionIds",event.endActionIds);
+            if(!validLocalWorldEventSchedule(event))throw std::runtime_error("Invalid world event schedule");
+            c->worldEvents.push_back(std::move(event));
+        }
+        std::sort(c->worldEvents.begin(),c->worldEvents.end(),[](const auto& a,const auto& b){return a.id<b.id;});
+        // 5.2: explicit authoritative event -> persistent-state/phase bridge.
+        // This is intentionally data driven and bounded; imported server script
+        // libraries are not executed by the client/local realm.
+        for(const auto& v:array(j,"scriptTriggers",4096)) {
+            LocalScriptTrigger trigger;
+            const auto kind=label(v,"trigger",16);
+            if(kind=="questAccept")trigger.kind=LocalScriptTriggerKind::QuestAccept;
+            else if(kind=="questComplete")trigger.kind=LocalScriptTriggerKind::QuestComplete;
+            else if(kind=="questReward")trigger.kind=LocalScriptTriggerKind::QuestReward;
+            else if(kind=="npcTalk")trigger.kind=LocalScriptTriggerKind::NpcTalk;
+            else if(kind=="npcKill")trigger.kind=LocalScriptTriggerKind::NpcKill;
+            else if(kind=="vehicleEnter")trigger.kind=LocalScriptTriggerKind::VehicleEnter;
+            else if(kind=="vehicleExit")trigger.kind=LocalScriptTriggerKind::VehicleExit;
+            else if(kind=="questAbandon")trigger.kind=LocalScriptTriggerKind::QuestAbandon;
+            else if(kind=="areaEnter")trigger.kind=LocalScriptTriggerKind::AreaEnter;
+            else if(kind=="areaLeave")trigger.kind=LocalScriptTriggerKind::AreaLeave;
+            else if(kind=="objectUse")trigger.kind=LocalScriptTriggerKind::ObjectUse;
+            else if(kind=="escortStart")trigger.kind=LocalScriptTriggerKind::EscortStart;
+            else if(kind=="escortWaypoint")trigger.kind=LocalScriptTriggerKind::EscortWaypoint;
+            else if(kind=="escortComplete")trigger.kind=LocalScriptTriggerKind::EscortComplete;
+            else if(kind=="escortFail")trigger.kind=LocalScriptTriggerKind::EscortFail;
+            else throw std::runtime_error("Unknown script trigger kind");
+            trigger.sourceId=number(v,"sourceId",0,UINT32_MAX);
+            trigger.requiredScriptId=number(v,"requiredScriptId",0,UINT32_MAX);
+            trigger.requiredValue=signedNumber(v,"requiredValue",0,INT32_MIN,INT32_MAX);
+            trigger.scriptId=number(v,"scriptId",0,UINT32_MAX);
+            const auto op=label(v,"operation",16,false);
+            if(op.empty())trigger.valueOp=trigger.scriptId?LocalScriptValueOp::Set:LocalScriptValueOp::None;
+            else if(op=="none")trigger.valueOp=LocalScriptValueOp::None;
+            else if(op=="set")trigger.valueOp=LocalScriptValueOp::Set;
+            else if(op=="add")trigger.valueOp=LocalScriptValueOp::Add;
+            else throw std::runtime_error("Unknown script transition operation");
+            trigger.value=signedNumber(v,"value",0,INT32_MIN,INT32_MAX);
+            trigger.addPhaseMask=number(v,"addPhaseMask",0,UINT32_MAX);
+            trigger.removePhaseMask=number(v,"removePhaseMask",0,UINT32_MAX);
+            trigger.scheduleTimerId=number(v,"scheduleTimerId",0,UINT32_MAX);
+            trigger.scheduleDelayMs=number(v,"scheduleDelayMs",0,UINT32_MAX);
+            trigger.cancelTimerId=number(v,"cancelTimerId",0,UINT32_MAX);
+            for(const auto& id:array(v,"actionIds",kLocalMaxScriptActionRefs)) {
+                if(!id.is_number_integer() || id.get<int64_t>()<=0 || id.get<uint64_t>()>UINT32_MAX)
+                    throw std::runtime_error("Invalid script trigger action reference");
+                trigger.actionIds.push_back(id.get<uint32_t>());
+            }
+            if(!validLocalScriptTrigger(trigger))throw std::runtime_error("Invalid script transition");
+            c->scriptTriggers.push_back(trigger);
+        }
+        // 5.3: immutable one-shot timer actions. Active timers live on the
+        // character and are saved; content only defines what an expired ID does.
+        seen.clear();
+        for(const auto& v:array(j,"scriptTimers",1024)) {
+            LocalScriptTimerAction action;
+            action.timerId=number(v,"timerId",0,UINT32_MAX);requiredId(action.timerId,seen,"script timer");
+            action.requiredScriptId=number(v,"requiredScriptId",0,UINT32_MAX);
+            action.requiredValue=signedNumber(v,"requiredValue",0,INT32_MIN,INT32_MAX);
+            action.scriptId=number(v,"scriptId",0,UINT32_MAX);
+            const auto op=label(v,"operation",16,false);
+            if(op.empty())action.valueOp=action.scriptId?LocalScriptValueOp::Set:LocalScriptValueOp::None;
+            else if(op=="none")action.valueOp=LocalScriptValueOp::None;
+            else if(op=="set")action.valueOp=LocalScriptValueOp::Set;
+            else if(op=="add")action.valueOp=LocalScriptValueOp::Add;
+            else throw std::runtime_error("Unknown script timer operation");
+            action.value=signedNumber(v,"value",0,INT32_MIN,INT32_MAX);
+            action.addPhaseMask=number(v,"addPhaseMask",0,UINT32_MAX);
+            action.removePhaseMask=number(v,"removePhaseMask",0,UINT32_MAX);
+            action.scheduleTimerId=number(v,"scheduleTimerId",0,UINT32_MAX);
+            action.scheduleDelayMs=number(v,"scheduleDelayMs",0,UINT32_MAX);
+            action.cancelTimerId=number(v,"cancelTimerId",0,UINT32_MAX);
+            for(const auto& id:array(v,"actionIds",kLocalMaxScriptActionRefs)) {
+                if(!id.is_number_integer() || id.get<int64_t>()<=0 || id.get<uint64_t>()>UINT32_MAX)
+                    throw std::runtime_error("Invalid script timer action reference");
+                action.actionIds.push_back(id.get<uint32_t>());
+            }
+            if(!validLocalScriptTimerAction(action))throw std::runtime_error("Invalid script timer action");
+            c->scriptTimerActions.push_back(action);
+        }
+        std::sort(c->scriptTimerActions.begin(),c->scriptTimerActions.end(),[](const auto& a,const auto& b){return a.timerId<b.timerId;});
         seen.clear();for(const auto& v:array(j,"spawns",65536)) {
             LocalNpcSpawn d;d.id=number(v,"id",0,UINT32_MAX);requiredId(d.id,seen,"spawn");d.entry=number(v,"entry",0,UINT32_MAX);d.mapId=number(v,"mapId",0,10000);
-            d.x=real(v,"x",0,-100000,100000);d.y=real(v,"y",0,-100000,100000);d.z=real(v,"z",0,-20000,20000);d.orientation=real(v,"orientation",0,-100000,100000);c->spawns.push_back(d);
+            d.x=real(v,"x",0,-100000,100000);d.y=real(v,"y",0,-100000,100000);d.z=real(v,"z",0,-20000,20000);d.orientation=real(v,"orientation",0,-100000,100000);
+            d.requiredPhaseMask=number(v,"requiredPhaseMask",0,UINT32_MAX);d.excludedPhaseMask=number(v,"excludedPhaseMask",0,UINT32_MAX);
+            d.vehicleId=number(v,"vehicleId",0,UINT32_MAX);
+            d.vehicleSeatCount=uint8_t(number(v,"vehicleSeatCount",d.vehicleId?1:0,8));
+            d.vehicleControllerSeat=uint8_t(number(v,"vehicleControllerSeat",0,7));
+            if(d.requiredPhaseMask&d.excludedPhaseMask)throw std::runtime_error("Spawn phase masks overlap");
+            if((d.vehicleId==0)!=(d.vehicleSeatCount==0) || (d.vehicleSeatCount && d.vehicleControllerSeat>=d.vehicleSeatCount) || (!d.vehicleId && d.vehicleControllerSeat))
+                throw std::runtime_error("Invalid vehicle spawn");
+            std::set<uint32_t> seats;
+            for(const auto& offset:array(v,"vehicleSeatOffsets",8)) {
+                const auto seat=number(offset,"seat",8,8);
+                if(seat>=d.vehicleSeatCount || !seats.insert(seat).second)throw std::runtime_error("Invalid or duplicate vehicle seat offset");
+                auto& xyz=d.vehicleSeatOffsets[seat];xyz={real(offset,"x",0,-20,20),real(offset,"y",0,-20,20),real(offset,"z",0,-20,20)};
+                if(seat==d.vehicleControllerSeat && xyz!=std::array<float,3>{})throw std::runtime_error("Driver seat must use the ground-movement origin");
+            }
+            c->spawns.push_back(d);
         }
+        seen.clear();
+        for(const auto& v:array(j,"vehicleKits",64)) {
+            LocalVehicleKit kit;kit.id=number(v,"id",0,UINT32_MAX);requiredId(kit.id,seen,"vehicle kit");
+            kit.maxPower=number(v,"maxPower",100,1000000);kit.regenPerSecond=number(v,"regenPerSecond",10,10000);
+            kit.minPitch=real(v,"minPitch",-1.4f,-1.4f,1.4f);kit.maxPitch=real(v,"maxPitch",1.4f,kit.minPitch,1.4f);
+            kit.muzzleHeight=real(v,"muzzleHeight",1.5f,0,20);
+            std::set<uint32_t> slots,spells;
+            for(const auto& row:array(v,"abilities",kLocalVehicleAbilities)) {
+                const auto slot=number(row,"slot",0,kLocalVehicleAbilities);
+                if(!slot || !slots.insert(slot).second)throw std::runtime_error("Invalid or duplicate vehicle ability slot");
+                auto& a=kit.abilities[slot-1];a.spellId=number(row,"spellId",0,UINT32_MAX);
+                if(!a.spellId || !spells.insert(a.spellId).second)throw std::runtime_error("Invalid or duplicate vehicle ability spell");
+                a.seatMask=uint8_t(number(row,"seatMask",1,255));a.powerCost=number(row,"powerCost",0,kit.maxPower);
+                a.cooldownMs=number(row,"cooldownMs",1000,60000);a.damage=number(row,"damage",0,1000000);a.repair=number(row,"repair",0,1000000);
+                a.range=real(row,"range",30,0,60);
+                a.projectileSpeed=real(row,"projectileSpeed",0,0,120);
+                a.projectileGravity=real(row,"projectileGravity",0,0,30);
+                a.projectileRadius=real(row,"projectileRadius",.5f,.1f,5);
+                a.projectileLifetimeMs=number(row,"projectileLifetimeMs",a.projectileSpeed?3000:0,10000);
+                a.castTimeMs=number(row,"castTimeMs",0,10000);
+                a.areaRadius=real(row,"areaRadius",0,0,40);
+                a.schoolMask=uint8_t(number(row,"schoolMask",kLocalVehiclePhysicalSchool,kLocalVehicleSchoolMask));
+                a.powerType=LocalVehiclePowerType(uint8_t(number(row,"powerType",uint8_t(LocalVehiclePowerType::Energy),uint8_t(LocalVehiclePowerType::Energy))));
+                a.interruptOnMove=row.value("interruptOnMove",true);
+                if(a.projectileSpeed ? (a.projectileSpeed<1 || !a.damage || a.repair || a.projectileLifetimeMs<100) :
+                    (a.projectileGravity || a.projectileLifetimeMs || row.contains("projectileRadius")))throw std::runtime_error("Invalid vehicle projectile profile");
+                if(!a.seatMask || a.cooldownMs<100 || bool(a.damage)==bool(a.repair) || (a.damage && !a.range) ||
+                   !validLocalVehicleSchool(a.schoolMask) || (a.repair && (a.areaRadius || a.schoolMask!=kLocalVehiclePhysicalSchool)) ||
+                   (a.powerType==LocalVehiclePowerType::None && a.powerCost) ||
+                   (a.powerType!=LocalVehiclePowerType::None && a.powerType!=LocalVehiclePowerType::Energy))
+                    throw std::runtime_error("Invalid vehicle ability effect");
+            }
+            if(slots.empty())throw std::runtime_error("Empty vehicle kit");
+            bool used=false;
+            for(const auto& spawn:c->spawns)if(spawn.vehicleId==kit.id) {
+                used=true;
+                for(const auto& a:kit.abilities)if(a.seatMask & ~((1u<<spawn.vehicleSeatCount)-1))throw std::runtime_error("Vehicle ability names missing seat");
+            }
+            if(!used)throw std::runtime_error("Vehicle kit has no spawn");
+            c->vehicleKits.push_back(kit);
+        }
+        std::sort(c->vehicleKits.begin(),c->vehicleKits.end(),[](const auto& a,const auto& b){return a.id<b.id;});
+        seen.clear();std::set<uint32_t> escortQuests,escortSpawns;
+        for(const auto& v:array(j,"escortRoutes",32)) {
+            LocalEscortRoute route;route.id=number(v,"id",0,UINT32_MAX);requiredId(route.id,seen,"escort route");
+            route.questId=number(v,"questId",0,UINT32_MAX);route.spawnId=number(v,"spawnId",0,UINT32_MAX);
+            const auto quest=std::find_if(c->quests.begin(),c->quests.end(),[&](const auto& q){return q.id==route.questId;});
+            const auto spawn=std::find_if(c->spawns.begin(),c->spawns.end(),[&](const auto& s){return s.id==route.spawnId;});
+            const auto guide=spawn==c->spawns.end()?c->npcs.end():std::find_if(c->npcs.begin(),c->npcs.end(),[&](const auto& n){return n.id==spawn->entry;});
+            if(quest==c->quests.end() || spawn==c->spawns.end() || guide==c->npcs.end() || !guide->questGiver || quest->giverEntry!=spawn->entry || spawn->vehicleId ||
+                !escortQuests.insert(route.questId).second || !escortSpawns.insert(route.spawnId).second || guide->hostile)
+                throw std::runtime_error("Escort needs unique quest/giver spawn and a friendly non-vehicle actor");
+            route.speed=real(v,"speed",2.5f,.1f,7);route.followRadius=real(v,"followRadius",25,5,50);
+            route.failRadius=real(v,"failRadius",100,route.followRadius,150);
+            route.combat=v.value("combat",false);
+            route.combatChaseRadius=real(v,"combatChaseRadius",std::min(10.f,route.followRadius),1,std::min(30.f,route.followRadius));
+            if(!route.combat && v.contains("combatChaseRadius"))throw std::runtime_error("Escort chase radius requires combat");
+            if(route.combat && !guide->damage)throw std::runtime_error("Combat escort guide needs authored melee damage");
+            route.timeoutMs=number(v,"timeoutMs",600000,1800000);if(!route.timeoutMs)throw std::runtime_error("Zero escort timeout");
+            for(const auto& point:array(v,"points",64)) {
+                LocalEscortPoint p;p.x=real(point,"x",0,-100000,100000);p.y=real(point,"y",0,-100000,100000);p.z=real(point,"z",0,-20000,20000);
+                p.waitMs=number(point,"waitMs",0,60000);route.points.push_back(p);
+            }
+            if(route.points.empty())throw std::runtime_error("Empty escort route");
+            c->escortRoutes.push_back(std::move(route));
+        }
+        std::sort(c->escortRoutes.begin(),c->escortRoutes.end(),[](const auto& a,const auto& b){return a.id<b.id;});
         if(j.contains("start")) {
             const auto& v=j.at("start");c->start.mapId=number(v,"mapId",0,10000);c->start.x=real(v,"x",c->start.x,-100000,100000);c->start.y=real(v,"y",c->start.y,-100000,100000);c->start.z=real(v,"z",c->start.z,-20000,20000);c->start.orientation=real(v,"orientation",0,-100000,100000);
             for(const auto& stack:array(v,"items",MaxInventory))c->start.inventory.push_back(parseStack(stack));
@@ -2461,23 +3678,147 @@ bool LocalGameplay::loadContent(const std::string& path,std::string& error) {
         std::sort(c->spells.begin(), c->spells.end(), byId);
         std::sort(c->quests.begin(), c->quests.end(), byId);
         std::sort(c->npcs.begin(), c->npcs.end(), byId);
+        for(const auto& kit:c->vehicleKits)for(const auto& a:kit.abilities)
+            if(a.spellId && !c->spell(a.spellId))throw std::runtime_error("Vehicle ability spell metadata missing");
         for(const auto& d:c->npcs) {
             for(const auto& s:d.loot)if(!c->item(s.itemId))throw std::runtime_error("Loot references missing item");
             for(auto id:d.vendorItems)if(!c->item(id))throw std::runtime_error("Vendor list references missing item");
         }
         for(const auto& s:c->spawns)if(!c->npc(s.entry))throw std::runtime_error("Spawn references missing NPC");
+        for(const auto& action:c->scriptActions)
+            if(action.kind==LocalScriptActionKind::Spawn && !c->npc(action.npcEntry))
+                throw std::runtime_error("Script spawn references missing NPC");
+        {
+            uint32_t reservedPhases=0;
+            std::set<uint32_t> reservedWorldEventActors;
+            std::map<uint32_t,uint32_t> worldEventActionOwners;
+            for(const auto& event:c->worldEvents) {
+                const auto phases=event.activePhaseMask|event.inactivePhaseMask;
+                if(reservedPhases&phases)throw std::runtime_error("World event phase masks overlap");
+                reservedPhases|=phases;
+                const auto checkActions=[&](const std::vector<uint32_t>& ids) {
+                    for(const auto id:ids) {
+                        const auto* action=c->scriptAction(id);
+                        if(!action)throw std::runtime_error("World event references missing action");
+                        if(action->mapId!=event.mapId||action->instanceId!=event.instanceId)
+                            throw std::runtime_error("World event action scope mismatch");
+                        const auto [owner,inserted]=worldEventActionOwners.emplace(id,event.id);
+                        if(!inserted&&owner->second!=event.id)
+                            throw std::runtime_error("World event action is owned by more than one event");
+                    }
+                };
+                checkActions(event.startActionIds);checkActions(event.endActionIds);
+                std::set<uint32_t> eventActors,liveActors,cleanedActors;
+                for(const auto id:event.startActionIds) {
+                    const auto* action=c->scriptAction(id);
+                    if(action->kind==LocalScriptActionKind::Combat)
+                        throw std::runtime_error("World event combat actions are viewer-dependent");
+                    if(action->kind==LocalScriptActionKind::Despawn)
+                        throw std::runtime_error("World event start cannot despawn an actor");
+                    if(action->kind==LocalScriptActionKind::Spawn) {
+                        if(action->lifetimeMs<event.activeDurationMs)
+                            throw std::runtime_error("World event actor lifetime is shorter than its active phase");
+                        if(!eventActors.insert(action->actorId).second || !reservedWorldEventActors.insert(action->actorId).second)
+                            throw std::runtime_error("World event actor is not owned by exactly one event");
+                        liveActors.insert(action->actorId);continue;
+                    }
+                    if(action->actorId!=kLocalScriptPlayerActor&&!liveActors.count(action->actorId))
+                        throw std::runtime_error("World event start references an actor before its spawn");
+                }
+                for(const auto id:event.endActionIds) {
+                    const auto* action=c->scriptAction(id);
+                    if(action->kind==LocalScriptActionKind::Combat)
+                        throw std::runtime_error("World event combat actions are viewer-dependent");
+                    if(action->kind==LocalScriptActionKind::Spawn)
+                        throw std::runtime_error("World event end cannot spawn an actor");
+                    if(action->actorId!=kLocalScriptPlayerActor&&action->kind!=LocalScriptActionKind::Despawn)
+                        throw std::runtime_error("World event end may only despawn its event actors");
+                    if(action->actorId!=kLocalScriptPlayerActor&&!liveActors.count(action->actorId))
+                        throw std::runtime_error("World event end references an actor not spawned by that event");
+                    if(action->kind==LocalScriptActionKind::Despawn) {
+                        if(!cleanedActors.insert(action->actorId).second)
+                            throw std::runtime_error("World event actor has duplicate end cleanup");
+                        liveActors.erase(action->actorId);
+                    }
+                }
+                if(cleanedActors!=eventActors)
+                    throw std::runtime_error("World event start actor is missing end cleanup");
+            }
+            for(const auto& action:c->scriptActions)
+                if(reservedWorldEventActors.count(action.actorId)&&!worldEventActionOwners.count(action.id))
+                    throw std::runtime_error("World event actor is referenced outside its owning event");
+            for(const auto& trigger:c->scriptTriggers)for(const auto id:trigger.actionIds)
+                if(worldEventActionOwners.count(id))
+                    throw std::runtime_error("World event action is also referenced by a script trigger");
+            for(const auto& timer:c->scriptTimerActions)for(const auto id:timer.actionIds)
+                if(worldEventActionOwners.count(id))
+                    throw std::runtime_error("World event action is also referenced by a script timer");
+            for(const auto& trigger:c->scriptTriggers)
+                if((trigger.addPhaseMask|trigger.removePhaseMask)&reservedPhases)
+                    throw std::runtime_error("Script trigger uses a world event phase bit");
+            for(const auto& timer:c->scriptTimerActions)
+                if((timer.addPhaseMask|timer.removePhaseMask)&reservedPhases)
+                    throw std::runtime_error("Script timer uses a world event phase bit");
+        }
         for(const auto& d:c->quests) {
-            if(!c->npc(d.giverEntry)||!c->npc(d.turnInEntry)||(d.prerequisite&&!c->quest(d.prerequisite)))throw std::runtime_error("Quest references missing NPC/prerequisite");
+            if(!c->npc(d.giverEntry)||!c->npc(d.turnInEntry)||(!d.chainGate.defined && d.prerequisite&&!c->quest(d.prerequisite)))throw std::runtime_error("Quest references missing NPC/prerequisite");
             if((d.rewardItem&&!c->item(d.rewardItem))||(!d.rewardItem&&d.rewardCount))throw std::runtime_error("Quest reward item missing");
             for(const auto& r:d.additionalRewards)if(!c->item(r.itemId))throw std::runtime_error("Additional quest reward item missing");
             for(const auto& r:d.rewardChoices)if(!c->item(r.itemId))throw std::runtime_error("Quest choice item missing");
             std::set<std::pair<unsigned,uint32_t>> objectives;
             for(const auto& o:d.objectives) {
-                if(o.type==LocalQuestObjective::Type::Collect?!c->item(o.entry):!c->npc(o.entry))throw std::runtime_error("Quest objective reference missing");
+                if(o.type!=LocalQuestObjective::Type::Script && (o.type==LocalQuestObjective::Type::Collect?!c->item(o.entry):!c->npc(o.entry)))throw std::runtime_error("Quest objective reference missing");
                 if(!objectives.emplace(unsigned(o.type),o.entry).second)throw std::runtime_error("Duplicate quest objective");
             }
             std::set<uint32_t> chain;const LocalQuestDefinition* q=&d;
-            while(q&&q->prerequisite){if(!chain.insert(q->id).second)throw std::runtime_error("Quest prerequisite cycle");q=c->quest(q->prerequisite);}
+            while(q&&!q->chainGate.defined&&q->prerequisite){if(!chain.insert(q->id).second)throw std::runtime_error("Quest prerequisite cycle");q=c->quest(q->prerequisite);}
+        }
+        {
+            std::set<uint32_t> authoredScriptIds;
+            std::set<uint32_t> timerIds;
+            for(const auto& action:c->scriptTimerActions){timerIds.insert(action.timerId);if(action.scriptId)authoredScriptIds.insert(action.scriptId);}
+            for(const auto& trigger:c->scriptTriggers) {
+                const bool questTrigger=trigger.kind==LocalScriptTriggerKind::QuestAccept ||
+                    trigger.kind==LocalScriptTriggerKind::QuestComplete || trigger.kind==LocalScriptTriggerKind::QuestReward ||
+                    trigger.kind==LocalScriptTriggerKind::QuestAbandon;
+                const bool vehicleTrigger=trigger.kind==LocalScriptTriggerKind::VehicleEnter || trigger.kind==LocalScriptTriggerKind::VehicleExit;
+                const bool areaTrigger=trigger.kind==LocalScriptTriggerKind::AreaEnter || trigger.kind==LocalScriptTriggerKind::AreaLeave;
+                const bool objectTrigger=trigger.kind==LocalScriptTriggerKind::ObjectUse;
+                const bool escortTrigger=trigger.kind>=LocalScriptTriggerKind::EscortStart && trigger.kind<=LocalScriptTriggerKind::EscortFail;
+                const bool sourceExists=escortTrigger ? c->escortRoute(trigger.sourceId)!=nullptr : objectTrigger ? c->gameObject(trigger.sourceId)!=nullptr : questTrigger ? c->quest(trigger.sourceId)!=nullptr : vehicleTrigger ?
+                    std::any_of(c->spawns.begin(),c->spawns.end(),[&](const auto& spawn){return spawn.vehicleId==trigger.sourceId;}) :
+                    areaTrigger ? std::any_of(c->scriptAreas.begin(),c->scriptAreas.end(),[&](const auto& area){return area.id==trigger.sourceId;}) : c->npc(trigger.sourceId)!=nullptr;
+                if(!sourceExists)
+                    throw std::runtime_error("Script trigger source reference missing");
+                if(trigger.scriptId)authoredScriptIds.insert(trigger.scriptId);
+                if(trigger.scheduleTimerId && !timerIds.count(trigger.scheduleTimerId))
+                    throw std::runtime_error("Script trigger schedules missing timer");
+                if(trigger.cancelTimerId && !timerIds.count(trigger.cancelTimerId))
+                    throw std::runtime_error("Script trigger cancels missing timer");
+                for(const auto id:trigger.actionIds)if(!c->scriptAction(id))
+                    throw std::runtime_error("Script trigger references missing action");
+            }
+            for(const auto& action:c->scriptTimerActions) {
+                if(action.scheduleTimerId && !timerIds.count(action.scheduleTimerId))throw std::runtime_error("Script timer schedules missing timer");
+                if(action.cancelTimerId && !timerIds.count(action.cancelTimerId))throw std::runtime_error("Script timer cancels missing timer");
+                for(const auto id:action.actionIds)if(!c->scriptAction(id))
+                    throw std::runtime_error("Script timer references missing action");
+            }
+            // The persistent character table has a hard corruption/transport
+            // cap of 64 rows. Refuse authored content that could require more.
+            for(const auto& quest:c->quests)for(const auto& objective:quest.objectives)
+                if(objective.type==LocalQuestObjective::Type::Script && !authoredScriptIds.count(objective.entry))
+                    throw std::runtime_error("Script objective references an unauthored state");
+            for(const auto& object:c->gameObjects) {
+                for(const auto& item:object.loot)if(!c->item(item.itemId))throw std::runtime_error("Game object loot item missing");
+                if(object.toolItemId && !c->item(object.toolItemId))throw std::runtime_error("Game object tool missing");
+                if(object.requiredQuestId && !c->quest(object.requiredQuestId))throw std::runtime_error("Game object quest missing");
+                if(object.requiredScriptId && !authoredScriptIds.count(object.requiredScriptId))throw std::runtime_error("Game object state is unauthored");
+                if(object.kind==LocalGameObjectKind::Script && std::none_of(c->scriptTriggers.begin(),c->scriptTriggers.end(),[&](const auto& t){
+                    return t.kind==LocalScriptTriggerKind::ObjectUse && t.sourceId==object.id;
+                }))throw std::runtime_error("Game object needs an objectUse trigger");
+            }
+            if(authoredScriptIds.size()>kLocalMaxScriptStates)throw std::runtime_error("Too many authored script state IDs");
         }
         for(const auto& s:c->start.inventory)if(!c->item(s.itemId)||s.count>c->item(s.itemId)->stack)throw std::runtime_error("Invalid starter inventory");
         std::set<uint32_t> learned;for(auto id:c->start.knownSpells)if(!c->spell(id)||!learned.insert(id).second)throw std::runtime_error("Invalid starter spells");
@@ -2485,6 +3826,16 @@ bool LocalGameplay::loadContent(const std::string& path,std::string& error) {
         const auto catalogDirectory = std::filesystem::path(path).parent_path() / "catalog";
         std::error_code ec;
         if (std::filesystem::is_directory(catalogDirectory, ec) && !loadCatalog(catalogDirectory.string(), error)) return false;
+        // Reviewed loot tables and tool alternatives name catalog items, which
+        // resolve only once the catalog is attached. Fail closed otherwise.
+        for (const auto& object : impl_->content->gameObjects) {
+            for (const auto& row : object.lootTable) if (!impl_->content->item(row.itemId)) {
+                error = "Local world content: Game object loot table item missing: " + std::to_string(row.itemId); return false;
+            }
+            for (const auto id : object.toolItemIds) if (!impl_->content->item(id)) {
+                error = "Local world content: Game object tool missing: " + std::to_string(id); return false;
+            }
+        }
         // P05 line of sight . Optional, and deliberately not fatal: a
         // console with no collision pack installed runs exactly as the implementation did,
         // with every line-of-sight test answering "visible". The reason is
@@ -2521,12 +3872,23 @@ bool LocalGameplay::validatePlayer(const LocalRealmPlayer& p, std::string& error
     const auto& c = content();
     const auto invalid = [&](const std::string& reason) { error = "Saved character " + p.name + " is incompatible with world content: " + reason + ". Original save preserved."; return false; };
     if (p.inventory.size() > MaxInventory || p.quests.size() > MaxQuests || p.knownSpells.size() > MaxSpells ||
-        p.knownRecipes.size() > MaxRecipes || p.cooldowns.size() > MaxCooldowns || !validLocalCategoryCooldowns(p)) return invalid("collection limit exceeded");
+        p.knownRecipes.size() > MaxRecipes || p.cooldowns.size() > MaxCooldowns || !validLocalCategoryCooldowns(p) ||
+        !p.phaseMask || !validLocalScriptStates(p.scriptStates) || !validLocalScriptTimers(p.scriptTimers) ||
+        !validLocalScriptAreaIds(p.scriptAreaIds) || p.scriptAreaInstanceId>65535 ||
+        (p.scriptAreaIds.empty() && p.scriptAreaInstanceId) || !validLocalEscortProgress(p.escort)) return invalid("collection limit exceeded");
+    if(p.escort.routeId) {
+        const auto* route=c.escortRoute(p.escort.routeId);
+        if(!route || p.escort.nextPoint>route->points.size())return invalid("unknown escort route or invalid waypoint");
+        const auto spawn=std::find_if(c.spawns.begin(),c.spawns.end(),[&](const auto& s){return s.id==route->spawnId;});
+        const auto* guide=spawn==c.spawns.end()?nullptr:c.npc(spawn->entry);
+        if(!guide || p.escort.guideHealth>guide->health)return invalid("invalid escort guide health");
+    }
     for (const auto& s : p.inventory) {
         const auto* d = c.item(s.itemId);
-        if (!d || !s.count || s.count > d->stack) return invalid("unknown item or changed stack limit for item " + std::to_string(s.itemId));
+        if (!d || !s.count || s.count > d->stack || !validLocalItemInstance(s)) return invalid("unknown item, invalid instance state or changed stack limit for item " + std::to_string(s.itemId));
     }
     for (const auto& s : p.bank) {
+        if (!validLocalItemInstance(s)) return invalid("invalid bank item instance");
         if (!s.itemId && !s.count) continue;
         const auto* item = c.item(s.itemId);
         if (!item || !s.count || s.count > item->stack) return invalid("invalid bank stack");
@@ -2613,6 +3975,17 @@ void LocalGameplay::initializePlayer(LocalRealmPlayer& p, bool fresh, uint8_t fo
         if(!f||f->clazz!=p.classId||!formSpell||!formSpell->unsupportedReason.empty()||formSpell->formId!=f->form||!localFormEnvironmentReady(p,*formSpell)||p.dead||std::find(p.knownSpells.begin(),p.knownSpells.end(),p.formSpellId)==p.knownSpells.end())leaveLocalForm(p);
     }
     if (c.classResources) p.resourceType = localActiveForm(p)?localActiveForm(p)->power:classResource(p.classId);
+    if (p.migrateLegacyReputation) {
+        p.reputations.clear();
+        for (const auto& row : impl_->factionReputationBases) {
+            bool matched = false;
+            const int32_t base = localFactionBaseReputation(row, p.race, p.classId, &matched);
+            if (matched && base) p.reputations.push_back({row.factionId, base});
+        }
+        p.migrateLegacyReputation = false;
+        if (!validLocalReputations(p)) p.reputations.clear();
+        LOG_INFO("[LOCAL_REPUTATION] seeded base standings player=",p.guid," rows=",p.reputations.size());
+    }
     if (!p.gameplayInitialized) {
         if (fresh) {
             p.mapId = c.start.mapId; p.x = c.start.x; p.y = c.start.y; p.z = c.start.z; p.orientation = c.start.orientation;
@@ -2703,17 +4076,267 @@ void LocalGameplay::initializePlayer(LocalRealmPlayer& p, bool fresh, uint8_t fo
     // A character that logs in, is created or is migrated is not mid-fall,
     // whatever the last thing to touch these was.
     p.mountSpellId = 0;
+    p.vehicleGuid=0;p.vehicleId=0;p.vehicleSeat=0;p.vehicleControl=false;p.vehicleMoveAllowance=0;
+    if(p.escort.routeId && !p.escort.guideHealth)if(const auto* route=c.escortRoute(p.escort.routeId)) {
+        const auto spawn=std::find_if(c.spawns.begin(),c.spawns.end(),[&](const auto& s){return s.id==route->spawnId;});
+        if(spawn!=c.spawns.end())if(const auto* guide=c.npc(spawn->entry))p.escort.guideHealth=guide->health;
+    }
+    if(p.vehicleRecoveryId && applyScriptTriggers(p,c,LocalScriptTriggerKind::VehicleExit,p.vehicleRecoveryId))
+        p.vehicleRecoveryId=0;
     p.movementState = 0; p.falling = false; p.fallStartZ = p.z; p.fallRevision = p.positionRevision;
     questStatus(p, c);
     localRescaleMeleeTimers(p,previousPeriods[0],previousPeriods[1],c);
 }
 
+bool LocalGameplay::canDamageVehicleArea(const LocalRealmNpc& primary,const LocalRealmNpc& hull,LocalRealmPlayer& owner,
+        uint32_t raw,uint8_t schoolMask,float centerX,float centerY,float centerZ,float radius,
+        const std::vector<LocalRealmPlayer*>& players) {
+    auto& g=*impl_;auto staged=g.pendingScriptCommits;
+    std::vector<uint64_t> targets{primary.guid};
+    if(radius>0)for(const auto& candidate:g.npcs)if(candidate.guid!=primary.guid && !candidate.dead && candidate.health &&
+        !candidate.vehicleId && !candidate.transportEntry && candidate.mapId==hull.mapId && candidate.instanceId==hull.instanceId &&
+        canAttack(owner,candidate) && localVehicleAreaContains(centerX,centerY,centerZ,candidate.x,candidate.y,candidate.z,radius))
+        targets.push_back(candidate.guid);
+    std::sort(targets.begin(),targets.end());
+    for(auto guid:targets)if(const auto* victim=g.npc(guid);victim && !victim->dead && victim->health) {
+        const auto* def=content().npc(victim->entry);if(!def)continue;
+        const auto damage=schoolMask==kLocalVehiclePhysicalSchool?localArmorReducedDamage(raw,def->armor,hull.level):raw;
+        if(damage>=victim->health) {
+            // 2.39: a death the player damage requirement leaves unrewarded reserves nothing.
+            auto after=*victim;g.npcLowerPlayerDamageReq(after,damage,true);
+            if(!g.npcRewardAllowed(after))continue;
+            LocalGameplay::Impl::KillRewardPlan plan;
+            if(!g.reserveKillFacts(*victim,owner,players,staged,plan,false))return false;
+        }
+    }
+    return true;
+}
+
+bool LocalGameplay::damageVehicleArea(LocalRealmNpc& primary,LocalRealmNpc& hull,LocalRealmPlayer& owner,
+        uint32_t raw,uint32_t spell,uint8_t schoolMask,float centerX,float centerY,float centerZ,float radius,
+        const std::vector<LocalRealmPlayer*>& players) {
+    auto& g=*impl_;
+    if(!canDamageVehicleArea(primary,hull,owner,raw,schoolMask,centerX,centerY,centerZ,radius,players))return false;
+    std::vector<uint64_t> targets{primary.guid};
+    if(radius>0)for(const auto& candidate:g.npcs)if(candidate.guid!=primary.guid && !candidate.dead && candidate.health &&
+        !candidate.vehicleId && !candidate.transportEntry && candidate.mapId==hull.mapId && candidate.instanceId==hull.instanceId &&
+        canAttack(owner,candidate) && localVehicleAreaContains(centerX,centerY,centerZ,candidate.x,candidate.y,candidate.z,radius))
+        targets.push_back(candidate.guid);
+    std::sort(targets.begin(),targets.end());
+    for(auto guid:targets)if(auto* victim=g.npc(guid);victim && !victim->dead && victim->health)
+        g.damageNpcByVehicle(*victim,hull,owner,raw,spell,schoolMask,players);
+    return true;
+}
+
+bool LocalGameplay::executeVehicleAbility(LocalRealmPlayer& p,const LocalRealmCommand& cmd,
+        const std::vector<LocalRealmPlayer*>& players,std::string& result,bool finishing,const LocalVehicleCast* pending) {
+    auto& g=*impl_;const auto& c=content();
+    const auto reject=[&](const std::string& reason){result=reason;return false;};
+    auto* vehicle=g.npc(p.vehicleGuid);
+    if(!validLocalVehicleState(p) || !p.vehicleGuid || cmd.serviceNpcGuid!=p.vehicleGuid || cmd.id>=kLocalVehicleAbilities ||
+       p.dead || p.ghost || !p.health || p.flight.active || p.transportEntry || !vehicle || vehicle->dead || !vehicle->health ||
+       vehicle->vehicleId!=p.vehicleId || p.vehicleSeat>=vehicle->vehicleSeatCount || vehicle->mapId!=p.mapId || vehicle->instanceId!=p.instanceId ||
+       !localPhaseVisible(p.phaseMask,vehicle->requiredPhaseMask,vehicle->excludedPhaseMask))return reject("Vehicle or seat is no longer available");
+    const auto* kit=c.vehicleKit(vehicle->vehicleId);
+    if(!kit)return reject("This vehicle has no abilities");
+    const auto& ability=kit->abilities[cmd.id];
+    if(!ability.spellId || !(ability.seatMask&(1u<<p.vehicleSeat)))return reject("This seat cannot use that ability");
+    if(finishing) {
+        if(!pending || pending->sourceGuid!=vehicle->guid || pending->ownerGuid!=p.guid || pending->targetGuid!=cmd.target ||
+           pending->spellId!=ability.spellId || pending->slot!=cmd.id || pending->seat!=p.vehicleSeat ||
+           pending->sourceEpoch!=vehicle->combatEpoch || pending->ownerPositionRevision!=p.positionRevision ||
+           pending->mapId!=p.mapId || pending->instanceId!=p.instanceId || pending->phaseMask!=p.phaseMask ||
+           pending->totalMs!=ability.castTimeMs)return reject("Vehicle cast was interrupted");
+        if(ability.interruptOnMove && (distance2(vehicle->x,vehicle->y,vehicle->z,pending->sourceX,pending->sourceY,pending->sourceZ)>.000001f ||
+           std::abs(std::remainder(vehicle->orientation-pending->sourceOrientation,2*kLocalVehiclePi))>.0001f))
+            return reject("Vehicle movement interrupted the cast");
+    } else if(std::any_of(g.vehicleCasts.begin(),g.vehicleCasts.end(),[&](const auto& cast){return cast.sourceGuid==vehicle->guid;}))
+        return reject("Vehicle is already casting");
+    if(localNpcStunned(*vehicle) || vehicle->vehicleCooldownMs[cmd.id] || vehicle->vehicleGlobalCooldownMs)return reject("Vehicle ability is not ready");
+    if(ability.powerType==LocalVehiclePowerType::Energy && vehicle->vehiclePower<ability.powerCost)return reject("Not enough vehicle energy");
+    LocalRealmNpc* victim=nullptr;LocalVehicleProjectile launch;
+    if(ability.projectileSpeed>0) {
+        if(cmd.target)return reject("Aim this weapon before firing; it does not track a target");
+        if(g.vehicleProjectiles.size()>=kLocalMaxVehicleProjectiles)return reject("Too many active vehicle projectiles");
+        launch.id=1;launch.sourceGuid=vehicle->guid;launch.sourceEpoch=vehicle->combatEpoch;launch.ownerGuid=p.guid;
+        launch.spellId=ability.spellId;launch.mapId=p.mapId;launch.instanceId=p.instanceId;launch.phaseMask=p.phaseMask;
+        launch.remainingMs=ability.projectileLifetimeMs;launch.damage=ability.damage;launch.radius=ability.projectileRadius;
+        launch.maxRange=ability.range;launch.areaRadius=ability.areaRadius;launch.schoolMask=ability.schoolMask;
+        const auto origin=localVehicleSeatPosition(*vehicle,p.vehicleSeat);launch.x=origin[0];launch.y=origin[1];launch.z=origin[2]+kit->muzzleHeight;
+        const float relativeYaw=finishing?pending->aimYaw:vehicle->vehicleAim[p.vehicleSeat][0];
+        const float pitch=finishing?pending->aimPitch:vehicle->vehicleAim[p.vehicleSeat][1];
+        const float yaw=vehicle->orientation+relativeYaw;
+        launch.vx=ability.projectileSpeed*std::cos(pitch)*std::cos(yaw);launch.vy=ability.projectileSpeed*std::cos(pitch)*std::sin(yaw);
+        launch.vz=ability.projectileSpeed*std::sin(pitch);launch.gravity=ability.projectileGravity;
+        if(!validLocalVehicleProjectileView(launch))return reject("Vehicle muzzle is outside the world");
+    } else if(ability.damage) {
+        victim=g.npc(cmd.target);
+        if(!victim || victim==vehicle || victim->dead || !victim->health || victim->vehicleId || victim->transportEntry ||
+           victim->mapId!=vehicle->mapId || victim->instanceId!=vehicle->instanceId || !canAttack(p,*victim) ||
+           (finishing && victim->combatEpoch!=pending->targetEpoch))return reject("Choose a living enemy");
+        const auto reach=distance2(vehicle->x,vehicle->y,vehicle->z,victim->x,victim->y,victim->z);
+        if(!std::isfinite(reach) || reach>ability.range*ability.range)return reject("Vehicle target is out of range");
+        if(!localLineOfSightReady(collision(),vehicle->mapId,vehicle->x,vehicle->y,vehicle->z,victim->x,victim->y,victim->z,
+            localCreatureCombatReach(c.npc(victim->entry))))return reject("Vehicle target is out of sight");
+    } else if((cmd.target && cmd.target!=vehicle->guid) || vehicle->health>=vehicle->maxHealth)return reject("The vehicle does not need repair");
+    if(!finishing && ability.castTimeMs) {
+        if(g.vehicleCasts.size()>=kLocalMaxVehicleCasts)return reject("Too many active vehicle casts");
+        LocalVehicleCast cast;cast.sourceGuid=vehicle->guid;cast.ownerGuid=p.guid;
+        cast.targetGuid=ability.repair?vehicle->guid:cmd.target;cast.spellId=ability.spellId;
+        cast.remainingMs=cast.totalMs=ability.castTimeMs;cast.mapId=p.mapId;cast.instanceId=p.instanceId;cast.phaseMask=p.phaseMask;
+        cast.slot=uint8_t(cmd.id);cast.seat=p.vehicleSeat;cast.sourceEpoch=vehicle->combatEpoch;
+        cast.targetEpoch=victim?victim->combatEpoch:0;cast.ownerPositionRevision=p.positionRevision;
+        cast.sourceX=vehicle->x;cast.sourceY=vehicle->y;cast.sourceZ=vehicle->z;cast.sourceOrientation=vehicle->orientation;
+        cast.aimYaw=vehicle->vehicleAim[p.vehicleSeat][0];cast.aimPitch=vehicle->vehicleAim[p.vehicleSeat][1];
+        if(!validLocalVehicleCastView(cast,c))return reject("Invalid vehicle cast profile");
+        g.vehicleCasts.push_back(cast);result="Vehicle ability casting";return true;
+    }
+    if(victim && !canDamageVehicleArea(*victim,*vehicle,p,ability.damage,ability.schoolMask,
+        victim->x,victim->y,victim->z,ability.areaRadius,players))
+        return reject("Combat rewards are waiting for capacity; try again");
+    // Cast-time abilities reserve neither power nor cooldown. The single
+    // authority commit happens only after every completion check succeeds.
+    if(ability.powerType==LocalVehiclePowerType::Energy)vehicle->vehiclePower-=ability.powerCost;
+    vehicle->vehicleCooldownMs[cmd.id]=ability.cooldownMs;vehicle->vehicleGlobalCooldownMs=1000;
+    if(ability.projectileSpeed>0) {
+        launch.id=++g.nextVehicleProjectile;if(!launch.id)launch.id=++g.nextVehicleProjectile;
+        g.vehicleProjectiles.push_back(launch);result="Vehicle projectile launched";return true;
+    }
+    if(victim) {
+        if(!damageVehicleArea(*victim,*vehicle,p,ability.damage,ability.spellId,ability.schoolMask,
+            victim->x,victim->y,victim->z,ability.areaRadius,players)) {
+            if(ability.powerType==LocalVehiclePowerType::Energy)vehicle->vehiclePower+=ability.powerCost;
+            vehicle->vehicleCooldownMs[cmd.id]=0;vehicle->vehicleGlobalCooldownMs=0;
+            return reject("Combat rewards are waiting for capacity; try again");
+        }
+    }
+    else {
+        const auto effective=std::min(ability.repair,vehicle->maxHealth-vehicle->health);vehicle->health+=effective;
+        LocalCombatEvent event{0,vehicle->guid,vehicle->guid,ability.spellId,vehicle->mapId,vehicle->instanceId,ability.repair,effective,0,LocalCombatEventKind::DirectHeal,false};
+        event.schoolMask=kLocalVehiclePhysicalSchool;event.attackType=LocalCombatAttackType::None;g.emitCombatEvent(event,players);
+    }
+    result="Vehicle ability used";return true;
+}
+
 bool LocalGameplay::execute(LocalRealmPlayer& p,const LocalRealmCommand& cmd,const std::vector<LocalRealmPlayer*>& players,std::string& result) {
+    auto& pending=impl_->pendingScriptCommits;
+    const size_t pendingBefore=pending.size();
+    const uint64_t tailXp=pendingBefore?pending.back().xp:0;
+    const uint32_t tailCount=pendingBefore?pending.back().count:0;
+    if(!executeUnsettled(p,cmd,players,result))return false;
+    // An instant command has fully unwound here. This is a safe structural
+    // boundary just like the end of tick(), so preserve the long-standing
+    // command contract: a lethal instant hit exposes XP/objective/script
+    // credit before execute() returns. A refused authored action stays queued
+    // and the successful hit is not reported as failed (which would invite a
+    // duplicate retry); the next stable boundary retries it.
+    // Settle only players whose facts this command appended or extended.
+    // An unrelated retryable fact must not be folded into a financial command:
+    // LocalRealm may subsequently roll that command back after a failed save,
+    // and its transaction intentionally snapshots only the participants it
+    // changes. Tick() remains the global retry boundary for every queued fact.
+    std::set<uint64_t> affectedPlayers;
+    if(pendingBefore && pending.size()>=pendingBefore &&
+       (pending[pendingBefore-1].xp!=tailXp || pending[pendingBefore-1].count!=tailCount))
+        affectedPlayers.insert(pending[pendingBefore-1].playerGuid);
+    for(size_t i=pendingBefore;i<pending.size();++i)affectedPlayers.insert(pending[i].playerGuid);
+    if(!affectedPlayers.empty())settlePendingScriptKills(players,&affectedPlayers);
+    return true;
+}
+
+bool LocalGameplay::executeUnsettled(LocalRealmPlayer& p,const LocalRealmCommand& cmd,const std::vector<LocalRealmPlayer*>& players,std::string& result) {
     auto& g=*impl_;const auto& c=content();
     // Takes a string rather than a literal: the merchant and trainer refusals
     // below have to name the item, profession or rank they are refusing, and a
     // refusal a player cannot act on is barely better than none.
     const auto reject=[&](const std::string& reason){result=reason;return false;};
+    if(std::any_of(g.pendingScriptCommits.begin(),g.pendingScriptCommits.end(),[&](const auto& pending){return pending.playerGuid==p.guid;}))
+        return reject("A scripted combat result is still being committed");
+    const auto commitScriptActions=[&](LocalRealmPlayer& candidate,const LocalScriptActionBatch& actions) {
+        if(actions.empty())return true;
+        std::vector<LocalRealmPlayer*> authority=players;bool replaced=false;
+        for(auto*& player:authority)if(player && player->guid==candidate.guid){player=&candidate;replaced=true;}
+        if(!replaced)authority.push_back(&candidate);
+        std::string why;
+        if(!executeScriptActionsScoped(actions,{&candidate},authority,why)){result=why;return false;}
+        return true;
+    };
+    // A creature's stun (UNIT_STATE_STUNNED): Spell::CheckCast answers
+    // SPELL_FAILED_STUNNED, and a stunned unit neither attacks nor interacts.
+    // A fear (UNIT_STATE_FLEEING) and a confuse answer SPELL_FAILED_FLEEING /
+    // _CONFUSED for the same actions; a silence refuses only a cast whose
+    // PreventionType is silence (SPELL_FAILED_SILENCED), a school lockout
+    // (Spell::EffectInterruptCast) the casts of that school (SPELL_FAILED_NOT_READY).
+    if(const auto control=localPlayerControl(p);control&0xdu) switch(cmd.action) {
+        case LocalAction::Attack: case LocalAction::CastSpell: case LocalAction::Loot: case LocalAction::UseItem:
+        case LocalAction::Interact: case LocalAction::EnterPortal: case LocalAction::TakeFlight: case LocalAction::BoardTransport:
+        case LocalAction::ReturnHome: case LocalAction::CraftItem: case LocalAction::EnterVehicle: case LocalAction::UseGameObject:
+            return reject(control&1u?"Can't do that while stunned":control&4u?"Can't do that while fleeing":"Can't do that while confused");
+        default: break;
+    }
+    if(cmd.action==LocalAction::CastSpell)if(const auto* casting=c.spell(cmd.id)) {
+        if((localPlayerControl(p)&16u)&&casting->preventionType==kLocalPreventionSilence)return reject("Can't do that while silenced");
+        if(localPlayerSchoolLocked(p,casting->schoolMask))return reject("Ability is not ready yet");
+    }
+    if(p.vehicleGuid && cmd.action!=LocalAction::ExitVehicle && cmd.action!=LocalAction::SwitchVehicleSeat && cmd.action!=LocalAction::VehicleAbility && cmd.action!=LocalAction::VehicleAim && cmd.action!=LocalAction::StopAttack &&
+       cmd.action!=LocalAction::CancelCast && cmd.action!=LocalAction::Respawn && cmd.action!=LocalAction::ReclaimCorpse &&
+       cmd.action!=LocalAction::AbandonQuest)
+        return reject("Leave the vehicle before using character actions");
+    if(cmd.action==LocalAction::UseGameObject) {
+        const auto* object=c.gameObject(cmd.id);
+        if(!object || cmd.target!=localGameObjectGuid(cmd.id))return reject("Unknown game object");
+        if(object->kind==LocalGameObjectKind::Chair)return reject("Chairs are used by your own character; move to sit");
+        if(!localGameObjectUsable(*object,p,c) || localCombatActive(p,g.npcs))return reject("Object is unavailable; check range, quest and character state");
+        if(!g.collision.isInLineOfSight(object->mapId,p.x,p.y,p.z+1,object->x,object->y,object->z+1,false))return reject("Object is out of sight");
+        auto* shared=const_cast<LocalGameObjectState*>(gameObjectState(object->id));
+        if(object->kind!=LocalGameObjectKind::Script) {
+            if(!shared || cmd.bid!=shared->revision)return reject("Object changed; try again");
+            if(shared->status==kLocalGameObjectDepleted)return reject("Object is depleted");
+            if(shared->status==kLocalGameObjectDormant)return reject("Object is not here right now");
+            if(object->kind==LocalGameObjectKind::Door ? (cmd.buyout>1 || cmd.buyout==shared->status) : cmd.buyout!=0)
+                return reject("Invalid object state request");
+        } else if(cmd.bid || cmd.buyout)return reject("Invalid scripted object request");
+        if(object->kind==LocalGameObjectKind::Script && std::none_of(c.scriptTriggers.begin(),c.scriptTriggers.end(),[&](const auto& t){
+            return t.kind==LocalScriptTriggerKind::ObjectUse && t.sourceId==object->id && localScriptTriggerMatches(p,t);
+        }))return reject("Object has no available action");
+        auto staged=p;
+        auto next=shared?*shared:LocalGameObjectState{};
+        if(object->kind==LocalGameObjectKind::Chest || object->kind==LocalGameObjectKind::Resource) {
+            for(const auto& item:object->loot)if(!addItem(staged,c,item.itemId,item.count))return reject("Inventory full; nothing was collected");
+            if(!object->lootTable.empty()) {
+                // One authority roll per use. Rejection below discards the
+                // staged character, so a full bag never consumes the node.
+                const auto rolled=localRollGameObjectLoot(object->lootTable,g.objectRandom,[&](uint32_t itemId){
+                    return localPlayerNeedsQuestItem(p,c,itemId);
+                });
+                for(const auto& item:rolled)if(!addItem(staged,c,item.itemId,item.count))return reject("Inventory full; nothing was collected");
+            }
+            if(uint64_t(staged.money)+object->money>1000000000ULL)return reject("Money limit; nothing was collected");
+            staged.money+=object->money;
+            if(object->persistent){next.status=kLocalGameObjectReady;next.remainingMs=0;}
+            else {next.status=kLocalGameObjectDepleted;next.remainingMs=object->respawnMs;}
+            // Gathering skill: Player::UpdateGatherSkill against the lock's
+            // required value, accumulated like crafting (localCraftSkillChance).
+            if(object->kind==LocalGameObjectKind::Resource && object->requiredSkillId) {
+                auto learned=std::find_if(staged.professions.begin(),staged.professions.end(),[&](const auto& skill){return skill.skillId==object->requiredSkillId;});
+                if(learned!=staged.professions.end() && learned->current<learned->max) {
+                    learned->progress=uint16_t(learned->progress+localGatherSkillChance(learned->current,object->requiredSkill));
+                    while(learned->progress>=1000 && learned->current<learned->max){learned->progress=uint16_t(learned->progress-1000);++learned->current;}
+                    if(learned->current>=learned->max)learned->progress=0;
+                }
+            }
+        } else if(object->kind==LocalGameObjectKind::Door) {
+            next.status=uint8_t(cmd.buyout);next.remainingMs=next.status?object->respawnMs:0;
+        }
+        LocalScriptActionBatch actions;
+        if(!applyScriptTriggers(staged,c,LocalScriptTriggerKind::ObjectUse,object->id,&actions))return reject("Object script could not be applied");
+        bool scriptsOk=false;questStatus(staged,c,false,&scriptsOk,&actions);
+        if(!scriptsOk)return reject("Quest completion script could not be applied");
+        if(!commitScriptActions(staged,actions))return false;
+        p=std::move(staged);
+        if(shared){next.revision=shared->revision==UINT32_MAX?1:shared->revision+1;*shared=next;}
+        result="Used "+object->name;return true;
+    }
     if(cmd.action==LocalAction::CancelStatAura){
         if(cmd.target||cmd.bid||!cmd.id)return reject("Invalid buff cancellation");
         const auto periods=meleePeriods(p,c);
@@ -2919,7 +4542,14 @@ bool LocalGameplay::execute(LocalRealmPlayer& p,const LocalRealmCommand& cmd,con
         const auto progress = std::find_if(p.quests.begin(), p.quests.end(), [&](const LocalQuestProgress& q) { return q.id == cmd.id; });
         if (progress == p.quests.end() || questRewarded(p, cmd.id)) return reject("Quest is not in your active log");
         const auto* def = c.quest(cmd.id);
-        p.quests.erase(progress);
+        auto staged=p;LocalScriptActionBatch actions;
+        if(const auto* route=c.escortRoute(staged.escort.routeId);route && route->questId==cmd.id) {
+            if(!applyScriptTriggers(staged,c,LocalScriptTriggerKind::EscortFail,route->id,&actions))return reject("Escort abandon script failed");
+            staged.escort={};
+        }
+        if(!applyScriptTriggers(staged,c,LocalScriptTriggerKind::QuestAbandon,cmd.id,&actions))return reject("Quest abandon script failed");
+        std::erase_if(staged.quests,[&](const auto& q){return q.id==cmd.id;});
+        if(!commitScriptActions(staged,actions))return false;p=std::move(staged);
         // Generic inventory items remain owned; abandoning only resets this
         // quest's tracked objective credit and never erases rewarded history.
         result = "Abandoned: " + (def ? def->title : std::to_string(cmd.id));
@@ -3004,6 +4634,85 @@ bool LocalGameplay::execute(LocalRealmPlayer& p,const LocalRealmCommand& cmd,con
         result = instanceId ? (targetMap && targetMap->instanceType == 2 ? "Entered raid instance: " : "Entered instance: ") + where
                             : "Travelled to " + where;
         return true;
+    }
+
+    // --- Scripted vehicles (5.4) -------------------------------------------
+    if (cmd.action == LocalAction::EnterVehicle) {
+        if (!cmd.target || cmd.id > 7 || cmd.bid || cmd.buyout) return reject("Invalid vehicle request");
+        if (p.dead || p.ghost || !p.health || p.flight.active || p.transportEntry || p.vehicleGuid || p.vehicleRecoveryId) return reject("Cannot enter a vehicle now");
+        if (p.attackTarget || p.castingSpellId || localCombatActive(p,g.npcs)) return reject("Leave combat before entering a vehicle");
+        auto* vehicle=g.npc(cmd.target);
+        if(!vehicle || !vehicle->vehicleId || !vehicle->vehicleSeatCount || vehicle->dead) return reject("No such vehicle");
+        if(isAggressive(p,*vehicle))return reject("That vehicle is hostile");
+        if(vehicle->mapId!=p.mapId || vehicle->instanceId!=p.instanceId || !localPhaseVisible(p.phaseMask,vehicle->requiredPhaseMask,vehicle->excludedPhaseMask))
+            return reject("That vehicle is elsewhere");
+        const uint8_t seat=uint8_t(cmd.id);
+        if(seat>=vehicle->vehicleSeatCount)return reject("No such vehicle seat");
+        for(const auto* other:players)if(other && other!=&p && other->vehicleGuid==vehicle->guid && other->vehicleSeat==seat)
+            return reject("That vehicle seat is occupied");
+        const float dx=p.x-vehicle->x,dy=p.y-vehicle->y,dz=p.z-vehicle->z;
+        if(!std::isfinite(dx*dx+dy*dy+dz*dz) || dx*dx+dy*dy+dz*dz>ServiceRange*ServiceRange)return reject("Move closer to the vehicle");
+        auto staged=p;
+        staged.vehicleGuid=vehicle->guid;staged.vehicleId=vehicle->vehicleId;staged.vehicleSeat=seat;
+        staged.vehicleControl=seat==vehicle->vehicleControllerSeat;staged.vehicleMoveAllowance=1.f;
+        const auto position=localVehicleSeatPosition(*vehicle,seat);
+        staged.x=position[0];staged.y=position[1];staged.z=position[2];staged.orientation=vehicle->orientation;
+        staged.attackTarget=0;staged.mountSpellId=0;++staged.positionRevision;
+        LocalScriptActionBatch actions;
+        if(!applyScriptTriggers(staged,c,LocalScriptTriggerKind::VehicleEnter,vehicle->vehicleId,&actions))return reject("Vehicle enter script failed");
+        if(!localPhaseVisible(staged.phaseMask,vehicle->requiredPhaseMask,vehicle->excludedPhaseMask))return reject("Vehicle entry script removes its phase");
+        bool scriptsOk=false;questStatus(staged,c,false,&scriptsOk,&actions);
+        if(!scriptsOk)return reject("Vehicle entry completion script failed");
+        if(!commitScriptActions(staged,actions))return false;
+        p=std::move(staged);finishLocalTeleport(p);
+        // 2.39 SmartAI::PassengerBoarded on the hull's own script.
+        if(auto* hull=g.npc(p.vehicleGuid))g.smartFireEvents(*hull,kLocalSmartEventPassengerBoarded,p.guid,players);
+        result=p.vehicleControl?"Entered vehicle (driver)":"Entered vehicle";return true;
+    }
+    if(cmd.action==LocalAction::VehicleAim) {
+        auto* hull=g.npc(p.vehicleGuid);const auto* kit=hull?c.vehicleKit(hull->vehicleId):nullptr;
+        if(!p.vehicleGuid || !validLocalVehicleState(p) || p.dead || p.ghost || !p.health || p.flight.active || p.transportEntry ||
+           !hull || hull->dead || !hull->health || !kit || cmd.target!=hull->guid || cmd.serviceNpcGuid!=hull->guid ||
+           hull->vehicleId!=p.vehicleId || cmd.id!=p.vehicleSeat || p.vehicleSeat>=hull->vehicleSeatCount ||
+           hull->mapId!=p.mapId || hull->instanceId!=p.instanceId ||
+           !localPhaseVisible(p.phaseMask,hull->requiredPhaseMask,hull->excludedPhaseMask))return reject("Vehicle aim seat is unavailable");
+        if(!std::any_of(kit->abilities.begin(),kit->abilities.end(),[&](const auto& a){return a.projectileSpeed>0 && (a.seatMask&(1u<<p.vehicleSeat));}))return reject("This seat has no aimed weapon");
+        if(!std::isfinite(cmd.vehicleAimYaw) || std::abs(cmd.vehicleAimYaw)>kLocalVehiclePi ||
+           !std::isfinite(cmd.vehicleAimPitch) || cmd.vehicleAimPitch<kit->minPitch || cmd.vehicleAimPitch>kit->maxPitch)return reject("Vehicle aim angle is outside its limits");
+        hull->vehicleAim[p.vehicleSeat]={cmd.vehicleAimYaw,cmd.vehicleAimPitch};result="Vehicle aim updated";return true;
+    }
+    if(cmd.action==LocalAction::VehicleAbility)return executeVehicleAbility(p,cmd,players,result);
+    if(cmd.action==LocalAction::SwitchVehicleSeat) {
+        auto* vehicle=g.npc(p.vehicleGuid);
+        if(!p.vehicleGuid || cmd.target!=p.vehicleGuid || !validLocalVehicleState(p) || !vehicle || vehicle->dead ||
+           !vehicle->health || vehicle->vehicleId!=p.vehicleId || vehicle->mapId!=p.mapId || vehicle->instanceId!=p.instanceId ||
+           !localPhaseVisible(p.phaseMask,vehicle->requiredPhaseMask,vehicle->excludedPhaseMask) ||
+           cmd.id>=vehicle->vehicleSeatCount || cmd.id==p.vehicleSeat || cmd.bid || cmd.buyout)
+            return reject("Vehicle seat is unavailable");
+        for(const auto* other:players)if(other && other->guid!=p.guid && other->vehicleGuid==p.vehicleGuid && other->vehicleSeat==cmd.id)
+            return reject("That vehicle seat is occupied");
+        std::erase_if(g.vehicleCasts,[&](const auto& cast){return cast.ownerGuid==p.guid;});
+        p.vehicleSeat=uint8_t(cmd.id);p.vehicleControl=p.vehicleSeat==vehicle->vehicleControllerSeat;
+        // Switching never grants fresh movement allowance.
+        p.vehicleMoveAllowance=0;++p.positionRevision;
+        const auto pos=localVehicleSeatPosition(*vehicle,p.vehicleSeat);p.x=pos[0];p.y=pos[1];p.z=pos[2];p.orientation=vehicle->orientation;
+        finishLocalTeleport(p);result=p.vehicleControl?"Switched to driver seat":"Switched vehicle seat";return true;
+    }
+    if (cmd.action == LocalAction::ExitVehicle) {
+        if(cmd.target || cmd.id || cmd.bid || cmd.buyout)return reject("Leaving a vehicle takes no argument");
+        if(!p.vehicleGuid || !p.vehicleId)return reject("You are not in a vehicle");
+        const uint32_t vehicleId=p.vehicleId;const uint64_t hullGuid=p.vehicleGuid;
+        auto staged=p;staged.vehicleGuid=0;staged.vehicleId=0;staged.vehicleSeat=0;staged.vehicleControl=false;staged.vehicleMoveAllowance=0;++staged.positionRevision;
+        LocalScriptActionBatch actions;
+        if(!applyScriptTriggers(staged,c,LocalScriptTriggerKind::VehicleExit,vehicleId,&actions))return reject("Vehicle exit script failed");
+        bool scriptsOk=false;questStatus(staged,c,false,&scriptsOk,&actions);
+        if(!scriptsOk)return reject("Vehicle exit completion script failed");
+        if(!commitScriptActions(staged,actions))return false;
+        p=std::move(staged);finishLocalTeleport(p);
+        std::erase_if(g.vehicleProjectiles,[&](const auto& shot){return shot.ownerGuid==p.guid;});
+        std::erase_if(g.vehicleCasts,[&](const auto& cast){return cast.ownerGuid==p.guid;});
+        if(auto* hull=g.npc(hullGuid))g.smartFireEvents(*hull,kLocalSmartEventPassengerRemoved,p.guid,players);
+        result="Left vehicle";return true;
     }
 
     // --- Travel ------------------------------------------------------------
@@ -3127,7 +4836,15 @@ bool LocalGameplay::execute(LocalRealmPlayer& p,const LocalRealmCommand& cmd,con
         const LocalItemDefinition itemDefinition = *loadedItem;
         const auto* item = &itemDefinition;
         if (buying) {
-            const auto price = localVendorBuyTotal(*item, count);
+            if (!localMeetsReputation(p, item->requiredReputationFaction, item->requiredReputationRank)) return reject("Requires higher reputation");
+            if (const auto* offer = localVendorOffer(merchant->entry, cmd.id); offer &&
+                !localMeetsReputation(p, offer->requiredReputationFaction, offer->requiredReputationRank)) return reject("Requires higher reputation");
+            uint8_t vendorRank = 0;
+            if (const auto* vendorDef = c.npc(merchant->entry)) {
+                if (const auto* vendorFaction = definition(impl_->factions, vendorDef->faction); vendorFaction && vendorFaction->faction)
+                    vendorRank = localReputationRank(p, vendorFaction->faction);
+            }
+            const auto price = localVendorDiscountedBuyTotal(*item, count, vendorRank);
             if (price > p.money) return reject("You cannot afford that");
             // Build the whole purchase before any of it is committed: a bag
             // that fills halfway through must not have taken the gold.
@@ -3271,30 +4988,12 @@ bool LocalGameplay::execute(LocalRealmPlayer& p,const LocalRealmCommand& cmd,con
             if(!source.itemId || source.itemId!=cmd.bid || source.count!=cmd.bankSourceCount || source.count<count ||
                destination.itemId!=cmd.durationMinutes || destination.count!=cmd.bankDestinationCount)
                 return reject("Those inventory stacks changed; pick up the item again");
-            const auto* definition=c.item(source.itemId);
-            if(!definition || !source.count || source.count>definition->stack)
-                return reject("Invalid backpack stack");
-            const auto stackLimit=definition->stack;
             const auto equipped=uint32_t(std::count(p.equipment.begin(),p.equipment.end(),source.itemId));
             if(totalItem(p,source.itemId)<equipped+count)return reject("Unequip that item before banking it");
-            if(!destination.itemId) {
-                if(destination.count || count>stackLimit)return reject("Invalid empty bank slot");
-                destination={source.itemId,uint16_t(count)};source.count-=uint16_t(count);
-            } else if(destination.itemId==source.itemId) {
-                if(!destination.count || destination.count>stackLimit || count>uint32_t(stackLimit-destination.count))
-                    return reject("That bank stack has no room for this quantity");
-                destination.count+=uint16_t(count);source.count-=uint16_t(count);
-            } else {
-                const auto* other=c.item(destination.itemId);
-                if(!other || !destination.count || destination.count>other->stack || count!=source.count)
-                    return reject("Only whole valid stacks can swap with the bank");
-                std::swap(source.itemId,destination.itemId);std::swap(source.count,destination.count);
-            }
+            if(!moveLocalInventoryStack(source,destination,uint16_t(count),c))
+                return reject("Only complete compatible instance stacks can swap; check the available stack space");
             if(!source.count)candidate.inventory.erase(candidate.inventory.begin()+sourceIndex);
         } else if (cmd.action == LocalAction::BankMove) {
-            // BankMove: id=source slot, buyout=destination slot, target=quantity,
-            // bid/durationMinutes=expected item IDs; counts travel in the action's
-            // four-byte extension. Validate both complete stacks before any edit.
             if (!cmd.id || cmd.id > kLocalBankSlots || !cmd.buyout || cmd.buyout > kLocalBankSlots || cmd.id == cmd.buyout)
                 return reject("Choose two different bank slots");
             auto& source = candidate.bank[cmd.id - 1];
@@ -3302,22 +5001,8 @@ bool LocalGameplay::execute(LocalRealmPlayer& p,const LocalRealmCommand& cmd,con
             if (!source.itemId || source.itemId != cmd.bid || source.count != cmd.bankSourceCount ||
                 destination.itemId != cmd.durationMinutes || destination.count != cmd.bankDestinationCount || source.count < count)
                 return reject("Those bank stacks changed; pick up the item again");
-            const auto* item = c.item(source.itemId);
-            if (!item || !source.count || source.count > item->stack) return reject("Invalid source bank stack");
-            if (!destination.itemId) {
-                destination = {source.itemId, uint16_t(count)};
-                source.count -= uint16_t(count); if (!source.count) source = {};
-            } else if (destination.itemId == source.itemId) {
-                if (!destination.count || destination.count > item->stack || count > uint32_t(item->stack - destination.count))
-                    return reject("That bank stack has no room for this quantity");
-                destination.count += uint16_t(count);
-                source.count -= uint16_t(count); if (!source.count) source = {};
-            } else {
-                const auto* other = c.item(destination.itemId);
-                if (!other || !destination.count || destination.count > other->stack || count != source.count)
-                    return reject("Only whole valid stacks can swap bank slots");
-                std::swap(source, destination);
-            }
+            if(!moveLocalInventoryStack(source,destination,uint16_t(count),c))
+                return reject("Only complete compatible instance stacks can swap bank slots");
         } else if (cmd.action == LocalAction::BankDeposit || cmd.action==LocalAction::BankDepositFromSlot) {
             const bool exact=cmd.action==LocalAction::BankDepositFromSlot;
             const auto index=cmd.id?localInventoryIndex(candidate,cmd.id-1):candidate.inventory.size();
@@ -3326,24 +5011,34 @@ bool LocalGameplay::execute(LocalRealmPlayer& p,const LocalRealmCommand& cmd,con
             const auto* item = c.item(itemId);
             const uint32_t equipped = uint32_t(std::count(p.equipment.begin(), p.equipment.end(), itemId));
             if (!item || totalItem(p, itemId) < equipped + count) return reject("Not enough unequipped items");
-            uint32_t left = count;
-            for (auto& slot : candidate.bank) if (slot.itemId == itemId) {
-                if (!slot.count || slot.count > item->stack) return reject("Invalid destination bank stack");
-                const auto moved = std::min(left, uint32_t(item->stack - slot.count));
-                slot.count += uint16_t(moved); left -= moved;
+            auto depositOne=[&](LocalItemStack& source,uint32_t amount)->bool {
+                uint32_t left=amount;
+                for(auto& slot:candidate.bank)if(left && slot.itemId && sameLocalItemInstance(slot,source)){
+                    const auto room=uint32_t(item->stack-slot.count);const auto moved=std::min(left,room);
+                    if(moved && !moveLocalInventoryStack(source,slot,uint16_t(moved),c))return false;left-=moved;
+                }
+                for(auto& slot:candidate.bank)if(left && !slot.itemId){
+                    const auto moved=std::min(left,uint32_t(item->stack));
+                    if(!moveLocalInventoryStack(source,slot,uint16_t(moved),c))return false;left-=moved;
+                }
+                return left==0;
+            };
+            uint32_t left=count;
+            if(exact){if(!depositOne(candidate.inventory[index],left))return reject("Bank full; no items were moved");left=0;}
+            else for(auto& source:candidate.inventory){
+                if(!left || source.itemId!=itemId)continue;
+                const uint32_t canMove=std::min<uint32_t>({left,source.count,totalItem(candidate,itemId)-equipped});
+                if(canMove && !depositOne(source,canMove))return reject("Bank full; no items were moved");
+                left-=canMove;
             }
-            for (auto& slot : candidate.bank) if (!slot.itemId && left) {
-                const auto moved = std::min(left, uint32_t(item->stack));
-                slot = {itemId, uint16_t(moved)}; left -= moved;
-            }
-            if (left) return reject("Bank full; no items were moved");
-            if(exact){candidate.inventory[index].count-=uint16_t(count);if(!candidate.inventory[index].count)candidate.inventory.erase(candidate.inventory.begin()+index);}
-            else removeItem(candidate, itemId, count);
+            if(left)return reject("Bank full; no items were moved");
+            std::erase_if(candidate.inventory,[](const auto& stack){return !stack.count;});
         } else {
             if (!cmd.id || cmd.id > kLocalBankSlots) return reject("Invalid bank slot");
             auto& slot = candidate.bank[cmd.id - 1];
             if (!slot.itemId || slot.itemId != cmd.bid || slot.count < count || (cmd.buyout && slot.count != cmd.buyout)) return reject("That bank stack changed; reopen the bank");
-            if (!addItem(candidate, c, slot.itemId, count)) return reject("Inventory full; no items were moved");
+            auto incoming=slot;incoming.count=uint16_t(count);incoming.bagSlot=255;
+            if (!addLocalInventoryStack(candidate,incoming,c)) return reject("Inventory full; no items were moved");
             slot.count -= uint16_t(count); if (!slot.count) slot = {};
         }
         p = std::move(candidate); questStatus(p, c);
@@ -3508,8 +5203,14 @@ bool LocalGameplay::execute(LocalRealmPlayer& p,const LocalRealmCommand& cmd,con
         return true;
     }
 
-    if(cmd.action==LocalAction::CancelCast) {if(!p.castingSpellId)return reject("No spell is being cast");clearCast(p,LocalCastStatus::Interrupted);result="Cast cancelled";return true;}
-    if(cmd.action==LocalAction::StopAttack){localStopRangedAuto(p);p.attackTarget=0;if(p.castingSpellId)clearCast(p,LocalCastStatus::Interrupted);result="Attack and casting stopped";return true;}
+    if(cmd.action==LocalAction::CancelCast) {
+        const auto vehicleCast=std::erase_if(g.vehicleCasts,[&](const auto& cast){return cast.ownerGuid==p.guid;});
+        if(!p.castingSpellId && !vehicleCast)return reject("No spell is being cast");
+        if(p.castingSpellId)clearCast(p,LocalCastStatus::Interrupted);result="Cast cancelled";return true;
+    }
+    if(cmd.action==LocalAction::StopAttack){localStopRangedAuto(p);p.attackTarget=0;
+        std::erase_if(g.vehicleCasts,[&](const auto& cast){return cast.ownerGuid==p.guid;});
+        if(p.castingSpellId)clearCast(p,LocalCastStatus::Interrupted);result="Attack and casting stopped";return true;}
     if(cmd.action==LocalAction::Attack) {
         if(!n||n->dead||!canAttack(p,*n))return reject("Choose a living enemy");
         if(distance2(p,*n)>30*30)return reject("Target is too far away");
@@ -3544,6 +5245,8 @@ bool LocalGameplay::execute(LocalRealmPlayer& p,const LocalRealmCommand& cmd,con
     }
     if(cmd.action==LocalAction::EquipItem) {
         if(inCombat() || p.castingSpellId || p.flight.active || p.transportEntry)return reject("Cannot change equipment now");
+        const auto* equipDef = c.item(cmd.id);
+        if (equipDef && !localMeetsReputation(p, equipDef->requiredReputationFaction, equipDef->requiredReputationRank)) return reject("Requires higher reputation");
         if (!equipItem(p, c, cmd.id, cmd.target)) return reject("Item cannot be equipped in that slot");
         stats(p,c,false);result="Equipped "+c.item(cmd.id)->name;return true;
     }
@@ -3556,6 +5259,7 @@ bool LocalGameplay::execute(LocalRealmPlayer& p,const LocalRealmCommand& cmd,con
         stats(p,c,false);result="Unequipped "+item->name;return true;
     }
     if(cmd.action==LocalAction::UseItem) {
+        if (const auto* useDef = c.item(cmd.id); useDef && !localMeetsReputation(p, useDef->requiredReputationFaction, useDef->requiredReputationRank)) return reject("Requires higher reputation");
         if(const auto* metadata=localAuctionMetadata(cmd.id);metadata && metadata->mountSpell) {
             if(cmd.target)return reject("Mount learning takes only an item");
             if(inCombat() || p.castingSpellId || p.flight.active || p.transportEntry)return reject("Learn mounts while stationary and out of combat");
@@ -3578,7 +5282,15 @@ bool LocalGameplay::execute(LocalRealmPlayer& p,const LocalRealmCommand& cmd,con
         if((!def->heal||p.health==p.maxHealth)&&(!restoredMana||p.mana==p.maxMana))return reject("Health/resource are already full");
         p.health=std::min(p.maxHealth,p.health+def->heal);p.mana=std::min(p.maxMana,p.mana+restoredMana);removeItem(p,cmd.id,1);stats(p,c,false);questStatus(p,c);result="Used "+def->name;return true;
     }
-    if(!n||distance2(p,*n)>8*8)return reject("Move within 8 yards of the target");
+    if(cmd.action==LocalAction::TextEmote) {
+        // 2.40 HandleTextEmoteOpcode: the emote reaches the targeted creature's
+        // AI (CreatureAI::ReceiveEmote -> SmartAI's RECEIVE_EMOTE rows).
+        if(!cmd.id||cmd.id>10000)return reject("Unknown emote");
+        if(n&&!n->dead&&npcVisibleTo(p,*n)&&n->mapId==p.mapId&&n->instanceId==p.instanceId&&distance2(p,*n)<=100*100)
+            g.smartFireEvents(*n,kLocalSmartEventReceiveEmote,p.guid,players,cmd.id);
+        result="Emote";return true;
+    }
+    if(!n||!npcVisibleTo(p,*n)||distance2(p,*n)>8*8)return reject("Move within 8 yards of the target");
     if(cmd.action==LocalAction::Loot) {
         if(!n->dead||!n->lootable)return reject("Nothing to loot");
         if(n->lootOwner!=p.guid)return reject("Loot is reserved for another player");
@@ -3614,11 +5326,38 @@ bool LocalGameplay::execute(LocalRealmPlayer& p,const LocalRealmCommand& cmd,con
     if(n->dead)return reject("Target is dead");
     if ((cmd.action == LocalAction::Interact || cmd.action == LocalAction::AcceptQuest || cmd.action == LocalAction::TurnInQuest) && isAggressive(p, *n))
         return reject("This character is hostile to your race");
+    if (cmd.action == LocalAction::Interact || cmd.action == LocalAction::AcceptQuest || cmd.action == LocalAction::TurnInQuest) {
+        if (const auto* npcDef = c.npc(n->entry); npcDef &&
+            !localMeetsReputation(p, npcDef->requiredReputationFaction, npcDef->requiredReputationRank))
+            return reject("Requires higher reputation");
+    }
     if(cmd.action==LocalAction::Interact) {
-        objectiveCredit(p,c,LocalQuestObjective::Type::Talk,n->entry);result="Speaking with "+n->name;return true;
+        auto candidate=p;LocalScriptActionBatch actions;const auto npcName=n->name;
+        if(!applyScriptTriggers(candidate,c,LocalScriptTriggerKind::NpcTalk,n->entry,&actions))return reject("Script transition could not be applied");
+        objectiveCredit(candidate,c,LocalQuestObjective::Type::Talk,n->entry,&actions);
+        if(!commitScriptActions(candidate,actions))return false;
+        p=std::move(candidate);result="Speaking with "+npcName;
+        // 2.40 HandleGossipHelloOpcode: the creature's gossip page and its
+        // GOSSIP_HELLO rows; a patrolling creature's home lands where it stands.
+        if(auto* talker=g.npc(n->guid)) {
+            if(talker->npcDefaultMotion==2){talker->homeX=talker->x;talker->homeY=talker->y;talker->homeZ=talker->z;}
+            g.gossipHello(p,*talker,players);
+        }
+        return true;
+    }
+    if(cmd.action==LocalAction::GossipSelect) {
+        // 2.40 HandleGossipSelectOptionOpcode: `bid` carries the menu, `id` the option.
+        auto* talker=g.npc(n->guid);if(!talker)return reject("No conversation with this character");
+        std::string why;
+        if(!g.gossipSelect(p,*talker,cmd.bid,cmd.id,players,why))return reject(why);
+        questStatus(p,c);result="Gossip option "+std::to_string(cmd.id);return true;
     }
     if(cmd.action==LocalAction::AcceptQuest) {
-        const auto* def=c.quest(cmd.id);if(!def||def->giverEntry!=n->entry||!n->questGiver)return reject("This character does not offer that quest");
+        const auto* def=c.quest(cmd.id);
+        // 2.40: a quest a script offered from this creature (OFFER_QUEST) is
+        // accepted from it as from its giver.
+        const bool offered=def&&p.gossip.open()&&p.gossip.npcGuid==n->guid&&p.gossip.offeredQuestId==cmd.id;
+        if(!def||(!offered&&(def->giverEntry!=n->entry||!n->questGiver)))return reject("This character does not offer that quest");
         // Professions exist now, so a skill-gated quest is answered rather than
         // refused wholesale. The catalog's own importer still drops quests with
         // a requiredskillid, so this only bites content that carries them.
@@ -3629,14 +5368,24 @@ bool LocalGameplay::execute(LocalRealmPlayer& p,const LocalRealmCommand& cmd,con
             if (!line) return reject("This quest requires a skill this realm does not model");
             if (known == p.professions.end()) return reject("This quest requires " + line->name);
         }
-        if (def->allowableRaces && !(def->allowableRaces & (1u << (p.race - 1)))) return reject("This quest is not offered to your race");
-        if (def->allowableClasses && !(def->allowableClasses & (1u << (p.classId - 1)))) return reject("This quest is not offered to your class");
-        if(p.level<def->minLevel)return reject("Level too low for this quest");
-        if (questRewarded(p, cmd.id)) return reject("Quest reward already claimed");
-        for(const auto& q:p.quests)if(q.id==cmd.id)return reject("Quest already accepted");
-        if(p.quests.size()>=MaxQuests)return reject("Active quest log is full (32); turn in or abandon a quest");
-        if(def->prerequisite && !questRewarded(p, def->prerequisite)) return reject("Complete the prerequisite quest first");
-        LocalQuestProgress q;q.id=cmd.id;q.progress.resize(def->objectives.size(),0);p.quests.push_back(std::move(q));questStatus(p,c);result="Accepted: "+def->title;return true;
+        if(const auto* reason=localQuestAcceptanceError(p,*def))return reject(reason);
+        auto candidate=p;LocalScriptActionBatch actions;LocalQuestProgress q;q.id=cmd.id;q.progress.resize(def->objectives.size(),0);candidate.quests.push_back(std::move(q));
+        if(!applyScriptTriggers(candidate,c,LocalScriptTriggerKind::QuestAccept,cmd.id,&actions))return reject("Quest script transition could not be applied");
+        for(const auto& route:c.escortRoutes)if(route.questId==cmd.id) {
+            if(p.escort.routeId || p.instanceId || n->guid!=(NpcPrefix|route.spawnId) || p.flight.active || p.transportEntry)
+                return reject("Escort requires its open-world guide and no active escort");
+            for(const auto* owner:players)if(owner && owner->guid!=p.guid && owner->escort.routeId==route.id)
+                return reject("This guide is already escorting another player");
+            candidate.escort={route.id,0,0,route.timeoutMs,n->x,n->y,n->z};
+            candidate.escort.guideHealth=n->health;
+            if(!applyScriptTriggers(candidate,c,LocalScriptTriggerKind::EscortStart,route.id,&actions))return reject("Escort start script failed");
+        }
+        bool scriptsOk=false;questStatus(candidate,c,false,&scriptsOk,&actions);
+        if(!scriptsOk)return reject("Quest completion script failed");
+        if(!commitScriptActions(candidate,actions))return false;
+        p=std::move(candidate);result="Accepted: "+def->title;
+        if(auto* giver=g.npc(n->guid)){g.creatureTalk(*giver,LocalCreatureTalkEvent::QuestAccept,&p,cmd.id,players);g.smartFireEvents(*giver,kLocalSmartEventAcceptedQuest,p.guid,players,cmd.id);}
+        return true;
     }
     if(cmd.action==LocalAction::TurnInQuest) {
         const auto* def=c.quest(cmd.id);if(!def||def->turnInEntry!=n->entry||!n->questGiver)return reject("Wrong quest recipient");
@@ -3646,8 +5395,8 @@ bool LocalGameplay::execute(LocalRealmPlayer& p,const LocalRealmCommand& cmd,con
         if(def->rewardChoices.empty()?cmd.bid!=0:cmd.bid==0 || cmd.bid>def->rewardChoices.size())
             return reject("Choose a valid quest reward before completing this quest");
         if (questRewarded(p, cmd.id)) return reject("Quest reward already claimed");
-        auto candidate=p;
-        questStatus(candidate,c);
+        auto candidate=p;LocalScriptActionBatch actions;
+        questStatus(candidate,c,false,nullptr,&actions);
         const auto progress=std::find_if(candidate.quests.begin(),candidate.quests.end(),[&](const LocalQuestProgress& q){return q.id==cmd.id;});
         if(progress==candidate.quests.end()||progress->status!=LocalQuestStatus::Complete)return reject("Quest objectives are not complete, or reward already claimed");
         if (candidate.completedQuestIds.size() >= MaxCompletedQuests) return reject("Completed quest history storage limit reached; reward remains unclaimed");
@@ -3663,10 +5412,24 @@ bool LocalGameplay::execute(LocalRealmPlayer& p,const LocalRealmCommand& cmd,con
             if(!addItem(candidate,c,r.itemId,r.count))return reject("Inventory full or reward unavailable; entire quest reward remains unclaimed");
         }
         candidate.money+=def->money;experience(candidate,c,def->xp);
+        for (const auto& reward : def->reputationRewards) {
+            int32_t delta = reward.overrideValue ? reward.overrideValue / 100 : 0;
+            if (!delta && reward.valueId && impl_->questRepRowsLoaded) {
+                const auto field = unsigned(std::abs(reward.valueId));
+                if (field < 10) delta = reward.valueId < 0 ? impl_->questRepLosses[field] : impl_->questRepGains[field];
+            }
+            if (reward.factionId && delta) localChangeReputation(candidate, reward.factionId, delta);
+        }
+        if(!applyScriptTriggers(candidate,c,LocalScriptTriggerKind::QuestReward,cmd.id,&actions))
+            return reject("Quest reward script transition could not be applied");
         candidate.quests.erase(progress);
         candidate.completedQuestIds.insert(std::lower_bound(candidate.completedQuestIds.begin(), candidate.completedQuestIds.end(), cmd.id), cmd.id);
-        p=std::move(candidate);stats(p,c,false);questStatus(p,c);result="Quest rewarded: "+def->title;
-        LOG_INFO("[LOCAL_QUEST_REWARD] applied player=",p.guid," quest=",cmd.id," choice=",cmd.bid," fixed=",localQuestRewardCount(*def));return true;
+        stats(candidate,c,false);questStatus(candidate,c,false,nullptr,&actions);
+        if(!commitScriptActions(candidate,actions))return false;
+        p=std::move(candidate);result="Quest rewarded: "+def->title;
+        LOG_INFO("[LOCAL_QUEST_REWARD] applied player=",p.guid," quest=",cmd.id," choice=",cmd.bid," fixed=",localQuestRewardCount(*def));
+        if(auto* ender=g.npc(n->guid)){g.creatureTalk(*ender,LocalCreatureTalkEvent::QuestReward,&p,cmd.id,players);g.smartFireEvents(*ender,kLocalSmartEventRewardQuest,p.guid,players,cmd.id);}
+        return true;
     }
     return reject("Unsupported local action");
 }
@@ -3705,6 +5468,8 @@ bool LocalGameplay::executeCastSpell(LocalRealmPlayer& p,const LocalRealmCommand
     if((d->meleeSpecialProfile||d->stormstrikeProfile)&&!validEquipment(p,c))return reject("Invalid equipped weapon state");
     if(!localSpellEquipmentReady(p,c,*d))return reject("Required spell equipment is not equipped");
     if(!d->maxAuraStacks)return reject("Invalid aura stack limit");
+    const auto talentedDuration=localSpellDuration(p,c,*d);
+    const auto talentedGlobalCooldown=localSpellGlobalCooldown(p,c,*d);
     if(!finishing&&p.castingSpellId)return reject("A spell is already being cast; move or stop to cancel");
     if(!finishing&&p.globalCooldownMs)return reject("Global cooldown is active");
     if(d->allowableClasses&&!(d->allowableClasses&(1u<<(p.classId-1))))return reject("This ability is not available to your class");
@@ -3908,7 +5673,7 @@ bool LocalGameplay::executeCastSpell(LocalRealmPlayer& p,const LocalRealmCommand
     };
     size_t buffSlot=buff?healed->statAuras.size():0;
     if(buff){
-        if(!d->durationMs||d->durationMs>3600000)return reject("Invalid buff duration");
+        if(!talentedDuration||talentedDuration>3600000)return reject("Invalid buff duration");
         for(const auto& a:healed->statAuras) {
             const auto* old=c.spell(a.spellId);
             if(!old||a.spellId==d->id)continue;
@@ -3926,7 +5691,7 @@ bool LocalGameplay::executeCastSpell(LocalRealmPlayer& p,const LocalRealmCommand
     }
     size_t damageSlot=g.periodicDamage.size();
     if(d->periodicDamage){
-        if(!d->durationMs||d->durationMs>600000||!d->periodicIntervalMs||d->periodicIntervalMs>d->durationMs)
+        if(!talentedDuration||talentedDuration>600000||!d->periodicIntervalMs||d->periodicIntervalMs>talentedDuration)
             return reject("Invalid periodic damage duration or interval");
         size_t onTarget=0;
         for(const auto& a:g.periodicDamage)if(a.target==cmd.target)++onTarget;
@@ -3937,7 +5702,7 @@ bool LocalGameplay::executeCastSpell(LocalRealmPlayer& p,const LocalRealmCommand
     }
     size_t healSlot=g.periodicHeals.size();
     if(d->periodicHeal) {
-        if(!d->durationMs||d->durationMs>600000||!d->periodicIntervalMs||d->periodicIntervalMs>d->durationMs)
+        if(!talentedDuration||talentedDuration>600000||!d->periodicIntervalMs||d->periodicIntervalMs>talentedDuration)
             return reject("Invalid periodic healing duration or interval");
         size_t onTarget=0;
         for(const auto& a:g.periodicHeals)if(a.target==healed->guid)++onTarget;
@@ -3949,7 +5714,7 @@ bool LocalGameplay::executeCastSpell(LocalRealmPlayer& p,const LocalRealmCommand
     }
     size_t controlSlot=n?n->controls.size():0;
     if(d->controlProfile) {
-        if(!n||n->transportEntry||!d->durationMs||d->durationMs>600000)
+        if(!n||n->transportEntry||!talentedDuration||talentedDuration>600000)
             return reject("Invalid NPC control target or duration");
         // No caster filter: a second caster's rank of the same control replaces
         // the first caster's (CanStackWith step b.9 exempts only periodic,
@@ -3961,7 +5726,7 @@ bool LocalGameplay::executeCastSpell(LocalRealmPlayer& p,const LocalRealmCommand
     }
     size_t snareSlot=n?n->snares.size():0;
     if(d->snarePercent) {
-        if(!n||n->transportEntry||!d->durationMs||d->durationMs>600000||d->snarePercent>99)
+        if(!n||n->transportEntry||!talentedDuration||talentedDuration>600000||d->snarePercent>99)
             return reject("Invalid NPC snare target or duration");
         snareSlot=stackSlot(n->snares.size(),[&](size_t i){return n->snares[i].spellId;},
             [&](size_t i){return n->snares[i].casterGuid;},[](size_t){return true;});
@@ -4016,14 +5781,17 @@ bool LocalGameplay::executeCastSpell(LocalRealmPlayer& p,const LocalRealmCommand
     if(!localArcaneBlastCanApply(p,c,*d))return reject("No slot for the Arcane Blast effect");
     const bool reserveArcaneAura=d->arcaneBlastProfile==1&&std::none_of(p.statAuras.begin(),p.statAuras.end(),
         [](const auto& a){return a.spellId==36032&&a.remainingMs;});
-    const auto castTime=localSpellCastTime(p,c,*d);
+    // SpellInfo::CalcCastTime: the talent's SPELLMOD_CASTING_TIME, then
+    // Unit::ModSpellCastTime's UNIT_MOD_CAST_SPEED for a non-ability spell
+    // (a creature's MOD_CASTING_SPEED_NOT_STACK view, 2.37).
+    const auto castTime=d->sourceAbilityOrTrade?localSpellCastTime(p,c,*d):localPlayerCastTimeModified(p,localSpellCastTime(p,c,*d));
     if(!finishing&&castTime) {
         prepareLocalSpellCost(p,cost,appliedCostAura);
         p.castingSpellId=d->id;p.castTarget=cmd.target;p.castRemainingMs=p.castTotalMs=castTime;
         if(!++p.castSequence)++p.castSequence;
         p.castPushbackMs=0;p.castPushbackCount=0;
         p.castOriginX=p.x;p.castOriginY=p.y;p.castOriginZ=p.z;p.castOriginMap=p.mapId;p.castOriginInstance=p.instanceId;
-        p.castStatus=LocalCastStatus::Casting;p.globalCooldownMs=d->globalCooldownMs;
+        p.castStatus=LocalCastStatus::Casting;p.globalCooldownMs=talentedGlobalCooldown;
         result="Casting "+d->name;return true;
     }
     // Secure an effect slot before resources or direct effects commit. Casts
@@ -4071,11 +5839,11 @@ bool LocalGameplay::executeCastSpell(LocalRealmPlayer& p,const LocalRealmCommand
     // cost is paid below exactly as for a miss: there is no SPELL_FAILED_IMMUNE.
     const auto* targetDefinition=n?c.npc(n->entry):nullptr;
     const bool hostileCast=n&&!n->dead&&(d->damage||d->periodicDamage||d->snarePercent||d->controlProfile||meleeSpecial||d->dispelProfile);
-    const bool templateImmune=hostileCast&&targetDefinition&&localNpcImmuneToSpell(*targetDefinition,*d,false);
+    const bool templateImmune=hostileCast&&targetDefinition&&localNpcImmuneToSpell(*targetDefinition,*n,*d,false);
     // Spell.cpp:2413-2416: the effect slots the template strips from a cast
     // that still lands. Bit k is column 71+k; the snare rides slot 0 on both
     // Frostbolt and Frost Shock, the periodic and direct amounts name theirs.
-    const uint8_t strippedEffects=hostileCast&&targetDefinition&&!templateImmune?localNpcStrippedEffects(*targetDefinition,*d):0;
+    const uint8_t strippedEffects=hostileCast&&targetDefinition&&!templateImmune?localNpcStrippedEffects(localNpcImmunitySet(*targetDefinition,*n).mechanicsMask,*d):0;
     if(templateImmune)LOG_INFO("[LOCAL_IMMUNE] npc=",n->guid," entry=",n->entry," spell=",d->id," mechanic=",unsigned(d->mechanic),
                                " school=",d->schoolMask," set school=",unsigned(targetDefinition->immuneSchoolMask));
     else if(strippedEffects)LOG_INFO("[LOCAL_IMMUNE] stripped npc=",n->guid," entry=",n->entry," spell=",d->id," effects=",unsigned(strippedEffects));
@@ -4100,7 +5868,7 @@ bool LocalGameplay::executeCastSpell(LocalRealmPlayer& p,const LocalRealmCommand
     // `triggered` is false because no proc in this build applies a control, so
     // every admitted control is a deliberate cast.
     auto diminishGroup=LocalDiminishingGroup::None;
-    uint32_t diminishedDurationMs=d->durationMs;
+    uint32_t diminishedDurationMs=talentedDuration;
     if(d->controlProfile&&n&&!n->dead&&!localOutcomeNullifiesDamage(meleeOutcome)) {
         diminishGroup=localDiminishingGroupForSpell(*d,false);
         const auto level=localDiminishingRead(*n,diminishGroup,g.authorityClockMs);
@@ -4133,7 +5901,7 @@ bool LocalGameplay::executeCastSpell(LocalRealmPlayer& p,const LocalRealmCommand
             LOG_INFO("[LOCAL_DR] immune npc=",n->guid," spell=",d->id," group=",int(diminishGroup));
         } else if(level)
             LOG_INFO("[LOCAL_DR] npc=",n->guid," spell=",d->id," group=",int(diminishGroup),
-                     " level=",int(level)," duration=",diminishedDurationMs," of ",d->durationMs);
+                     " level=",int(level)," duration=",diminishedDurationMs," of ",talentedDuration);
     }
     // Melee avoidance alone reduces a special's resource cost; a missed magic
     // spell pays in full, so this predicate stays melee-only on purpose.
@@ -4164,7 +5932,7 @@ bool LocalGameplay::executeCastSpell(LocalRealmPlayer& p,const LocalRealmCommand
     consumeLocalRunes(p.runeCooldownMs,*runeMask);
     if(p.resourceType==LocalResourceType::RunicPower)
         p.mana=uint32_t(std::min(uint64_t(p.maxMana),uint64_t(p.mana)+d->runicPowerGain));
-    if(!finishing)p.globalCooldownMs=d->globalCooldownMs;
+    if(!finishing)p.globalCooldownMs=talentedGlobalCooldown;
     if(cooldown) {
         if(cooldownSlot<p.cooldowns.size())p.cooldowns[cooldownSlot]={cmd.id,cooldown};
         else p.cooldowns.push_back({cmd.id,cooldown});
@@ -4209,7 +5977,7 @@ bool LocalGameplay::executeCastSpell(LocalRealmPlayer& p,const LocalRealmCommand
                 const uint64_t share=thousandths/chainCount;
                 for(size_t i=0;i<chainCount;++i) {
                     auto* target=chainNpcs[i];if(!target||target->dead)continue;
-                    if(i==0?nullified:[&]{const auto* def=c.npc(target->entry);return def&&localNpcImmuneToSpell(*def,*d,false);}())continue;
+                    if(i==0?nullified:[&]{const auto* def=c.npc(target->entry);return def&&localNpcImmuneToSpell(*def,*target,*d,false);}())continue;
                     g.addThreat(*target,p.guid,share);g.selectThreatTarget(*target,players);
                 }
             }
@@ -4298,7 +6066,7 @@ bool LocalGameplay::executeCastSpell(LocalRealmPlayer& p,const LocalRealmCommand
             // was judged above, the rest are judged here.
             if(i) {
                 const auto* chainDefinition=c.npc(chainNpcs[i]->entry);
-                if(chainDefinition&&localNpcImmuneToSpell(*chainDefinition,*d,false)) {
+                if(chainDefinition&&localNpcImmuneToSpell(*chainDefinition,*chainNpcs[i],*d,false)) {
                     g.damageNpc(*chainNpcs[i],p,0,players,true,d->id,false,0,nullptr,LocalMeleeOutcome::Immune);
                     amount=uint32_t(uint64_t(amount)*d->chainMultiplierPermille/1000);continue;
                 }
@@ -4331,7 +6099,7 @@ bool LocalGameplay::executeCastSpell(LocalRealmPlayer& p,const LocalRealmCommand
         LOG_INFO("[LOCAL_DISPEL] npc=",n->guid," spell=",d->id," attempts=",unsigned(d->dispelAttempts)," candidates=",candidates);
     }
     if(d->snarePercent&&!n->dead&&!(strippedEffects&1u)) {
-        LocalNpcSnare a{d->id,d->durationMs,p.guid,d->snarePercent,p.positionRevision};
+        LocalNpcSnare a{d->id,talentedDuration,p.guid,d->snarePercent,p.positionRevision};
         if(snareSlot<n->snares.size())n->snares[snareSlot]=a;else{snareSlot=n->snares.size();n->snares.push_back(a);}
         sweepNoStack(n->snares,snareSlot,[&](size_t i){return n->snares[i].spellId;},
             [&](size_t i){return n->snares[i].casterGuid;},[](size_t){return true;},[](size_t){});
@@ -4378,7 +6146,7 @@ bool LocalGameplay::executeCastSpell(LocalRealmPlayer& p,const LocalRealmCommand
             auto* recipient=chainPlayers[i];const auto before=recipient->health;
             const bool critical=g.rollSpellCritical(p,*d);
             parentTargetCritical=parentTargetCritical||critical;
-            const auto healedAmount=critical?localMagicCriticalAmount(amount):amount;
+            const auto healedAmount=localPlayerHealingTaken(*recipient,critical?localMagicCriticalAmount(amount):amount);
             recipient->health=uint32_t(std::min(uint64_t(recipient->maxHealth),uint64_t(recipient->health)+healedAmount));
             g.emitCombatEvent({0,p.guid,recipient->guid,d->id,p.mapId,p.instanceId,healedAmount,recipient->health-before,0,
                 LocalCombatEventKind::DirectHeal,false,0,critical?LocalMeleeOutcome::Critical:LocalMeleeOutcome::Hit},players);
@@ -4386,7 +6154,7 @@ bool LocalGameplay::executeCastSpell(LocalRealmPlayer& p,const LocalRealmCommand
         }
     }
     if(d->periodicHeal) {
-        Impl::PeriodicHeal aura{p.guid,healed->guid,d->id,d->durationMs,d->periodicIntervalMs,d->periodicIntervalMs,
+        Impl::PeriodicHeal aura{p.guid,healed->guid,d->id,talentedDuration,d->periodicIntervalMs,d->periodicIntervalMs,
             localSpellAmountAfterTalents(p,c,*d,localSpellEffectAmountAfterTalents(p,c,*d,scaledSpellAmount(p,*d,d->periodicHeal,d->periodicHealMax,d->periodicHealPerLevel),true),true),p.mapId,p.instanceId};
         aura.critChanceBasisPoints=localPeriodicCritChanceBasisPoints(&p,c,*d);
         if(healSlot<g.periodicHeals.size())
@@ -4403,7 +6171,7 @@ bool LocalGameplay::executeCastSpell(LocalRealmPlayer& p,const LocalRealmCommand
         LOG_INFO("[LOCAL_IMMUNE] periodic stripped npc=",n->guid," spell=",d->id," slot=",unsigned(d->periodicEffectSlot));
     if(d->periodicDamage&&n&&!n->dead&&!periodicStripped) {
 
-        Impl::PeriodicDamage aura{p.guid,n->guid,d->id,d->durationMs,d->periodicIntervalMs,d->periodicIntervalMs,localSpellAmountAfterTalents(p,c,*d,localComboAmount(p,c,*d,localSpellEffectAmountAfterTalents(p,c,*d,scaledSpellAmount(p,*d,d->periodicDamage,d->periodicDamageMax,d->periodicDamagePerLevel),true,spentCombo),spentCombo,0,true,true),true),p.mapId,p.instanceId};
+        Impl::PeriodicDamage aura{p.guid,n->guid,d->id,talentedDuration,d->periodicIntervalMs,d->periodicIntervalMs,localSpellAmountAfterTalents(p,c,*d,localComboAmount(p,c,*d,localSpellEffectAmountAfterTalents(p,c,*d,scaledSpellAmount(p,*d,d->periodicDamage,d->periodicDamageMax,d->periodicDamagePerLevel),true,spentCombo),spentCombo,0,true,true),true),p.mapId,p.instanceId};
         if(d->schoolMask&1)aura.damage=localPhysicalDamageAfterTalents(p,c,aura.damage);
         aura.targetEpoch=n->combatEpoch;
         aura.critChanceBasisPoints=localPeriodicCritChanceBasisPoints(&p,c,*d);
@@ -4423,7 +6191,7 @@ bool LocalGameplay::executeCastSpell(LocalRealmPlayer& p,const LocalRealmCommand
             [](size_t){return true;});
         if(buffSlot==healed->statAuras.size())for(size_t i=0;i<healed->statAuras.size();++i)
             if(!healed->statAuras[i].remainingMs){buffSlot=i;break;}
-        LocalStatAura a{d->id,d->durationMs,healed->mapId,healed->instanceId,p.guid,d->buffAbsorb};
+        LocalStatAura a{d->id,talentedDuration,healed->mapId,healed->instanceId,p.guid,d->buffAbsorb};
         if(d->buffArmor)a.buffArmorSnapshot=uint32_t(std::min(uint64_t(1000000),
             uint64_t(d->buffArmor)*uint32_t(100+localTalentCastModifier(p,c,*d,8,true))/100));
         if(buffSlot<healed->statAuras.size())
@@ -4523,8 +6291,57 @@ void LocalGameplay::advanceTransportTime(double seconds) {
     if (std::isfinite(seconds) && seconds>=0) setTransportTime(impl_->transportClock+seconds);
 }
 
+bool LocalGameplay::detachVehicle(LocalRealmPlayer& p) {return detachVehicleScoped(p,{});}
+bool LocalGameplay::detachVehicleScoped(LocalRealmPlayer& p,const std::vector<LocalRealmPlayer*>& players) {
+    std::erase_if(impl_->vehicleProjectiles,[&](const auto& shot){return shot.ownerGuid==p.guid;});
+    std::erase_if(impl_->vehicleCasts,[&](const auto& cast){return cast.ownerGuid==p.guid;});
+    if(!p.vehicleGuid)return false;
+    const auto vehicleId=p.vehicleId;
+    auto detached=p;detached.vehicleGuid=0;detached.vehicleId=0;detached.vehicleSeat=0;detached.vehicleControl=false;detached.vehicleMoveAllowance=0;
+    ++detached.positionRevision;finishLocalTeleport(detached);
+    // A failed content action must never strand a disconnected/dead passenger.
+    auto candidate=detached;LocalScriptActionBatch actions;
+    bool scriptsOk=applyScriptTriggers(candidate,content(),LocalScriptTriggerKind::VehicleExit,vehicleId,&actions);
+    if(scriptsOk)questStatus(candidate,content(),false,&scriptsOk,&actions);
+    std::vector<LocalRealmPlayer*> authority=players;
+    for(auto*& current:authority)if(current&&current->guid==candidate.guid)current=&candidate;
+    std::string why;
+    if(scriptsOk && (actions.empty() || (!authority.empty() && executeScriptActionsScoped(actions,{&candidate},authority,why)))) {
+        candidate.vehicleRecoveryId=0;p=std::move(candidate);
+    } else {
+        detached.vehicleRecoveryId=vehicleId;p=std::move(detached);
+        LOG_ERROR("[LOCAL_VEHICLE] forced exit script failed player=",p.guid," vehicle=",vehicleId);
+    }
+    return true;
+}
+
+bool LocalGameplay::moveVehicle(LocalRealmPlayer& p,uint32_t map,float x,float y,float z,float orientation,uint8_t movement) {
+    auto* n=impl_->npc(p.vehicleGuid);
+    if(!validLocalVehicleState(p) || !p.vehicleGuid || !p.vehicleControl || !n || n->dead || !n->health ||
+       n->vehicleId!=p.vehicleId || p.vehicleSeat!=n->vehicleControllerSeat || p.vehicleSeat>=n->vehicleSeatCount ||
+       map!=p.mapId || n->mapId!=p.mapId || n->instanceId!=p.instanceId ||
+       !localPhaseVisible(p.phaseMask,n->requiredPhaseMask,n->excludedPhaseMask) ||
+       !std::isfinite(x)||!std::isfinite(y)||!std::isfinite(z)||!std::isfinite(orientation)||
+       std::abs(x)>100000 || std::abs(y)>100000 || std::abs(z)>100000 || (movement & ~kLocalMovementMask))return false;
+    const float dx=x-n->x,dy=y-n->y,dz=z-n->z;
+    const float distance=std::sqrt(dx*dx+dy*dy+dz*dz);
+    if(!std::isfinite(distance)||distance>p.vehicleMoveAllowance+0.0001f)return false;
+    p.vehicleMoveAllowance=std::max(0.f,p.vehicleMoveAllowance-distance);
+    const auto oldOrientation=n->orientation;
+    n->x=p.x=x;n->y=p.y=y;n->z=p.z=z;
+    n->orientation=p.orientation=std::remainder(orientation,6.28318530718f);
+    if(distance>0.000001f || std::abs(std::remainder(n->orientation-oldOrientation,2*kLocalVehiclePi))>.0001f)
+        std::erase_if(impl_->vehicleCasts,[&](const auto& cast){
+            const auto* ability=localVehicleCastAbility(cast,content());
+            return cast.sourceGuid==n->guid && ability && ability->interruptOnMove;
+        });
+    p.movementState=0;p.falling=false;p.fallStartZ=z;p.fallRevision=p.positionRevision;
+    return true;
+}
+
 bool LocalGameplay::tick(float seconds,const std::vector<LocalRealmPlayer*>& players) {
     if(!std::isfinite(seconds)||seconds<0)return false;
+    if(!impl_->canAttackFn)impl_->canAttackFn=[this](const LocalRealmPlayer& p,const LocalRealmNpc& n){return canAttack(p,n);};
     // An offline looter cannot hold the group's corpse forever. Fail over only
     // to the original death-time cohort, never to a late joiner or a bystander.
     bool reassignedLoot=false;
@@ -4604,7 +6421,101 @@ bool LocalGameplay::tick(float seconds,const std::vector<LocalRealmPlayer*>& pla
     const double milliseconds=double(dt)*1000.0+g.combatMillisecondRemainder;
     const uint32_t elapsedMs=uint32_t(milliseconds);
     g.combatMillisecondRemainder=milliseconds-elapsedMs;
+    if(elapsedMs) {
+        // 2.38: summons that left (TempSummon::UnSummon) are pruned here, before
+        // anything of this tick holds a reference into the roster.
+        std::erase_if(g.npcs,[](const auto& npc){return npc.npcUnsummoned;});
+        std::vector<uint64_t> expiredActors;
+        for(auto& npc:g.npcs)if(npc.scriptActorId) {
+            npc.scriptLifetimeMs-=std::min(npc.scriptLifetimeMs,elapsedMs);
+            if(!npc.scriptLifetimeMs)expiredActors.push_back(npc.guid);
+        }
+        std::sort(expiredActors.begin(),expiredActors.end());
+        for(const auto guid:expiredActors) {
+            for(auto* player:players)if(player) {
+                if(player->attackTarget==guid)player->attackTarget=0;
+                if(player->rangedTarget==guid)localStopRangedAuto(*player);
+                if(player->comboTarget==guid)clearLocalCombo(*player);
+                if(player->castTarget==guid)clearCast(*player,LocalCastStatus::Interrupted);
+            }
+            for(auto& summon:g.pets)if(summon.targetGuid==guid)localPetStopAttack(summon);
+            std::erase_if(g.petCasts,[&](const auto& row){return row.second.target==guid;});
+            std::erase_if(g.petMissiles,[&](const auto& row){return row.target==guid;});
+            std::erase_if(g.vehicleProjectiles,[&](const auto& row){return row.sourceGuid==guid;});
+            std::erase_if(g.vehicleCasts,[&](const auto& row){return row.sourceGuid==guid || row.targetGuid==guid;});
+            std::erase_if(g.periodicDamage,[&](const auto& row){return row.target==guid;});
+            std::erase_if(g.pendingIgnites,[&](const auto& row){return row.target==guid;});
+            g.escortCombat.erase(guid);
+            for(auto& npc:g.npcs)if(npc.targetGuid==guid){npc.targetGuid=0;npc.threat={};}
+            std::erase_if(g.npcs,[&](const auto& npc){return npc.guid==guid;});
+            LOG_INFO("[LOCAL_SCRIPT_ACTOR] expired guid=",guid);
+        }
+        changed=changed||!expiredActors.empty();
+    }
+    for(auto& state:g.gameObjectStates)if(state.status && state.status!=kLocalGameObjectDormant && state.remainingMs && elapsedMs) {
+        state.remainingMs-=std::min(state.remainingMs,elapsedMs);changed=true;
+        if(!state.remainingMs) {
+            const auto* object=content().gameObject(state.id);
+            if(object && object->poolId && state.status==kLocalGameObjectDepleted)g.rotatePooledRespawn(state,*object);
+            else {state.status=0;state.revision=state.revision==UINT32_MAX?1:state.revision+1;}
+        }
+    }
     g.authorityClockMs+=elapsedMs;
+    // A forced disconnect/death exit may have happened without a complete
+    // online roster. Retry its content edge here, where despawn preflight can
+    // inspect every affected player before consuming vehicleRecoveryId.
+    for(auto* player:players)if(player&&player->vehicleRecoveryId) {
+        auto candidate=*player;LocalScriptActionBatch actions;const auto vehicleId=candidate.vehicleRecoveryId;
+        bool scriptsOk=applyScriptTriggers(candidate,content(),LocalScriptTriggerKind::VehicleExit,vehicleId,&actions);
+        if(scriptsOk)questStatus(candidate,content(),false,&scriptsOk,&actions);
+        std::vector<LocalRealmPlayer*> authority=players;
+        for(auto*& current:authority)if(current&&current->guid==candidate.guid)current=&candidate;
+        std::string why;
+        if(scriptsOk && (actions.empty() || executeScriptActionsScoped(actions,{&candidate},authority,why))) {
+            candidate.vehicleRecoveryId=0;*player=std::move(candidate);changed=true;
+        }
+    }
+    #include "local_escort_tick.inc"
+    // 5.3 persistent script scheduler. Timers are one-shot, sorted by ID and
+    // decremented by the same authority milliseconds as combat/cooldowns.
+    // Expiration removes the persisted timer first, then applies its immutable
+    // content action; multiple expirations in one frame run in timer-ID order.
+    for(auto* p:players)if(p&&elapsedMs&&!p->scriptTimers.empty()){
+        auto candidate=*p;LocalScriptActionBatch actions;bool batchOk=true;
+        std::vector<uint32_t> expired;
+        for(auto& timer:candidate.scriptTimers){
+            if(timer.remainingMs<=elapsedMs){expired.push_back(timer.timerId);timer.remainingMs=0;}
+            else timer.remainingMs-=elapsedMs;
+        }
+        for(const auto timerId:expired){
+            const auto pending=std::lower_bound(candidate.scriptTimers.begin(),candidate.scriptTimers.end(),timerId,
+                [](const LocalScriptTimer& timer,uint32_t id){return timer.timerId<id;});
+            // An earlier ID's expiry may cancel or restart a later one. Its
+            // old pending expiry then must not run as well. Newly scheduled
+            // IDs are absent from `expired` and wait until the next tick.
+            if(pending==candidate.scriptTimers.end() || pending->timerId!=timerId || pending->remainingMs)continue;
+            candidate.scriptTimers.erase(pending);
+            const auto it=std::lower_bound(g.content->scriptTimerActions.begin(),g.content->scriptTimerActions.end(),timerId,
+                [](const LocalScriptTimerAction& action,uint32_t id){return action.timerId<id;});
+            if(it==g.content->scriptTimerActions.end()||it->timerId!=timerId){
+                LOG_WARNING("[LOCAL_SCRIPT_TIMER] expired timer has no action player=",p->guid," timer=",timerId);
+                continue;
+            }
+            if(localApplyScriptTimerAction(candidate,*it)) {
+                if(actions.size()+it->actionIds.size()>kLocalMaxScriptActionBatch){batchOk=false;break;}
+                actions.insert(actions.end(),it->actionIds.begin(),it->actionIds.end());
+                LOG_INFO("[LOCAL_SCRIPT_TIMER] expired player=",p->guid," timer=",timerId," phase=",candidate.phaseMask);
+            }
+            else
+                LOG_INFO("[LOCAL_SCRIPT_TIMER] expired without transition player=",p->guid," timer=",timerId);
+        }
+        std::vector<LocalRealmPlayer*> authority=players;
+        for(auto*& player:authority)if(player&&player->guid==candidate.guid)player=&candidate;
+        std::string why;
+        if(batchOk && (actions.empty() || executeScriptActionsScoped(actions,{&candidate},authority,why)))*p=std::move(candidate);
+        else LOG_ERROR("[LOCAL_SCRIPT_TIMER] action batch refused player=",p->guid," reason=",why);
+        changed=true;
+    }
     for(auto* p:players)if(p&&!p->statAuras.empty()){
         const auto periods=meleePeriods(*p,content());
         p->statAuras.reserve(kLocalMaxStatAuras);
@@ -4670,7 +6581,7 @@ bool LocalGameplay::tick(float seconds,const std::vector<LocalRealmPlayer*>& pla
             // periodic event with nothing attempted; an orphaned Ignite with no
             // owner to show it to is simply skipped.
             const auto* targetDefinition=content().npc(target->entry);
-            const bool tickImmune=spell&&targetDefinition&&localNpcImmuneToDamage(*targetDefinition,*spell,false);
+            const bool tickImmune=spell&&targetDefinition&&localNpcImmuneToDamage(*targetDefinition,*target,*spell,false);
             if(tickImmune) {
                 if(owner)g.damageNpc(*target,*owner,0,players,false,aura.spell,true,0,nullptr,LocalMeleeOutcome::Immune);
                 LOG_INFO("[LOCAL_IMMUNE] tick npc=",target->guid," spell=",aura.spell," school=",spell->schoolMask);
@@ -4724,8 +6635,9 @@ bool LocalGameplay::tick(float seconds,const std::vector<LocalRealmPlayer*>& pla
             // The same application-time snapshot decides a periodic heal's
             // critical. A zero snapshot can never crit.
             const bool critical=aura.critChanceBasisPoints&&g.meleeRoll()<aura.critChanceBasisPoints;
-            const auto attempted=critical?localMagicCriticalAmount(localStackedAuraAmount(aura.amount,aura.stacks))
-                                        :localStackedAuraAmount(aura.amount,aura.stacks);
+            // Unit::SpellHealingBonusTaken: a creature's MOD_HEALING_PCT on the target.
+            const auto attempted=localPlayerHealingTaken(*target,critical?localMagicCriticalAmount(localStackedAuraAmount(aura.amount,aura.stacks))
+                                        :localStackedAuraAmount(aura.amount,aura.stacks));
             const auto health=uint32_t(std::min(uint64_t(target->maxHealth),uint64_t(target->health)+attempted));
             const auto effective=health-target->health;
             changed=changed||target->health!=health;target->health=health;
@@ -4758,6 +6670,9 @@ bool LocalGameplay::tick(float seconds,const std::vector<LocalRealmPlayer*>& pla
     }
 
     for(auto* p:players) {
+        // 2.40: a gossip page ends with the creature out of reach (the
+        // client's own interaction range check).
+        if(p->gossip.open()){const auto revision=p->gossip.revision;g.gossipTick(*p);if(p->gossip.revision!=revision)changed=true;}
         // one predicate for both the cast-time refusal and the eviction,
         // so the two can no longer drift. localFormEnvironmentRetained reads
         // SPELL_ATTR0_ONLY_OUTDOORS from the definition instead of naming form
@@ -4809,6 +6724,8 @@ bool LocalGameplay::tick(float seconds,const std::vector<LocalRealmPlayer*>& pla
                         g.emitCombatEvent(localDeathProcEvent(p->guid,p->mapId,p->instanceId,true,p->level),players);
                         p->health = 0; localStopRangedAuto(*p);leaveLocalForm(*p); clearLocalCombo(*p); p->dead = true; p->mountSpellId=0; p->deadTimer = 0; p->attackTarget = 0;
                         clearCast(*p, LocalCastStatus::Interrupted);
+                        clearLocalTravelMotion(*p);
+                        localCaptureCorpse(*p);
                     } else p->health -= damage;
                     changed = true;
                     LOG_INFO("[LOCAL_FALL] guid=", p->guid, " dropped=", p->fallStartZ - p->z,
@@ -4918,7 +6835,7 @@ bool LocalGameplay::tick(float seconds,const std::vector<LocalRealmPlayer*>& pla
         }
         if(p->dead){
             localCaptureCorpse(*p);localStopRangedAuto(*p);p->deadTimer+=dt;
-            if(!p->ghost && p->deadTimer>=3){std::string released;changed=execute(*p,{LocalAction::Respawn},players,released)||changed;}
+            if(!p->ghost && p->deadTimer>=3){std::string released;changed=executeUnsettled(*p,{LocalAction::Respawn},players,released)||changed;}
             continue;
         }
         p->rangedRemainingMs-=std::min(p->rangedRemainingMs,ms);
@@ -4954,7 +6871,7 @@ bool LocalGameplay::tick(float seconds,const std::vector<LocalRealmPlayer*>& pla
                     // with the weapon's school: a frost wand against a
                     // frost-immune creature is IMMUNE before any ranged roll.
                     const auto* rangedTarget=content().npc(n->entry);
-                    const bool rangedImmune=rangedTarget&&localNpcImmuneToSpell(*rangedTarget,schoolDefinition,false);
+                    const bool rangedImmune=rangedTarget&&localNpcImmuneToSpell(*rangedTarget,*n,schoolDefinition,false);
                     const auto outcome=rangedImmune?LocalMeleeOutcome::Immune:localRollRanged(*p,*n,weapon,g.meleeRoll(),g.meleeRoll(),wand);
                     const float multiplier=outcome==LocalMeleeOutcome::Critical?(wand?1.5f:2.f):1.f;
                     const auto damage=uint32_t(std::clamp((weapon.low+(weapon.high-weapon.low)*g.meleeRoll()/9999.f)*multiplier,0.f,1000000.f));
@@ -4991,7 +6908,8 @@ bool LocalGameplay::tick(float seconds,const std::vector<LocalRealmPlayer*>& pla
             // (PlayerUpdates.cpp:173, :213), which is
             // max(reachA + reachB + 4/3, NOMINAL_MELEE_RANGE) and was a fixed
             // 4.5 yd here (audit D21 / D25).
-            else if(!p->castingSpellId&&
+            // UNIT_STATE_CANNOT_AUTOATTACK: a stunned character's swing waits.
+            else if(!p->castingSpellId&&!(localPlayerControl(*p)&0xdu)&&
                     localWithinMeleeRange(distance2(*p,*n),kLocalDefaultCombatReach,localCreatureCombatReach(content().npc(n->entry)))&&
                     localComboFacingReady(*p,*n,false)){
                 const auto ms=localMeleeStats(*p,content());
@@ -5190,15 +7108,48 @@ bool LocalGameplay::tick(float seconds,const std::vector<LocalRealmPlayer*>& pla
             }
         }
     }
+    // SmartAI::EnterEvadeMode for a scripted creature (the flee, talk and
+    // combat state of every creature): with DISABLE_EVADE only the EVADE rows
+    // run and the creature keeps its health and place; otherwise the EVADE
+    // rows, the return home, OnReset with the RESET rows, then REACHED_HOME.
+    // SET_HEALTH_REGEN(0) keeps the health at the return (Creature::
+    // RegenerateHealth is what fills it in the reference).
+    const auto enterEvade=[&](LocalRealmNpc& n){
+        n.talkEngaged=false;n.talkOnceMask&=g.talkKeepOnEvadeMask(n);
+        n.fleeMode=0;n.fleeMs=0;
+        g.npcCancelChannelOrCast(n);n.npcNextSwingSpellId=0;n.npcNextSwingTargetGuid=0;n.npcSpellMeleeOutcome=0;
+        n.targetGuid=0;n.threat={};n.combatEpoch=g.allocateNpcEpoch();n.lootOwner=0;
+        n.smartCombatStopped=false;
+        if(n.npcEvadeDisabled&&n.npcSpellTimerInitialized&&!n.scriptActorId){g.smartEvade(n,players);return;}
+        if(n.smartTimersReady)g.initSmartTimers(n,true);
+        if(!n.npcRegenDisabled)n.health=n.maxHealth;
+        // 2.38: a following creature keeps following instead of going home; an
+        // escort returns to its last point (its home) and resumes.
+        if(!n.followGuid){n.x=n.homeX;n.y=n.homeY;n.z=n.homeZ;}
+        if(n.npcMotion==1||n.npcMotion==5||n.npcMotion==3)g.npcMoveIdle(n);
+        n.snares.clear();g.releaseNpcControls(n);n.damageAuras.clear();n.stormstrikeAuras.clear();
+        if(n.npcSpellTimerInitialized)g.smartEvade(n,players);
+    };
+    // 2.38: the dynamic objects of persistent area auras.
+    if(elapsedMs)changed=g.npcGroundEffectsTick(elapsedMs,players)||changed;
     for(auto& n:g.npcs) {
         const auto* def=content().npc(n.entry);if(!def)continue;
+        // SMART_ACTION_DIE / FORCE_DESPAWN with a delay (2.37).
+        if(n.npcDespawnPending){n.npcDespawnDelayMs-=std::min(n.npcDespawnDelayMs,elapsedMs);if(!n.npcDespawnDelayMs){g.npcForceDespawn(n,players);changed=true;}}
+        if(n.npcDiePending&&!n.dead){n.npcDieDelayMs-=std::min(n.npcDieDelayMs,elapsedMs);if(!n.npcDieDelayMs){g.npcKillSelf(n,players);changed=true;}}
+        // 2.38: TempSummon::Update - the lifetime of a summon; SmartAI's despawn timer.
+        if(n.npcUnsummoned)continue;
+        if(n.npcSummonType&&g.npcSummonUpdate(n,elapsedMs,players)){changed=true;continue;}
+        if(g.smartUpdateDespawn(n,elapsedMs,players))changed=true;
+        if(n.npcUnsummoned)continue;
         const bool hadSnares=!n.snares.empty();
         std::erase_if(n.snares,[&](const auto& a){
             const auto* owner=g.player(a.casterGuid,players);
             return n.dead||n.transportEntry||!owner||owner->dead||owner->flight.active||
                 owner->mapId!=n.mapId||owner->instanceId!=n.instanceId||owner->positionRevision!=a.casterRevision;
         });
-        const auto pursuitStep=localNpcPursuitDistance(n,elapsedMs);
+        // 2.37: the creature's own speed auras and UNIT_FLAG_DISABLE_MOVE scale the pursuit.
+        const auto pursuitStep=localNpcPursuitDistance(n,elapsedMs)*g.npcSpeedMultiplier(n);
         for(auto& a:n.snares)a.remainingMs-=std::min(a.remainingMs,elapsedMs);
         std::erase_if(n.snares,[](const auto& a){return !a.remainingMs;});
         changed=changed||hadSnares;
@@ -5219,8 +7170,12 @@ bool LocalGameplay::tick(float seconds,const std::vector<LocalRealmPlayer*>& pla
             if(drop)dropControl(a);
             return drop;
         });
-        const bool stunned=localNpcStunned(n);
-        const bool silenced=localNpcSilenced(n);
+        // UNIT_FLAG_STUNNED / SILENCED / PACIFIED set by the script count as the
+        // controls they name (Unit::SetControlled reads the same flags).
+        const uint32_t unitFlags=g.npcUnitFlags(n);
+        const bool stunned=localNpcStunned(n)||(unitFlags&kLocalUnitFlagStunned);
+        const bool silenced=localNpcSilenced(n)||(unitFlags&kLocalUnitFlagSilenced);
+        const bool pacified=(unitFlags&kLocalUnitFlagPacified)!=0;
         for(auto& a:n.controls)a.remainingMs-=std::min(a.remainingMs,elapsedMs);
         std::erase_if(n.controls,[&](const auto& a){
             if(a.remainingMs)return false;
@@ -5229,32 +7184,184 @@ bool LocalGameplay::tick(float seconds,const std::vector<LocalRealmPlayer*>& pla
         changed=changed||hadControls;
         if(n.dead) {
             localResetNpcSpellState(n);
+            if(n.npcSummonType)continue; // a summon's corpse leaves with it (TempSummon), it never respawns
             n.respawnTimer-=dt;
-            if(n.respawnTimer<=0){n.combatEpoch=g.allocateNpcEpoch();n.dead=false;n.health=n.maxHealth;n.x=n.homeX;n.y=n.homeY;n.z=n.homeZ;n.lootable=false;n.lootOwner=0;n.targetGuid=0;changed=true;}
+            if(n.respawnTimer<=0){
+                // Creature::RemoveCorpse before the respawn: the CORPSE_REMOVED
+                // rows (a forced despawn ran them at its own removal).
+                if(!n.npcDespawned&&n.npcSpellTimerInitialized)g.smartFireEvents(n,kLocalSmartEventCorpseRemoved,0,players,uint32_t(std::max(0.f,n.respawnTimer)));
+                n.combatEpoch=g.allocateNpcEpoch();n.dead=false;g.npcClearBuffs(n);n.health=n.maxHealth;n.npcManaReady=false;n.npcRangeInit=false;n.npcSpellTimerInitialized=false;n.smartPhase=0;n.npcCombatMove=true;n.npcAutoAttack=true;
+                // SmartAI::JustRespawned / Creature::Respawn: the template's
+                // faction and react state return, a forced despawn ends; the
+                // script's other state (flags, immunities, invincibility,
+                // sight, regeneration) persists as the reference's does.
+                n.npcFactionOverride=0;n.npcReactState=255;n.npcDespawned=false;n.npcDiePending=false;n.npcDespawnPending=false;n.npcExtraAttacks=0;n.smartCombatStopped=false;
+                // 2.38 SmartAI::JustRespawned: visible again, no escort, no
+                // follow, no despawn timer, the home at the spawn.
+                n.npcHidden=false;n.npcRooted=false;n.npcWalking=false;g.npcMoveIdle(n);
+                n.escortActive=false;n.escortPaused=false;n.escortForcedPause=false;n.escortReached=false;n.escortReturning=false;n.escortPathId=0;n.escortIndex=0;n.escortPauseMs=0;n.escortQuestId=0;
+                n.followGuid=0;n.followCredit=0;n.followEndEntry=0;n.smartDespawnState=0;n.smartDespawnMs=0;n.smartSummons.clear();
+                n.smartTextTimerActive=false;n.smartPendingTalks.clear();
+                // 2.39 Creature::Respawn -> InitDefaultMovement: the random
+                // generator re-initialises at the spawn, the patrol restarts at
+                // the spawn's node (WaypointMovementGenerator::DoInitialize).
+                if(n.npcFlagsOverridden){n.npcFlagsOverridden=false;n.npcFlagsOverride=0;n.questGiver=def->questGiver;g.applyNpcServiceFlags(n,*def,g.npcBaseFlags(*def),false);}
+                n.npcRandomInit=false;n.npcRandomMoving=false;n.npcRandomPoint=12;n.npcRandomMoveCount=0;
+                n.npcPlayerDamage=0;n.npcDamagedByPlayer=false; // ResetPlayerDamageReq
+                n.npcGossipMenuOverridden=false;n.npcGossipMenuOverride=0; // 2.40: the template's menu returns
+                n.patrolNode=n.patrolStartNode;n.patrolDone=false;n.patrolReached=true;n.patrolMoving=false;n.patrolStalled=false;n.patrolPaused=false;n.patrolPauseMs=0;n.patrolDelayMs=0;n.patrolHasBeenStalled=false;
+                if(n.patrolPathId)n.patrolLoadedPath=n.patrolPathId;
+                n.homeX=n.spawnX;n.homeY=n.spawnY;n.homeZ=n.spawnZ;
+                if(const auto* kit=content().vehicleKit(n.vehicleId)){n.vehiclePower=kit->maxPower;n.vehicleCooldownMs={};n.vehicleGlobalCooldownMs=0;n.vehicleRegenRemainder=0;
+                    n.vehicleAim={};for(size_t i=0;i<n.vehicleSeatCount;++i)n.vehicleAim[i][1]=std::clamp(0.f,kit->minPitch,kit->maxPitch);}
+                n.x=n.homeX;n.y=n.homeY;n.z=n.homeZ;n.lootable=false;n.lootOwner=0;n.targetGuid=0;changed=true;}
             continue;
+        }
+        if(const auto* kit=content().vehicleKit(n.vehicleId)) {
+            bool ticking=n.vehicleGlobalCooldownMs!=0;
+            n.vehicleGlobalCooldownMs-=std::min(n.vehicleGlobalCooldownMs,elapsedMs);
+            for(auto& cooldown:n.vehicleCooldownMs){ticking=ticking||cooldown!=0;cooldown-=std::min(cooldown,elapsedMs);}
+            const auto budget=uint64_t(n.vehicleRegenRemainder)+uint64_t(kit->regenPerSecond)*elapsedMs;
+            const auto before=n.vehiclePower;n.vehiclePower=uint32_t(std::min<uint64_t>(kit->maxPower,uint64_t(n.vehiclePower)+budget/1000));
+            n.vehicleRegenRemainder=n.vehiclePower==kit->maxPower?0:budget%1000;
+            changed=changed||ticking||before!=n.vehiclePower;
         }
         // Crew stays in authored deck-local positions. Ordinary ground pursuit
         // would send it through the hull or back to the dock as the ship moves.
-        if (n.transportEntry) { localResetNpcSpellState(n);n.targetGuid=0;n.threat={};continue; }
-        const bool wasEngaged=n.targetGuid||std::any_of(n.threat.begin(),n.threat.end(),[](const auto& e){return e.guid!=0;});
-        for(auto& entry:n.threat)if(entry.guid)if(auto* member=g.player(entry.guid,players))if(!canAttack(*member,n))entry={};
+        if (n.transportEntry || n.vehicleId) { localResetNpcSpellState(n);n.targetGuid=0;n.threat={};continue; }
+        if(n.escortOwner) {localResetNpcSpellState(n);if(!g.escortCombatOwner(n,players)){n.targetGuid=0;n.threat={};}continue;}
+        // Threat already on a rider transfers to the armed hull when boarding.
+        for(auto& entry:n.threat)if(auto* rider=g.player(entry.guid,players);rider && rider->vehicleGuid)
+            if(auto* hull=g.npc(rider->vehicleGuid);hull && content().vehicleKit(hull->vehicleId) && !hull->dead) {
+                const auto amount=entry.amount;const auto old=entry.guid;entry={};g.addThreat(n,hull->guid,amount);
+                if(n.targetGuid==old)n.targetGuid=hull->guid;
+            }
+        n.talkKillCooldownMs-=std::min(n.talkKillCooldownMs,elapsedMs);
+        // Creature mana for SmartAI casters: created full, then Creature::
+        // Regenerate every 2 s - a third of the pool out of combat; in combat
+        // Spirit/5+17 (creature Spirit is 0) outside the five-second rule, and
+        // only with UNIT_FLAG2_REGENERATE_POWER.
+        changed=g.tickNpcBuffs(n,elapsedMs,players)||changed;
+        if(n.dead)continue; // a buff's proc or a shield just killed it
+        if(const auto* manaProfile=localNpcSpellProfile(g.smartOwner(n));manaProfile&&!n.dead) {
+            if(!n.npcManaReady){n.npcManaReady=true;n.npcMaxMana=localNpcMaxMana(*manaProfile,n.level);n.npcMana=n.npcMaxMana;n.npcManaRegenMs=2000;n.npcSinceManaUseMs=5000;}
+            n.npcSinceManaUseMs=uint32_t(std::min<uint64_t>(uint64_t(n.npcSinceManaUseMs)+elapsedMs,5000));
+            uint32_t budget=elapsedMs;
+            // m_regenTimer runs whether or not the pool is full.
+            while(budget&&manaProfile->regenMana) {
+                const auto step=std::min(budget,n.npcManaRegenMs);n.npcManaRegenMs-=step;budget-=step;
+                if(n.npcManaRegenMs)break;
+                n.npcManaRegenMs=2000;
+                const bool engaged=n.targetGuid!=0;
+                const uint32_t add=engaged?(n.npcSinceManaUseMs>=5000?17u:0u):n.npcMaxMana/3;
+                n.npcMana=std::min(n.npcMaxMana,n.npcMana+add);
+            }
+        }
+        // CallAssistance's AssistDelayEvent: a free assistant joins after the delay.
+        if(n.assistDelayMs) {
+            n.assistDelayMs-=std::min(n.assistDelayMs,elapsedMs);
+            if(!n.assistDelayMs) {
+                auto* enemy=g.player(n.assistTargetGuid,players);
+                if(enemy && !enemy->dead && !n.dead && !n.targetGuid && canAttack(*enemy,n) &&
+                   enemy->mapId==n.mapId && enemy->instanceId==n.instanceId)g.addThreat(n,enemy->guid,1);
+                n.assistTargetGuid=0;changed=true;
+            }
+        }
+        const bool wasEngaged=(n.targetGuid||std::any_of(n.threat.begin(),n.threat.end(),[](const auto& e){return e.guid!=0;}))&&!n.smartCombatStopped;
+        n.smartCombatStopped=false;
+        for(auto& entry:n.threat)if(entry.guid) {
+            if(auto* member=g.player(entry.guid,players)){if(!canAttack(*member,n))entry={};}
+            else if(auto* actor=g.npc(entry.guid);actor) {
+                if(actor->vehicleId && !localVehicleHostileTargetValid(*actor,n,players,[&](const auto& rider,const auto& hostile){return canAttack(rider,hostile);}))entry={};
+                else if(actor->escortOwner){const auto* owner=g.escortCombatOwner(*actor,players);if(!owner || !canAttack(*owner,n))entry={};}
+            }
+        }
         g.selectThreatTarget(n,players);
         if(wasEngaged&&(!n.targetGuid||distance2(n.x,n.y,n.z,n.homeX,n.homeY,n.homeZ)>60*60)) {
-            localResetNpcSpellState(n);n.targetGuid=0;n.threat={};n.combatEpoch=g.allocateNpcEpoch();n.lootOwner=0;n.health=n.maxHealth;n.x=n.homeX;n.y=n.homeY;n.z=n.homeZ;n.snares.clear();g.releaseNpcControls(n);n.damageAuras.clear();n.stormstrikeAuras.clear();changed=true;continue;
+            // SmartAI::EnterEvadeMode -> JustReachedHome -> SmartScript::OnReset.
+            enterEvade(n);changed=true;
+            continue;
         }
-        if(!n.targetGuid) {
+        // SmartAI::MoveInLineOfSight: only REACT_AGGRESSIVE starts an attack
+        // on sight (REACT_DEFENSIVE waits to be attacked, REACT_PASSIVE never
+        // attacks); UNIT_FLAG_NON_ATTACKABLE / IMMUNE_TO_PC ride npcDisposition.
+        const uint8_t reactState=g.npcReactState(n);
+        if(!n.targetGuid&&reactState==2&&!n.npcHidden&&!g.npcInvisible(n)) {
             float nearest=std::numeric_limits<float>::max();
             for(auto* p:players)if(!p->dead && isAggressive(*p,n)) {
                 const float radius=def->aggroRadius>0?def->aggroRadius:std::clamp(20.0f+float(n.level)-float(p->level),5.0f,45.0f);
-                const float d=distance2(*p,n);if(d<radius*radius && d<nearest){nearest=d;n.targetGuid=p->guid;}
+                const float d=distance2(*p,n);if(d<radius*radius && d<nearest){nearest=d;n.targetGuid=p->guid;
+                    if(const auto* hull=g.npc(p->vehicleGuid);hull && !hull->dead && content().vehicleKit(hull->vehicleId))n.targetGuid=hull->guid;
+                }
+            }
+            for(const auto& guide:g.npcs)if(auto* owner=g.escortCombatOwner(guide,players);owner && isAggressive(*owner,n)) {
+                const float radius=def->aggroRadius>0?def->aggroRadius:std::clamp(20.f+float(n.level)-float(owner->level),5.f,45.f);
+                const auto d=distance2(n.x,n.y,n.z,guide.x,guide.y,guide.z);
+                if(d<radius*radius && (d<nearest || (d==nearest && guide.guid<n.targetGuid)) && localEscortMeleeVisible(g.collision,n,guide)) {
+                    nearest=d;n.targetGuid=guide.guid;
+                }
             }
         }
         if(n.targetGuid&&!std::any_of(n.threat.begin(),n.threat.end(),[&](const auto& e){return e.guid==n.targetGuid;}))g.addThreat(n,n.targetGuid,1);
+        if(n.targetGuid && !n.talkEngaged){n.talkEngaged=true;g.creatureTalk(n,LocalCreatureTalkEvent::Aggro,g.player(n.targetGuid,players),0,players);
+            g.smartFireEvents(n,kLocalSmartEventAggro,n.targetGuid,players);}
+        else if(!n.targetGuid)n.talkEngaged=false;
+        {
+            // Creature::DoFleeToGetAssistance: nearest free same-faction helper
+            // within 30 yards and line of sight, else a timed flight.
+            const auto* victim=g.player(n.targetGuid,players);
+            const auto assistant=[&](const LocalRealmNpc& m,const LocalRealmPlayer& enemy) {
+                const auto* helperDef=content().npc(m.entry);
+                return m.guid!=n.guid && !m.dead && m.mapId==n.mapId && m.instanceId==n.instanceId && !m.targetGuid &&
+                    std::none_of(m.threat.begin(),m.threat.end(),[](const auto& e){return e.guid!=0;}) &&
+                    !m.scriptActorId && !m.escortOwner && !m.vehicleId && !m.transportEntry && !m.fleeMode && !m.assistDelayMs &&
+                    helperDef && helperDef->faction==def->faction && !(helperDef->unitFlags&(0x2u|0x02000000u)) &&
+                    localPhaseVisible(enemy.phaseMask,m.requiredPhaseMask,m.excludedPhaseMask) && canAttack(enemy,m);
+            };
+            const auto fleeForAssist=[&](bool withEmote) {
+                if(!victim || n.fleeMode || localNpcStunned(n) || localNpcPursuitDistance(n,1000)<0.1f)return;
+                LocalRealmNpc* best=nullptr;float bestDistance=kLocalFleeAssistanceRadius*kLocalFleeAssistanceRadius;
+                for(auto& m:g.npcs)if(assistant(m,*victim)) {
+                    const float d=distance2(n.x,n.y,n.z,m.x,m.y,m.z);
+                    if(d<=bestDistance && g.collision.isInLineOfSight(n.mapId,n.x,n.y,n.z+2,m.x,m.y,m.z+2,false)){best=&m;bestDistance=d;}
+                }
+                g.npcCancelChannelOrCast(n);n.npcNextSwingSpellId=0;
+                if(best){n.fleeMode=1;n.fleeX=best->x;n.fleeY=best->y;n.fleeZ=best->z;n.fleeMs=kLocalSeekAssistanceTimeoutMs;}
+                else {n.fleeMode=2;n.fleeMs=kLocalFleeDelayMs;}
+                if(withEmote)g.fleeEmote(n,players);
+                LOG_INFO("[LOCAL_SMART] flee npc=",n.guid," entry=",n.entry," mode=",int(n.fleeMode));
+            };
+            if(g.runSmartTimers(n,elapsedMs,victim,players,[&](const LocalCreatureTalkRule& rule){fleeForAssist(rule.withEmote);}))changed=true;
+            // The generated script's FLEE_FOR_ASSIST rows request the same flight.
+            if(n.smartFleeRequested){n.smartFleeRequested=false;fleeForAssist(n.smartFleeEmote);changed=true;}
+            if(n.fleeMode && n.targetGuid && victim) {
+                // AttackStop/CastStop while fleeing; seek or run away at run speed.
+                g.npcCancelChannelOrCast(n);n.npcNextSwingSpellId=0;
+                n.fleeMs-=std::min(n.fleeMs,elapsedMs);
+                if(n.fleeMode==1) {
+                    const float dx=n.fleeX-n.x,dy=n.fleeY-n.y,dz=n.fleeZ-n.z,length=std::sqrt(dx*dx+dy*dy+dz*dz);
+                    const float step=std::min(pursuitStep,length);
+                    if(length>0.001f){n.x+=dx/length*step;n.y+=dy/length*step;n.z+=dz/length*step;n.orientation=std::atan2(dy,dx);}
+                    if(length-step<=1.5f || !n.fleeMs) {
+                        // AssistanceMovementGenerator::Finalize: CallAssistance, then distracted.
+                        for(auto& m:g.npcs)if(assistant(m,*victim) && distance2(n.x,n.y,n.z,m.x,m.y,m.z)<=kLocalAssistanceRadius*kLocalAssistanceRadius &&
+                            g.collision.isInLineOfSight(n.mapId,n.x,n.y,n.z+2,m.x,m.y,m.z+2,false)){m.assistTargetGuid=victim->guid;m.assistDelayMs=kLocalAssistanceDelayMs;}
+                        n.fleeMode=3;n.fleeMs=kLocalAssistanceDelayMs;
+                    }
+                } else if(n.fleeMode==2) {
+                    const float dx=n.x-victim->x,dy=n.y-victim->y,length=std::sqrt(dx*dx+dy*dy);
+                    if(length>0.001f){n.x+=dx/length*pursuitStep;n.y+=dy/length*pursuitStep;n.orientation=std::atan2(dy,dx);}
+                    if(!n.fleeMs)n.fleeMode=0;
+                } else if(!n.fleeMs)n.fleeMode=0;
+                changed=true;continue;
+            }
+            if(!n.targetGuid){n.fleeMode=0;n.fleeMs=0;}
+        }
         auto* target=g.player(n.targetGuid,players);
         // An owned creature that has taken the top threat is attacked as the
         // real target it is. Nothing here reaches its owner's health or auras.
         if(!target&&n.targetGuid)if(auto* summon=g.pet(n.targetGuid)) {
-            localResetNpcSpellState(n);
+            g.npcCancelChannelOrCast(n);n.npcNextSwingSpellId=0;
             const float leash=distance2(n.x,n.y,n.z,n.homeX,n.homeY,n.homeZ);
             const float reach=distance2(n.x,n.y,n.z,summon->x,summon->y,summon->z);
             if(summon->dead||!summon->health||summon->mapId!=n.mapId||summon->instanceId!=n.instanceId||
@@ -5280,10 +7387,52 @@ bool LocalGameplay::tick(float seconds,const std::vector<LocalRealmPlayer*>& pla
             }
             continue;
         }
-        if(n.targetGuid&&(!target||target->dead||!canAttack(*target,n)||distance2(*target,n)>70*70||distance2(n.x,n.y,n.z,n.homeX,n.homeY,n.homeZ)>60*60)) {
-            localResetNpcSpellState(n);n.targetGuid=0;n.threat={};n.combatEpoch=g.allocateNpcEpoch();n.lootOwner=0;n.health=n.maxHealth;n.x=n.homeX;n.y=n.homeY;n.z=n.homeZ;n.snares.clear();g.releaseNpcControls(n);n.damageAuras.clear();n.stormstrikeAuras.clear();changed=true;continue;
+        #include "local_escort_enemy_tick.inc"
+        if(!target && n.targetGuid)if(auto* vehicle=g.npc(n.targetGuid);vehicle && vehicle->vehicleId && content().vehicleKit(vehicle->vehicleId)) {
+            g.npcCancelChannelOrCast(n);n.npcNextSwingSpellId=0;
+            const auto reach=distance2(n.x,n.y,n.z,vehicle->x,vehicle->y,vehicle->z);
+            if(!stunned)n.attackTimer=std::max(0.f,n.attackTimer-dt);
+            n.orientation=std::atan2(vehicle->y-n.y,vehicle->x-n.x);
+            if(reach>3*3 && !stunned) {
+                const auto length=std::sqrt(reach),stride=std::min(pursuitStep,std::max(0.f,length-2.5f));
+                if(length>0 && stride>0){n.x+=(vehicle->x-n.x)/length*stride;n.y+=(vehicle->y-n.y)/length*stride;n.z+=(vehicle->z-n.z)/length*stride;changed=true;}
+            }
+            if(!stunned && n.attackTimer<=0 && localWithinMeleeRange(reach,localCreatureCombatReach(def),localCreatureCombatReach(content().npc(vehicle->entry)))) {
+                n.attackTimer=2;
+                const auto* armor=content().npc(vehicle->entry);
+                const auto damage=localArmorReducedDamage(std::min(def->damage,1000000u),armor?armor->armor:0,n.level);
+                const auto effective=std::min(damage,vehicle->health);vehicle->health-=effective;vehicle->dead=!vehicle->health;
+                LocalCombatEvent event{0,n.guid,vehicle->guid,0,n.mapId,n.instanceId,damage,effective,0,LocalCombatEventKind::NpcMelee,vehicle->dead};
+                event.schoolMask=1;event.attackType=LocalCombatAttackType::Melee;g.emitCombatEvent(event,players);
+                if(vehicle->dead) {
+                    vehicle->combatEpoch=g.allocateNpcEpoch();vehicle->lootable=false;vehicle->lootOwner=0;
+                    vehicle->respawnTimer=armor?armor->respawnSeconds:30;g.respawnAt[vehicle->guid]=g.now+vehicle->respawnTimer;
+                    g.emitCombatEvent(localKillProcEvent(n.guid,vehicle->guid,n.mapId,n.instanceId,false,n.level,false),players);
+                    g.emitCombatEvent(localDeathProcEvent(vehicle->guid,n.mapId,n.instanceId,false,vehicle->level),players);
+                    g.selectThreatTarget(n,players);
+                }
+                changed=true;
+            }
+            continue;
         }
-        if(!target||!n.targetGuid){localResetNpcSpellState(n);continue;}
+        if(n.targetGuid&&(!target||target->dead||!canAttack(*target,n)||distance2(*target,n)>70*70||distance2(n.x,n.y,n.z,n.homeX,n.homeY,n.homeZ)>60*60)) {
+            enterEvade(n);changed=true;continue;
+        }
+        if(!target||!n.targetGuid) {
+            if(n.targetGuid){localResetNpcSpellState(n);continue;}
+            // Out of combat the script keeps running: UPDATE_OOC rows, lists,
+            // a cast bar of a self-buff, the range-mode initialisation.
+            if(!stunned) {
+                g.npcCastUpdate(n,*def,elapsedMs,players,silenced,stunned,changed);
+                changed=g.smartUpdate(n,*def,elapsedMs,players,false,nullptr,silenced,stunned)||changed;
+                if(n.smartEvadeRequested)n.smartEvadeRequested=false;
+                g.smartCallForHelp(n,players);
+            } else if(n.npcCastingSpellId){g.npcCancelChannelOrCast(n);changed=true;}
+            // 2.38: the creature's own movement out of combat (a point, the
+            // escort path, random movement, following).
+            if(!n.dead&&!n.npcUnsummoned)changed=g.npcMotionStep(n,elapsedMs,players,false)||changed;
+            continue;
+        }
         // Unit::SetStunned freezes the swing before anything else. The timer
         // does not run down while stunned, so a stun costs the creature the
         // whole swing rather than only its landing.
@@ -5291,40 +7440,83 @@ bool LocalGameplay::tick(float seconds,const std::vector<LocalRealmPlayer*>& pla
         // Spell::CheckCasterAuras: a stun blocks the cast outright, while a
         // silence blocks only a spell whose OWN PreventionType is silence. The
         // prevention type belongs to the spell being prevented, never to the
-        // aura preventing it, so this reads the creature's own spell.
-        const auto* npcCastProfile=localNpcSpellProfile(n.entry);
-        const auto* npcCastSpell=npcCastProfile?content().spell(npcCastProfile->spellId):nullptr;
-        const bool castBlocked=stunned||
-            (silenced&&npcCastSpell&&npcCastSpell->preventionType==kLocalPreventionSilence);
-        if(castBlocked)localResetNpcSpellState(n);
-        else {
-        #include "local_npc_spell_tick.inc"
+        // aura preventing it, so the tick reads it per profile row and per cast
+        // in progress (HandleAuraModSilence interrupts only such a cast).
+        {
+            // Unit::SetStunned's CastStop, then the script (a stunned creature
+            // still runs its timers; its casts fail and retry).
+            if(stunned&&n.npcCastingSpellId){g.npcCancelChannelOrCast(n);changed=true;}
+            if(stunned){n.npcNextSwingSpellId=0;n.npcNextSwingTargetGuid=0;}
+            bool held=g.npcCastUpdate(n,*def,elapsedMs,players,silenced,stunned,changed);
+            changed=g.smartUpdate(n,*def,elapsedMs,players,true,target,silenced,stunned)||changed;
+            g.smartCallForHelp(n,players);
+            if(n.smartEvadeRequested) {
+                // SMART_ACTION_EVADE: EnterEvadeMode now.
+                n.smartEvadeRequested=false;
+                enterEvade(n);changed=true;
+                continue;
+            }
+            if(n.smartCombatStopped){n.smartCombatStopped=false;changed=true;continue;} // COMBAT_STOP: out of combat, no evade
+            held=held||(n.npcCastingSpellId&&(!n.npcSpellLaunched||n.npcChanneling));
+            if(held)continue; // Cast bars and channels stop movement and melee; missiles do not.
+            if(n.dead||target->dead||!n.targetGuid)continue;
+            // REACT_PASSIVE: SmartAI::UpdateAI's UpdateVictim selects no
+            // victim - the script runs, the creature neither chases nor swings.
+            if(reactState==0)continue;
         }
         const float d2=distance2(*target,n);
         n.orientation=std::atan2(target->y-n.y,target->x-n.x);
         if(d2>0.0001f){const auto facing=std::atan2(target->y-n.y,target->x-n.x);changed=changed||n.orientation!=facing;n.orientation=facing;}
-        if(d2>3*3&&!stunned) {
+        // MoveChase(victim, _attackDistance): ChaseRange keeps a range-mode
+        // caster within its attack distance plus contact distance and both
+        // combat reaches; otherwise the creature closes to melee.
+        const float chaseStop=n.npcRangeMode&&n.npcAttackDistance>0?
+            n.npcAttackDistance+0.5f+localCreatureCombatReach(def)+kLocalDefaultCombatReach:3.f;
+        // 2.39: the chase interrupts a default generator's move (StopMoving).
+        if(n.npcRandomMoving||n.patrolMoving){g.npcStopMoving(n);changed=true;}
+        // 2.38: a point movement or jump in the active slot replaces the chase
+        // until it ends (MotionMaster::MovePoint in combat).
+        if(n.npcMotion==1||n.npcMotion==5){changed=g.npcMotionStep(n,elapsedMs,players,true)||changed;}
+        else if(d2>chaseStop*chaseStop&&!stunned&&n.npcCombatMove) {
             const float dx=target->x-n.x,dy=target->y-n.y,dz=target->z-n.z;
-            const float length=std::sqrt(d2),step=std::min(pursuitStep,std::max(0.0f,length-2.5f));
+            const float length=std::sqrt(d2),step=std::min(pursuitStep,std::max(0.0f,length-std::max(2.5f,chaseStop-0.5f)));
             if(length>0){n.x+=dx/length*step;n.y+=dy/length*step;n.z+=dz/length*step;changed=changed||step>0;}
         }
         // UnitAI::DoMeleeAttackIfReady, UnitAI.cpp:50: the creature's own
         // IsWithinMeleeRange, which was a fixed 4 yd here.
-        if(localWithinMeleeRange(d2,localCreatureCombatReach(def),kLocalDefaultCombatReach)&&n.attackTimer<=0&&!stunned) {
-            n.attackTimer=2;const auto meleeStats=localMeleeStats(*target,content());
+        // SmartAI::SetAutoAttack(false) stops the swings; MOD_MELEE_HASTE on the
+        // creature scales its 2 s attack time (ApplyAttackTimePercentMod).
+        const float swingTime=2.f*g.npcMeleeHasteMultiplier(n);
+        // UNIT_FLAG_PACIFIED (Unit::AttackerStateUpdate returns) holds the swings.
+        if(pacified){}
+        else if(localWithinMeleeRange(d2,localCreatureCombatReach(def),kLocalDefaultCombatReach)&&n.attackTimer<=0&&!stunned&&n.npcAutoAttack&&
+           g.npcNextSwingSpecial(n,*target,players)) {
+            n.attackTimer=swingTime;changed=true;
+        } else if(localWithinMeleeRange(d2,localCreatureCombatReach(def),kLocalDefaultCombatReach)&&n.attackTimer<=0&&!stunned&&n.npcAutoAttack) {
+            n.attackTimer=swingTime;
+            // Unit::AttackerStateUpdate: the swing, then the extra attacks
+            // SPELL_EFFECT_ADD_EXTRA_ATTACKS queued (HandleProcExtraAttackFor),
+            // each a full swing at once.
+            const auto whiteSwing=[&](){
+            const auto meleeStats=localMeleeStats(*target,content());
             const auto outcome=localRollNpcMelee(n,*target,meleeStats,g.meleeRoll());
             const uint32_t armor=localMeleeArmor(*target,content());
-            const uint32_t raw=uint32_t(std::min(uint64_t(1000000),uint64_t(def->damage)*(outcome==LocalMeleeOutcome::Critical?4:outcome==LocalMeleeOutcome::Crushing?3:2)/2));
-            const auto attempted=localMeleeAvoided(outcome)?0u:localFormDamage(*target,localArmorReducedDamage(localIncomingDamageAfterTalents(*target,content(),raw),armor,n.level),true);
+            const uint32_t raw=uint32_t(std::min(uint64_t(1000000),uint64_t(g.npcMeleeDamage(n,def->damage))*(outcome==LocalMeleeOutcome::Critical?4:outcome==LocalMeleeOutcome::Crushing?3:2)/2));
+            const auto attempted=localMeleeAvoided(outcome)?0u:localFormDamage(*target,localArmorReducedDamage(g.npcDamageTakenByPlayer(*target,localIncomingDamageAfterTalents(*target,content(),raw),1),armor,n.level),true);
             const auto blocked=outcome==LocalMeleeOutcome::Block?std::min(attempted,meleeStats.blockValue):0;
             const uint32_t damage=localAbsorbDamage(*target,content(),attempted-blocked,1);
             if(outcome==LocalMeleeOutcome::Parry){const auto minimum=localMeleeSpeed(*target,content())*.2f;if(target->attackTimer>minimum)target->attackTimer=std::max(minimum,target->attackTimer-localMeleeSpeed(*target,content())*.4f);}
             stats(*target,content(),false);
             const auto effective=std::min(damage,target->health);
+            if(!localMeleeAvoided(outcome))g.npcBreakControlsOnDamage(*target,nullptr);
+            if(!localMeleeAvoided(outcome))g.npcDealtDamage(n,*target,damage,0x4u|0x400000u,1u,players);
             if(damage>=target->health){
                 g.emitCombatEvent(localKillProcEvent(n.guid,target->guid,target->mapId,target->instanceId,false,n.level,false),players);
                 g.emitCombatEvent(localDeathProcEvent(target->guid,target->mapId,target->instanceId,true,target->level),players);
+                g.npcKilledPlayer(n,*target,players);
                 target->health=0;localStopRangedAuto(*target);leaveLocalForm(*target);clearLocalCombo(*target);target->dead=true;target->mountSpellId=0;target->deadTimer=0;target->attackTarget=0;clearCast(*target,LocalCastStatus::Interrupted);
+                clearLocalTravelMotion(*target);
+                localCaptureCorpse(*target);
                 g.selectThreatTarget(n,players);
                 if(!n.targetGuid){n.threat={};n.combatEpoch=g.allocateNpcEpoch();n.lootOwner=0;n.health=n.maxHealth;n.x=n.homeX;n.y=n.homeY;n.z=n.homeZ;n.snares.clear();g.releaseNpcControls(n);n.damageAuras.clear();n.stormstrikeAuras.clear();}}
             else {
@@ -5348,12 +7540,194 @@ bool LocalGameplay::tick(float seconds,const std::vector<LocalRealmPlayer*>& pla
             // swing actually dealt damage, and after the swing is resolved.
             if(damage&&!target->dead)g.dealAreaAuraShieldDamage(*target,n,players);
             changed=true;
+            };
+            whiteSwing();
+            while(n.npcExtraAttacks&&!n.dead&&!target->dead&&n.targetGuid==target->guid){--n.npcExtraAttacks;whiteSwing();}
         }
     }
     for(auto* p:players)if(p->comboPoints&&!localComboTargetValid(*p,g.npc(p->comboTarget))){clearLocalCombo(*p);changed=true;}
     for(auto* player:players)if(player && player->dead)localCaptureCorpse(*player);
+    // Unit::setDeathState(JUST_DIED) clears the diminishing records.
+    for(auto* player:players)if(player && player->dead && !player->diminishing.empty())player->diminishing.clear();
+    // Unit::ProhibitSpellSchool lockouts run down; death clears them.
+    for(auto* player:players)if(player&&!player->schoolLockouts.empty()) {
+        for(auto& l:player->schoolLockouts)l.remainingMs-=std::min(l.remainingMs,elapsedMs);
+        std::erase_if(player->schoolLockouts,[&](const auto& l){return !l.remainingMs||player->dead;});changed=true;
+    }
+    // Resolve after timers and combat: death or a phase transition in this
+    // same tick must not leave a passenger attached until the next frame.
+    // Physical free-flight shots never home. Sweep <=10 ms segments against
+    // current actors and installed world geometry before applying one impact.
+    for(auto& shot:g.vehicleProjectiles) {
+        auto* owner=g.player(shot.ownerGuid,players);auto* hull=g.npc(shot.sourceGuid);
+        if(!owner || owner->dead || owner->ghost || !owner->health || owner->vehicleGuid!=shot.sourceGuid ||
+           owner->flight.active || owner->transportEntry || owner->mapId!=shot.mapId || owner->instanceId!=shot.instanceId || owner->phaseMask!=shot.phaseMask ||
+           !hull || hull->dead || !hull->health || hull->combatEpoch!=shot.sourceEpoch || hull->mapId!=shot.mapId || hull->instanceId!=shot.instanceId ||
+           !localPhaseVisible(owner->phaseMask,hull->requiredPhaseMask,hull->excludedPhaseMask)) {shot.remainingMs=0;changed=true;continue;}
+        uint32_t remaining=std::min(elapsedMs,shot.remainingMs);
+        while(remaining && shot.remainingMs) {
+            const uint32_t ms=std::min(remaining,10u);const float seconds=ms*.001f;
+            const float ax=shot.x,ay=shot.y,az=shot.z;
+            float bx=ax+shot.vx*seconds,by=ay+shot.vy*seconds,bz=az+shot.vz*seconds-.5f*shot.gravity*seconds*seconds;
+            const float segment=std::sqrt(distance2(ax,ay,az,bx,by,bz));
+            if(!std::isfinite(segment) || !std::isfinite(bz)){shot.remainingMs=0;break;}
+            const float budget=std::max(0.f,shot.maxRange-shot.traveled);const bool rangeEnd=segment>=budget;
+            if(rangeEnd && segment>0){const auto f=budget/segment;bx=ax+(bx-ax)*f;by=ay+(by-ay)*f;bz=az+(bz-az)*f;}
+            LocalRealmNpc* target=nullptr;float contact=std::numeric_limits<float>::infinity();
+            for(auto& candidate:g.npcs) {
+                if(candidate.dead || !candidate.health || candidate.vehicleId || candidate.transportEntry || candidate.mapId!=shot.mapId ||
+                   candidate.instanceId!=shot.instanceId || !canAttack(*owner,candidate))continue;
+                const auto* def=content().npc(candidate.entry);const auto radius=std::max(.5f,def && def->boundingRadius>0?def->boundingRadius:1.f)+shot.radius;
+                const float t=localVehicleSegmentSphere(ax,ay,az,bx,by,bz,candidate.x,candidate.y,candidate.z,radius);
+                if(std::isfinite(t) && (t<contact || (t==contact && (!target || candidate.guid<target->guid)))){contact=t;target=&candidate;}
+            }
+            const float end=target?contact:1.f;
+            const float hx=ax+(bx-ax)*end,hy=ay+(by-ay)*end,hz=az+(bz-az)*end;
+            // The underlying ray test excludes its endpoints. Overlap the
+            // previous segment so a wall at a 10 ms boundary cannot be crossed.
+            // Never extend beyond the first actor contact: a wall behind that
+            // actor must not steal its hit, even within the overlap tolerance.
+            const float overlap=shot.traveled>0 && segment>0?.01f/segment:0;
+            if(!g.collision.isInLineOfSight(shot.mapId,ax-(bx-ax)*overlap,ay-(by-ay)*overlap,az-(bz-az)*overlap,hx,hy,hz,false)){shot.remainingMs=0;break;}
+            if(target){
+                // Queue backpressure is transient authority state. Keep the
+                // projectile at the pre-contact point and retry next tick; no
+                // splash target is damaged and the impact is not consumed.
+                if(damageVehicleArea(*target,*hull,*owner,shot.damage,shot.spellId,shot.schoolMask,
+                    hx,hy,hz,shot.areaRadius,players))shot.remainingMs=0;
+                remaining=0;break;
+            }
+            shot.x=bx;shot.y=by;shot.z=bz;shot.vz-=shot.gravity*seconds;shot.traveled+=std::min(segment,budget);
+            shot.remainingMs-=ms;remaining-=ms;
+            if(rangeEnd || !validLocalVehicleProjectileView(shot)){shot.remainingMs=0;break;}
+        }
+        changed=changed||elapsedMs!=0;
+    }
+    std::erase_if(g.vehicleProjectiles,[](const auto& shot){return !shot.remainingMs;});
+    // Vehicle casts are transient authority reservations. They complete only
+    // after this frame's combat and control updates, so a death or stun that
+    // lands on the final frame wins over the effect.
+    std::vector<LocalVehicleCast> finishedVehicleCasts;
+    for(auto& cast:g.vehicleCasts) {
+        auto* owner=g.player(cast.ownerGuid,players);auto* hull=g.npc(cast.sourceGuid);
+        const auto* ability=localVehicleCastAbility(cast,content());
+        bool valid=owner && hull && ability && !owner->dead && !owner->ghost && owner->health &&
+            owner->vehicleGuid==cast.sourceGuid && owner->vehicleSeat==cast.seat &&
+            owner->positionRevision==cast.ownerPositionRevision && !owner->flight.active && !owner->transportEntry &&
+            owner->mapId==cast.mapId && owner->instanceId==cast.instanceId && owner->phaseMask==cast.phaseMask &&
+            !hull->dead && hull->health && hull->combatEpoch==cast.sourceEpoch && hull->mapId==cast.mapId &&
+            hull->instanceId==cast.instanceId && !localNpcStunned(*hull) &&
+            localPhaseVisible(owner->phaseMask,hull->requiredPhaseMask,hull->excludedPhaseMask);
+        if(valid && ability->interruptOnMove)valid=
+            distance2(hull->x,hull->y,hull->z,cast.sourceX,cast.sourceY,cast.sourceZ)<=.000001f &&
+            std::abs(std::remainder(hull->orientation-cast.sourceOrientation,2*kLocalVehiclePi))<=.0001f;
+        if(valid && ability->damage && !ability->projectileSpeed) {
+            const auto* target=g.npc(cast.targetGuid);
+            valid=target && !target->dead && target->health && target->combatEpoch==cast.targetEpoch &&
+                target->mapId==cast.mapId && target->instanceId==cast.instanceId && canAttack(*owner,*target);
+        }
+        if(!valid){cast.remainingMs=0;changed=true;continue;}
+        if(elapsedMs>=cast.remainingMs){cast.remainingMs=0;finishedVehicleCasts.push_back(cast);changed=true;}
+        else if(elapsedMs){cast.remainingMs-=elapsedMs;changed=true;}
+    }
+    std::erase_if(g.vehicleCasts,[](const auto& cast){return !cast.remainingMs;});
+    for(const auto& cast:finishedVehicleCasts)if(auto* owner=g.player(cast.ownerGuid,players)) {
+        LocalRealmCommand command{LocalAction::VehicleAbility,cast.targetGuid,cast.slot};command.serviceNpcGuid=cast.sourceGuid;
+        std::string completion;
+        if(!executeVehicleAbility(*owner,command,players,completion,true,&cast))
+            LOG_INFO("[LOCAL_VEHICLE_CAST] owner=",cast.ownerGuid," spell=",cast.spellId," action=cancel reason=",completion);
+    }
+    for(auto* player:players)if(player) {
+        auto candidate=*player;LocalScriptActionBatch actions;
+        if(updateScriptAreas(candidate,content(),&actions)) {
+            std::vector<LocalRealmPlayer*> authority=players;
+            for(auto*& current:authority)if(current&&current->guid==candidate.guid)current=&candidate;
+            std::string why;
+            if(actions.empty() || executeScriptActionsScoped(actions,{&candidate},authority,why)) {
+                *player=std::move(candidate);changed=true;
+            } else LOG_ERROR("[LOCAL_SCRIPT_AREA] action batch refused player=",player->guid," reason=",why);
+        }
+    }
+    #include "local_escort_finish_tick.inc"
+    for(auto* rider:players)if(rider && rider->vehicleGuid) {
+        auto* vehicle=g.npc(rider->vehicleGuid);
+        if(rider->dead || rider->ghost || !rider->health || rider->flight.active || rider->transportEntry ||
+           !vehicle || vehicle->dead || !vehicle->health || vehicle->vehicleId!=rider->vehicleId ||
+           rider->vehicleSeat>=vehicle->vehicleSeatCount || vehicle->mapId!=rider->mapId || vehicle->instanceId!=rider->instanceId ||
+           !localPhaseVisible(rider->phaseMask,vehicle->requiredPhaseMask,vehicle->excludedPhaseMask)) {
+            changed=detachVehicleScoped(*rider,players)||changed;
+        } else {
+            rider->vehicleMoveAllowance=std::min(3.5f,rider->vehicleMoveAllowance+7.f*dt);
+            const auto position=localVehicleSeatPosition(*vehicle,rider->vehicleSeat);
+            changed=changed || rider->x!=position[0] || rider->y!=position[1] || rider->z!=position[2];
+            rider->x=position[0];rider->y=position[1];rider->z=position[2];rider->orientation=vehicle->orientation;
+            rider->falling=false;rider->movementState=0;rider->fallStartZ=rider->z;rider->fallRevision=rider->positionRevision;
+        }
+    }
+    for(auto* player:players)if(player && !player->scriptStates.empty()) {
+        auto candidate=*player;LocalScriptActionBatch actions;bool scriptsOk=false;
+        const bool statusChanged=questStatus(candidate,content(),true,&scriptsOk,&actions);
+        std::vector<LocalRealmPlayer*> authority=players;
+        for(auto*& current:authority)if(current&&current->guid==candidate.guid)current=&candidate;
+        std::string why;
+        if(scriptsOk && (actions.empty() || executeScriptActionsScoped(actions,{&candidate},authority,why))) {
+            *player=std::move(candidate);changed=statusChanged||changed;
+        } else if(!actions.empty())LOG_ERROR("[LOCAL_SCRIPT_QUEST] action batch refused player=",player->guid," reason=",why);
+    }
+    // Safe structural boundary: combat, projectiles, escorts, vehicles and
+    // area iterators above no longer retain LocalRealmNpc references.
+    changed=g.tickNpcPeriodic(elapsedMs,players)||changed;
+    changed=settlePendingScriptKills(players)||changed;
     g.refreshHealingViews(players);
     return changed;
 }
+
+bool LocalGameplay::settlePendingScriptKills(const std::vector<LocalRealmPlayer*>& players,
+        const std::set<uint64_t>* playerFilter) {
+    auto& g=*impl_;bool changed=false;
+    std::set<uint64_t> blockedScriptPlayers;
+    for(auto it=g.pendingScriptCommits.begin();it!=g.pendingScriptCommits.end();) {
+        if(playerFilter && !playerFilter->contains(it->playerGuid)){++it;continue;}
+        auto* player=g.player(it->playerGuid,players);
+        if(!player) {
+            // The fact is authority state, not a property of the current
+            // socket roster. Keep it across disconnects; Save44 persists it
+            // and a later session resumes the ordered commit.
+            ++it;continue;
+        }
+        if(blockedScriptPlayers.count(it->playerGuid)){++it;continue;}
+        auto candidate=*player;LocalScriptActionBatch actions;
+        const uint32_t eventXp=it->count?uint32_t(it->xp/it->count+(it->xp%it->count?1u:0u)):0;
+        if(eventXp)experience(candidate,content(),eventXp);
+        if(!applyScriptTriggers(candidate,content(),LocalScriptTriggerKind::NpcKill,it->npcEntry,&actions)) {
+            blockedScriptPlayers.insert(it->playerGuid);++it;continue;
+        }
+        objectiveCredit(candidate,content(),LocalQuestObjective::Type::Kill,it->npcEntry,&actions);
+        std::vector<LocalRealmPlayer*> authority=players;
+        for(auto*& current:authority)if(current&&current->guid==candidate.guid)current=&candidate;
+        std::string why;
+        if(actions.empty() || g.executeScriptActionsScoped(actions,{&candidate},authority,why)) {
+            *player=std::move(candidate);changed=true;
+            it->xp-=eventXp;
+            if(!--it->count)it=g.pendingScriptCommits.erase(it);
+        } else {
+            LOG_ERROR("[LOCAL_SCRIPT] deferred combat action refused player=",player->guid," reason=",why);
+            blockedScriptPlayers.insert(it->playerGuid);++it;
+        }
+    }
+    std::erase_if(g.npcs,[](const auto& npc){return npc.scriptActorRetired;});
+    return changed;
+}
 void LocalGameplay::refreshInventoryObjectives(LocalRealmPlayer& player){questStatus(player,content());}
+bool LocalGameplay::refreshInventoryObjectives(LocalRealmPlayer& player,
+        const std::vector<LocalRealmPlayer*>& authorityPlayers,std::string& error) {
+    auto candidate=player;LocalScriptActionBatch actions;bool scriptsOk=false;
+    questStatus(candidate,content(),false,&scriptsOk,&actions);
+    if(!scriptsOk){error="Quest completion script could not be prepared";return false;}
+    std::vector<LocalRealmPlayer*> authority=authorityPlayers;bool replaced=false;
+    for(auto*& current:authority)if(current&&current->guid==candidate.guid){current=&candidate;replaced=true;}
+    if(!replaced)authority.push_back(&candidate);
+    if(!actions.empty()&&!executeScriptActionsScoped(actions,{&candidate},authority,error))return false;
+    player=std::move(candidate);error.clear();return true;
+}
 } // namespace wowee::game

@@ -13,6 +13,7 @@
 #include "rendering/terrain_manager.hpp"
 #include <imgui.h>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #ifdef WOWEE_PS4
@@ -50,11 +51,6 @@ bool applyFrame(rendering::Camera& camera, const CharacterIntroFrame& frame) {
     return true;
 }
 
-bool requestPosition(rendering::TerrainManager& terrain, const glm::vec3& position, bool priority=false, bool repairIncomplete=false) {
-    if (!usablePosition(position)) return false;
-    const auto tile = coords::worldToTile(position.x, position.y);
-    return terrain.enqueueTile(tile.first, tile.second, priority, repairIncomplete);
-}
 } // namespace
 
 bool Application::characterIntroOwnsView() const {
@@ -125,6 +121,48 @@ void Application::updateCharacterIntro(float deltaTime) {
         std::chrono::duration<float>(now - introLastUpdate_).count();
     introLastUpdate_ = now;
     float elapsed = std::isfinite(measured) && measured > 0.0f ? measured : 0.0f;
+
+    // A cinematic samples several future camera/look-at positions every frame.
+    // Most collapse onto the same 2-4 ADT tiles; enqueueing each sample used to
+    // lock the terrain queue repeatedly and, for priority requests, linearly
+    // search/reorder it. Coalesce identical tiles for this update while still
+    // honoring a later priority/repair upgrade for the same tile.
+    struct IntroTileRequest {
+        int x = -1;
+        int y = -1;
+        bool priority = false;
+        bool repairIncomplete = false;
+        bool accepted = false;
+    };
+    std::array<IntroTileRequest, 24> introTileRequests{};
+    size_t introTileRequestCount = 0;
+    const auto requestPosition = [&](rendering::TerrainManager& terrainRef,
+                                     const glm::vec3& position,
+                                     bool priority = false,
+                                     bool repairIncomplete = false) {
+        if (!usablePosition(position)) return false;
+        const auto tile = coords::worldToTile(position.x, position.y);
+        for (size_t i = 0; i < introTileRequestCount; ++i) {
+            auto& cached = introTileRequests[i];
+            if (cached.x != tile.first || cached.y != tile.second) continue;
+            const bool upgrade = (priority && !cached.priority) ||
+                                 (repairIncomplete && !cached.repairIncomplete);
+            if (upgrade) {
+                cached.priority = cached.priority || priority;
+                cached.repairIncomplete = cached.repairIncomplete || repairIncomplete;
+                cached.accepted = terrainRef.enqueueTile(cached.x, cached.y,
+                    cached.priority, cached.repairIncomplete);
+            }
+            return cached.accepted;
+        }
+        const bool accepted = terrainRef.enqueueTile(tile.first, tile.second,
+                                                    priority, repairIncomplete);
+        if (introTileRequestCount < introTileRequests.size()) {
+            introTileRequests[introTileRequestCount++] = {
+                tile.first, tile.second, priority, repairIncomplete, accepted};
+        }
+        return accepted;
+    };
 
     if (introReturning_) {
         camera->setPosition(introSavedCameraPosition_);

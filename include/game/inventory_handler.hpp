@@ -531,7 +531,9 @@ public:
     bool applyInventoryFields(const FlatFieldMap& fields);
     void extractContainerFields(uint64_t containerGuid, const FlatFieldMap& fields);
     ItemDef buildItemDef(uint32_t entry, uint32_t stackCount, uint32_t curDur, uint32_t maxDur, uint64_t guid,
-                         uint32_t flags = 0, int32_t randomPropertyId = 0, uint32_t suffixFactor = 0);
+                         uint32_t flags = 0, int32_t randomPropertyId = 0, uint32_t suffixFactor = 0,
+                         uint32_t permanentEnchantId = 0, uint32_t temporaryEnchantId = 0,
+                         std::array<uint32_t, 3> socketEnchantIds = {});
     void rebuildOnlineInventory();
     /// Announce the bank slots that moved, once their items are current.
     void fireBankSlotEvents();

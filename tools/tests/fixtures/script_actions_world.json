@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "name": "Synthetic transactional script-action fixture",
+  "start": {"mapId": 0, "x": 0, "y": 0, "z": 0},
+  "items": [], "spells": [],
+  "npcs": [
+    {"id": 50, "name": "Action guide", "health": 1000, "hostile": false, "questGiver": true},
+    {"id": 60, "name": "Temporary actor", "health": 100, "damage": 1, "hostile": false},
+    {"id": 61, "name": "Action target", "health": 1, "damage": 0, "hostile": true}
+  ],
+  "spawns": [
+    {"id": 1, "entry": 50, "mapId": 0, "x": 0, "y": 0, "z": 0},
+    {"id": 2, "entry": 61, "mapId": 0, "x": 2, "y": 0, "z": 0}
+  ],
+  "quests": [{"id": 1, "title": "Action transaction", "giverEntry": 50, "turnInEntry": 50,
+    "objectives": [{"type": "kill", "entry": 61, "count": 1}]}],
+  "scriptActions": [
+    {"id": 1, "action": "spawn", "actorId": 100, "npcEntry": 60, "mapId": 0,
+      "x": 4, "y": 0, "z": 0, "lifetimeMs": 5000},
+    {"id": 2, "action": "dialogue", "actorId": 100, "text": "The sequence begins."},
+    {"id": 3, "action": "move", "actorId": 100, "mapId": 0, "x": 5, "y": 0, "z": 0},
+    {"id": 4, "action": "dialogue", "actorId": 4294967295, "text": "The target is defeated."},
+    {"id": 5, "action": "spawn", "actorId": 101, "npcEntry": 60, "mapId": 0,
+      "x": 3, "y": 0, "z": 0, "lifetimeMs": 5000},
+    {"id": 6, "action": "combat", "actorId": 101},
+    {"id": 7, "action": "despawn", "actorId": 100},
+    {"id": 8, "action": "spawn", "actorId": 200, "npcEntry": 60, "mapId": 0,
+      "x": 8, "y": 0, "z": 0, "lifetimeMs": 10}
+  ],
+  "scriptTriggers": [
+    {"trigger": "questAccept", "sourceId": 1, "scheduleTimerId": 901, "scheduleDelayMs": 10,
+      "actionIds": [1, 2, 3]},
+    {"trigger": "npcKill", "sourceId": 61, "actionIds": [7]},
+    {"trigger": "questComplete", "sourceId": 1, "actionIds": [5, 4, 6]}
+  ],
+  "scriptTimers": [{"timerId": 901, "actionIds": [2]}]
+}

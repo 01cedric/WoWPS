@@ -221,6 +221,7 @@ private:
     static int partyCommand(lua_State* L);
     static int socialCommand(lua_State* L);
     bool act(const std::string& name, uint32_t id, uint32_t quantity = 0);
+    bool openAuctionHouse(uint64_t npc);
     void publish();
     std::string itemIcon(uint32_t displayId) const;
     /// Run the interface's own pickup for the focused control, if it owns one.
@@ -253,6 +254,7 @@ private:
     DialoguePhase phase_=DialoguePhase::None;
     uint32_t craftSkill_=0;
     uint32_t selected_=0, pendingQuest_=0;
+    uint32_t gossipRevision_=0; // 2.40: the gossip page revision the frame shows
     bool pendingTurnIn_=false;
     float missingNpcSeconds_=0, pendingQuestSeconds_=0, merchantRefreshSeconds_=0;
     uint32_t navigationRoot_=0;

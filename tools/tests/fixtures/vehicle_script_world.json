@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "name": "Synthetic vehicle and quest regression fixture",
+  "start": {"mapId": 0, "x": 0, "y": 0, "z": 0},
+  "items": [], "spells": [],
+  "npcs": [{"id": 50, "name": "Test vehicle", "health": 1000, "hostile": false, "questGiver": true}],
+  "spawns": [{"id": 1, "entry": 50, "mapId": 0, "x": 0, "y": 0, "z": 0,
+    "vehicleId": 700, "vehicleSeatCount": 2, "vehicleControllerSeat": 0, "requiredPhaseMask": 1}],
+  "quests": [{"id": 1, "title": "Test scripted ride", "giverEntry": 50, "turnInEntry": 50,
+    "objectives": [{"type": "script", "entry": 500, "count": 2, "text": "Complete the test ride"}]}],
+  "scriptTriggers": [
+    {"trigger": "questAccept", "sourceId": 1, "scriptId": 500, "value": 0},
+    {"trigger": "vehicleEnter", "sourceId": 700, "scriptId": 501, "value": 1,
+      "scheduleTimerId": 900, "scheduleDelayMs": 100},
+    {"trigger": "vehicleEnter", "sourceId": 700, "scriptId": 500, "value": 1},
+    {"trigger": "vehicleExit", "sourceId": 700, "scriptId": 501, "value": 0, "cancelTimerId": 900},
+    {"trigger": "questComplete", "sourceId": 1, "scriptId": 502, "operation": "add", "value": 1},
+    {"trigger": "questAbandon", "sourceId": 1, "scriptId": 500, "value": 0, "cancelTimerId": 900}
+  ],
+  "scriptTimers": [{"timerId": 900, "requiredScriptId": 501, "requiredValue": 1,
+    "scriptId": 500, "value": 2}]
+}

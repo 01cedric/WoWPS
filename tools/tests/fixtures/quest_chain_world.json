@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "questChains": "quest_chain_rules.json",
+  "start": {"mapId": 0, "x": 0, "y": 0, "z": 0},
+  "npcs": [{"id": 90, "name": "Synthetic chain contact", "questGiver": true}],
+  "spawns": [{"id": 90, "entry": 90, "mapId": 0, "x": 0, "y": 0, "z": 0}],
+  "quests": [
+    {"id": 10, "giverEntry": 90, "title": "Synthetic alternatives", "prerequisite": 999, "objectives": [{"type": "talk", "entry": 90, "count": 2}]},
+    {"id": 11, "giverEntry": 90, "title": "Synthetic active predecessor", "objectives": [{"type": "talk", "entry": 90, "count": 2}]},
+    {"id": 12, "giverEntry": 90, "title": "Synthetic breadcrumb", "objectives": [{"type": "talk", "entry": 90, "count": 2}]},
+    {"id": 13, "giverEntry": 90, "title": "Synthetic unsupported chain", "objectives": [{"type": "talk", "entry": 90, "count": 2}]},
+    {"id": 14, "giverEntry": 90, "title": "Synthetic missing metadata", "objectives": [{"type": "talk", "entry": 90, "count": 2}]}
+  ]
+}

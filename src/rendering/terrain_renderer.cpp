@@ -16,6 +16,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <limits>
 #include <cstring>
@@ -209,6 +210,12 @@ bool TerrainRenderer::initialize(VkContext* ctx, VkDescriptorSetLayout perFrameL
     opaqueAlphaTexture->upload(*vkCtx, &opaqueAlpha, 1, 1, VK_FORMAT_R8_UNORM, false);
     opaqueAlphaTexture->createSampler(device, VK_FILTER_LINEAR, VK_FILTER_LINEAR,
                                        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+
+    transparentAlphaTexture = std::make_unique<VkTexture>();
+    uint8_t transparentAlpha = 0;
+    transparentAlphaTexture->upload(*vkCtx, &transparentAlpha, 1, 1, VK_FORMAT_R8_UNORM, false);
+    transparentAlphaTexture->createSampler(device, VK_FILTER_LINEAR, VK_FILTER_LINEAR,
+                                            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
     textureCacheBudgetBytes_ =
         envSizeMBOrDefault("WOWEE_TERRAIN_TEX_CACHE_MB", 4096) * 1024ull * 1024ull;
     LOG_INFO("Terrain texture cache budget: ", textureCacheBudgetBytes_ / (1024 * 1024), " MB");
@@ -253,7 +260,8 @@ bool TerrainRenderer::initialize(VkContext* ctx, VkDescriptorSetLayout perFrameL
         // Indirect draw command buffer
         VkBufferCreateInfo indCI{};
         indCI.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        indCI.size = MAX_INDIRECT_DRAWS * sizeof(VkDrawIndexedIndirectCommand);
+        indCI.size = static_cast<VkDeviceSize>(MAX_INDIRECT_DRAWS) *
+                     SHADOW_INDIRECT_SLICES * sizeof(VkDrawIndexedIndirectCommand);
         indCI.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
         VmaAllocationCreateInfo indAllocCI{};
         indAllocCI.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
@@ -261,6 +269,7 @@ bool TerrainRenderer::initialize(VkContext* ctx, VkDescriptorSetLayout perFrameL
         VmaAllocationInfo indInfo{};
         if (vmaCreateBuffer(allocator, &indCI, &indAllocCI,
                 &indirectBuffer_, &indirectAlloc_, &indInfo) == VK_SUCCESS) {
+            indirectMapped_ = indInfo.pMappedData;
         } else {
             LOG_WARNING("TerrainRenderer: indirect buffer allocation failed");
         }
@@ -330,6 +339,7 @@ void TerrainRenderer::shutdown() {
 
     if (whiteTexture) { whiteTexture->destroy(device, allocator); whiteTexture.reset(); }
     if (opaqueAlphaTexture) { opaqueAlphaTexture->destroy(device, allocator); opaqueAlphaTexture.reset(); }
+    if (transparentAlphaTexture) { transparentAlphaTexture->destroy(device, allocator); transparentAlphaTexture.reset(); }
 
     destroy(device, pipeline);
     destroy(device, wireframePipeline);
@@ -345,7 +355,7 @@ void TerrainRenderer::shutdown() {
     // Destroy mega buffers and indirect draw buffer
     if (megaVB_) { vmaDestroyBuffer(allocator, megaVB_, megaVBAlloc_); megaVB_ = VK_NULL_HANDLE; megaVBAlloc_ = VK_NULL_HANDLE; megaVBMapped_ = nullptr; }
     if (megaIB_) { vmaDestroyBuffer(allocator, megaIB_, megaIBAlloc_); megaIB_ = VK_NULL_HANDLE; megaIBAlloc_ = VK_NULL_HANDLE; megaIBMapped_ = nullptr; }
-    if (indirectBuffer_) { vmaDestroyBuffer(allocator, indirectBuffer_, indirectAlloc_); indirectBuffer_ = VK_NULL_HANDLE; indirectAlloc_ = VK_NULL_HANDLE; }
+    if (indirectBuffer_) { vmaDestroyBuffer(allocator, indirectBuffer_, indirectAlloc_); indirectBuffer_ = VK_NULL_HANDLE; indirectAlloc_ = VK_NULL_HANDLE; indirectMapped_ = nullptr; }
     megaVBUsed_ = 0;
     megaIBUsed_ = 0;
 
@@ -502,6 +512,12 @@ void TerrainRenderer::bindChunkTextures(TerrainChunkGPU& gpuChunk,
     }
 
     // Layer 0 is the base, so the three blended layers are 1..3.
+#ifdef WOWEE_PS4
+    std::array<TerrainAlphaCache<VkTexture>::Mask, 3> alphaMasks{};
+    std::array<bool, 3> alphaNeedsImage{};
+    std::array<bool, 3> alphaTransparent{};
+    size_t nonTrivialAlphaCount = 0;
+#endif
     for (size_t i = 1; i < chunk.layers.size() && i < 4; i++) {
         const auto& layer = chunk.layers[i];
         int li = static_cast<int>(i) - 1;
@@ -517,15 +533,122 @@ void TerrainRenderer::bindChunkTextures(TerrainChunkGPU& gpuChunk,
         }
         gpuChunk.layerTextures[li] = layerTex;
 
+#ifdef WOWEE_PS4
+        // Normalise once. Completely opaque/transparent masks use the shared
+        // 1x1 fallbacks; only authored gradients need a GPU image.
+        if (!layer.alphaData.empty()) {
+            alphaMasks[li] = TerrainAlphaCache<VkTexture>::normalize(layer.alphaData);
+            const bool opaque = TerrainAlphaCache<VkTexture>::opaque(alphaMasks[li]);
+            const bool transparent = !opaque && std::all_of(
+                alphaMasks[li].begin(), alphaMasks[li].end(), [](uint8_t v) { return v == 0; });
+            alphaTransparent[li] = transparent;
+            alphaNeedsImage[li] = !opaque && !transparent;
+            if (alphaNeedsImage[li]) ++nonTrivialAlphaCount;
+        }
+#else
         // A layer with no alpha map covers everything under it.
         VkTexture* alphaTex = opaqueAlphaTexture.get();
         if (!layer.alphaData.empty()) {
             alphaTex = createAlphaTexture(layer.alphaData);
         }
         gpuChunk.alphaTextures[li] = alphaTex;
+#endif
         gpuChunk.layerCount = static_cast<int>(i);
     }
+
+#ifdef WOWEE_PS4
+    // The expensive hardware path is two/three small images per chunk, not
+    // their 4 KiB payload. Pack them into one RGBA allocation and expose each
+    // channel through an image-view swizzle. One non-trivial mask keeps the
+    // existing R8 cache path because it is already one allocation and uses a
+    // quarter of the pixel storage.
+    bool packed = false;
+    if (nonTrivialAlphaCount >= 2) {
+        packed = createPackedAlphaTexture(gpuChunk, alphaMasks, alphaNeedsImage);
+    }
+    for (int li = 0; li < 3; ++li) {
+        if (alphaTransparent[li]) {
+            gpuChunk.alphaTextures[li] = transparentAlphaTexture.get();
+            continue;
+        }
+        if (!alphaNeedsImage[li]) {
+            gpuChunk.alphaTextures[li] = opaqueAlphaTexture.get();
+            continue;
+        }
+        if (packed && gpuChunk.alphaPackViews[li] != VK_NULL_HANDLE) {
+            // writeMaterialDescriptors uses the packed view directly.
+            gpuChunk.alphaTextures[li] = nullptr;
+            continue;
+        }
+        gpuChunk.alphaTextures[li] = createAlphaTexture(alphaMasks[li]);
+    }
+#endif
 }
+
+#ifdef WOWEE_PS4
+bool TerrainRenderer::createPackedAlphaTexture(
+    TerrainChunkGPU& gpuChunk,
+    const std::array<TerrainAlphaCache<VkTexture>::Mask, 3>& masks,
+    const std::array<bool, 3>& packed) {
+    if (!vkCtx) return false;
+
+    // Interleave three authored R8 masks into RGB. A stays opaque and is not
+    // sampled. 64x64 RGBA is 16 KiB: slightly larger than three raw R8 masks,
+    // but one image allocation instead of three is what removes the PS4 CPU
+    // spike measured in 2.06.
+    std::array<uint8_t, 64 * 64 * 4> pixels{};
+    for (size_t p = 0; p < 64u * 64u; ++p) {
+        pixels[p * 4 + 0] = packed[0] ? masks[0][p] : 255;
+        pixels[p * 4 + 1] = packed[1] ? masks[1][p] : 255;
+        pixels[p * 4 + 2] = packed[2] ? masks[2][p] : 255;
+        pixels[p * 4 + 3] = 255;
+    }
+
+    auto texture = std::make_unique<VkTexture>();
+    if (!texture->upload(*vkCtx, pixels.data(), 64, 64,
+                         VK_FORMAT_R8G8B8A8_UNORM, false)) {
+        return false;
+    }
+    if (!texture->createSampler(vkCtx->getDevice(), VK_FILTER_LINEAR, VK_FILTER_LINEAR,
+                                VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)) {
+        return false;
+    }
+
+    const VkComponentSwizzle channels[3] = {
+        VK_COMPONENT_SWIZZLE_R,
+        VK_COMPONENT_SWIZZLE_G,
+        VK_COMPONENT_SWIZZLE_B,
+    };
+    VkImageView views[3] = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
+    for (int li = 0; li < 3; ++li) {
+        if (!packed[li]) continue;
+        VkImageViewCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        info.image = texture->getImage();
+        info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        info.format = VK_FORMAT_R8G8B8A8_UNORM;
+        info.components.r = channels[li];
+        info.components.g = VK_COMPONENT_SWIZZLE_ZERO;
+        info.components.b = VK_COMPONENT_SWIZZLE_ZERO;
+        info.components.a = VK_COMPONENT_SWIZZLE_ONE;
+        info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        info.subresourceRange.baseMipLevel = 0;
+        info.subresourceRange.levelCount = 1;
+        info.subresourceRange.baseArrayLayer = 0;
+        info.subresourceRange.layerCount = 1;
+        if (vkCreateImageView(vkCtx->getDevice(), &info, nullptr, &views[li]) != VK_SUCCESS) {
+            for (VkImageView view : views)
+                if (view) vkDestroyImageView(vkCtx->getDevice(), view, nullptr);
+            return false;
+        }
+    }
+
+    gpuChunk.alphaPackSampler = texture->getSampler();
+    for (int li = 0; li < 3; ++li) gpuChunk.alphaPackViews[li] = views[li];
+    gpuChunk.alphaPackTexture = std::move(texture);
+    return true;
+}
+#endif
 
 bool TerrainRenderer::createChunkParamsUBO(TerrainChunkGPU& gpuChunk) {
     TerrainParamsUBO params{};
@@ -717,12 +840,14 @@ VkTexture* TerrainRenderer::createAlphaTexture(const std::vector<uint8_t>& alpha
     if (alphaData.empty()) return opaqueAlphaTexture.get();
 
     const auto mask = TerrainAlphaCache<VkTexture>::normalize(alphaData);
+#ifdef WOWEE_PS4
+    return createAlphaTexture(mask);
+#else
     ++alphaLookupCount_;
     const bool opaque = TerrainAlphaCache<VkTexture>::opaque(mask);
     VkTexture* reused = nullptr;
     if (opaque) { ++alphaOpaqueHits_; reused = opaqueAlphaTexture.get(); }
     else reused = alphaReuseCache_.find(mask);
-    // Bounded receipts expose whether this cache actually helps console data.
     if (alphaLookupCount_ <= 4 || alphaLookupCount_ % 256 == 0) {
         LOG_INFO("[TERRAIN_ALPHA_REUSE] requests=", alphaLookupCount_,
                  " exactHits=", alphaReuseCache_.hits, " opaqueHits=", alphaOpaqueHits_,
@@ -734,11 +859,10 @@ VkTexture* TerrainRenderer::createAlphaTexture(const std::vector<uint8_t>& alpha
     const uint8_t* src = mask.data();
 
     auto tex = std::make_unique<VkTexture>();
-    if (!tex->upload(*vkCtx, src, 64, 64, VK_FORMAT_R8_UNORM, false)) {
+    if (!tex->upload(*vkCtx, src, 64, 64, VK_FORMAT_R8_UNORM, false))
         return opaqueAlphaTexture.get();
-    }
     tex->createSampler(vkCtx->getDevice(), VK_FILTER_LINEAR, VK_FILTER_LINEAR,
-                        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+                       VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
     VkTexture* raw = tex.get();
     static uint64_t alphaCounter = 0;
@@ -750,9 +874,45 @@ VkTexture* TerrainRenderer::createAlphaTexture(const std::vector<uint8_t>& alpha
     textureCacheBytes_ += e.approxBytes;
     textureCache[key] = std::move(e);
     alphaReuseCache_.remember(mask, raw);
+    return raw;
+#endif
+}
 
+#ifdef WOWEE_PS4
+VkTexture* TerrainRenderer::createAlphaTexture(const TerrainAlphaCache<VkTexture>::Mask& mask) {
+    ++alphaLookupCount_;
+    const bool opaque = TerrainAlphaCache<VkTexture>::opaque(mask);
+    VkTexture* reused = nullptr;
+    if (opaque) { ++alphaOpaqueHits_; reused = opaqueAlphaTexture.get(); }
+    else reused = alphaReuseCache_.find(mask);
+    if (alphaLookupCount_ <= 4 || alphaLookupCount_ % 256 == 0) {
+        LOG_INFO("[TERRAIN_ALPHA_REUSE] requests=", alphaLookupCount_,
+                 " exactHits=", alphaReuseCache_.hits, " opaqueHits=", alphaOpaqueHits_,
+                 " misses=", alphaReuseCache_.misses, " replacements=", alphaReuseCache_.replacements,
+                 " lookupBytes=", alphaReuseCache_.allocatedBytes(),
+                 " avoidedImageUploads=", alphaReuseCache_.hits + alphaOpaqueHits_);
+    }
+    if (reused) return reused;
+
+    auto tex = std::make_unique<VkTexture>();
+    if (!tex->upload(*vkCtx, mask.data(), 64, 64, VK_FORMAT_R8_UNORM, false))
+        return opaqueAlphaTexture.get();
+    tex->createSampler(vkCtx->getDevice(), VK_FILTER_LINEAR, VK_FILTER_LINEAR,
+                       VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+
+    VkTexture* raw = tex.get();
+    static uint64_t alphaCounter = 0;
+    std::string key = "__alpha_ps4_" + std::to_string(++alphaCounter);
+    TextureCacheEntry e;
+    e.texture = std::move(tex);
+    e.approxBytes = 64 * 64;
+    e.lastUse = ++textureCacheCounter_;
+    textureCacheBytes_ += e.approxBytes;
+    textureCache[key] = std::move(e);
+    alphaReuseCache_.remember(mask, raw);
     return raw;
 }
+#endif
 
 VkDescriptorSet TerrainRenderer::allocateMaterialSet() {
     VkDescriptorSetAllocateInfo allocInfo{};
@@ -807,7 +967,17 @@ bool TerrainRenderer::writeMaterialDescriptors(VkDescriptorSet set, const Terrai
     imageInfos[0] = pick(chunk.baseTexture, white)->descriptorInfo();
     for (int i = 0; i < 3; i++) {
         imageInfos[1 + i] = pick(chunk.layerTextures[i], white)->descriptorInfo();
-        imageInfos[4 + i] = pick(chunk.alphaTextures[i], opaque)->descriptorInfo();
+#ifdef WOWEE_PS4
+        if (chunk.alphaPackViews[i] != VK_NULL_HANDLE && chunk.alphaPackSampler != VK_NULL_HANDLE) {
+            imageInfos[4 + i] = {};
+            imageInfos[4 + i].sampler = chunk.alphaPackSampler;
+            imageInfos[4 + i].imageView = chunk.alphaPackViews[i];
+            imageInfos[4 + i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        } else
+#endif
+        {
+            imageInfos[4 + i] = pick(chunk.alphaTextures[i], opaque)->descriptorInfo();
+        }
     }
 
     VkDescriptorBufferInfo bufInfo{};
@@ -1016,6 +1186,7 @@ bool TerrainRenderer::initializeShadow(VkRenderPass shadowRenderPass) {
 
 void TerrainRenderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMatrix,
                                     const glm::vec3& /*shadowCenter*/, float /*shadowRadius*/,
+                                    uint32_t shadowPassIndex,
                                     const ShadowReceiverHull* receiverHull) {
     if (!shadowPipeline_ || !shadowParams_.set) return;
     if (chunks.empty()) return;
@@ -1036,43 +1207,92 @@ void TerrainRenderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSp
     vkCmdPushConstants(cmd, shadowPipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT,
                        0, 128, &push);
 
-    // Bind mega buffers once for shadow pass (same as opaque)
+    // The terrain mega buffers are ideal for indexed indirect shadow submission:
+    // every visible chunk shares the same pipeline/descriptors/push constants,
+    // while firstIndex/baseVertex live in VkDrawIndexedIndirectCommand. Keep four
+    // immutable slices so near/far cascades and the two in-flight frame slots
+    // never overwrite arguments that the GPU has not consumed yet.
     const bool useMegaShadow = (megaVB_ && megaIB_);
-    bool megaShadowBound = false;
-    if (useMegaShadow) {
-        VkDeviceSize megaOffset = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &megaVB_, &megaOffset);
-        vkCmdBindIndexBuffer(cmd, megaIB_, 0, VK_INDEX_TYPE_UINT32);
-        megaShadowBound = true;
-    }
+    const bool useIndirectShadow = useMegaShadow && indirectBuffer_ && indirectMapped_;
+    const uint32_t frameSlot = vkCtx ? (vkCtx->getCurrentFrame() & 1u) : 0u;
+    const uint32_t passSlot = std::min(shadowPassIndex, 1u);
+    const uint32_t sliceIndex = frameSlot * 2u + passSlot;
+    const VkDeviceSize sliceBytes = static_cast<VkDeviceSize>(MAX_INDIRECT_DRAWS) *
+                                    sizeof(VkDrawIndexedIndirectCommand);
+    const VkDeviceSize sliceOffset = static_cast<VkDeviceSize>(sliceIndex) * sliceBytes;
+    auto* indirect = useIndirectShadow
+        ? static_cast<VkDrawIndexedIndirectCommand*>(indirectMapped_) +
+          static_cast<size_t>(sliceIndex) * MAX_INDIRECT_DRAWS
+        : nullptr;
+    uint32_t indirectCount = 0;
+    uint32_t fallbackDraws = 0;
+    uint32_t visibleMega = 0;
 
+    // Fallback chunks can be submitted immediately; depth-only shadow ordering
+    // is irrelevant. Mega chunks are gathered and emitted together afterward.
     for (const auto& chunk : chunks) {
         if (!chunk.isValid()) continue;
-
         if (!lightFrustum.intersectsSphere(chunk.boundingSphereCenter,
                                            chunk.boundingSphereRadius)) continue;
         if (receiverHull && !receiverHull->intersects(chunk.boundingSphereCenter,
-                                                     chunk.boundingSphereRadius)) continue;
+                                                       chunk.boundingSphereRadius)) continue;
 
         if (useMegaShadow && chunk.megaBaseVertex >= 0) {
-            // Rebound after a fallback chunk, for the reason given in the main
-            // pass above: the mega offsets are meaningless against the buffer a
-            // single chunk left bound.
-            if (!megaShadowBound) {
-                VkDeviceSize megaOffset = 0;
-                vkCmdBindVertexBuffers(cmd, 0, 1, &megaVB_, &megaOffset);
-                vkCmdBindIndexBuffer(cmd, megaIB_, 0, VK_INDEX_TYPE_UINT32);
-                megaShadowBound = true;
+            ++visibleMega;
+            if (indirect && indirectCount < MAX_INDIRECT_DRAWS) {
+                auto& draw = indirect[indirectCount++];
+                draw.indexCount = chunk.indexCount;
+                draw.instanceCount = 1;
+                draw.firstIndex = chunk.megaFirstIndex;
+                draw.vertexOffset = chunk.megaBaseVertex;
+                draw.firstInstance = 0;
+                continue;
             }
-            vkCmdDrawIndexed(cmd, chunk.indexCount, 1, chunk.megaFirstIndex, chunk.megaBaseVertex, 0);
+            VkDeviceSize megaOffset = 0;
+            vkCmdBindVertexBuffers(cmd, 0, 1, &megaVB_, &megaOffset);
+            vkCmdBindIndexBuffer(cmd, megaIB_, 0, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexed(cmd, chunk.indexCount, 1, chunk.megaFirstIndex,
+                             chunk.megaBaseVertex, 0);
+            ++fallbackDraws;
+            continue;
+        }
+
+        VkDeviceSize offset = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &chunk.vertexBuffer, &offset);
+        vkCmdBindIndexBuffer(cmd, chunk.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(cmd, chunk.indexCount, 1, 0, 0, 0);
+        ++fallbackDraws;
+    }
+
+    if (indirectCount) {
+        const VkDeviceSize bytes = static_cast<VkDeviceSize>(indirectCount) *
+                                   sizeof(VkDrawIndexedIndirectCommand);
+        const VkResult flush = vmaFlushAllocation(vkCtx->getAllocator(), indirectAlloc_,
+                                                   sliceOffset, bytes);
+        VkDeviceSize megaOffset = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &megaVB_, &megaOffset);
+        vkCmdBindIndexBuffer(cmd, megaIB_, 0, VK_INDEX_TYPE_UINT32);
+        if (flush == VK_SUCCESS) {
+            vkCmdDrawIndexedIndirect(cmd, indirectBuffer_, sliceOffset, indirectCount,
+                                     sizeof(VkDrawIndexedIndirectCommand));
         } else {
-            VkDeviceSize offset = 0;
-            vkCmdBindVertexBuffers(cmd, 0, 1, &chunk.vertexBuffer, &offset);
-            vkCmdBindIndexBuffer(cmd, chunk.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-            vkCmdDrawIndexed(cmd, chunk.indexCount, 1, 0, 0, 0);
-            megaShadowBound = false;
+            // Preserve exact coverage if a host-visible allocation ever reports
+            // a flush failure; direct draws use the same gathered arguments.
+            for (uint32_t i = 0; i < indirectCount; ++i) {
+                const auto& draw = indirect[i];
+                vkCmdDrawIndexed(cmd, draw.indexCount, draw.instanceCount, draw.firstIndex,
+                                 draw.vertexOffset, draw.firstInstance);
+                ++fallbackDraws;
+            }
         }
     }
+
+    static uint32_t reportFrame[2] = {};
+    if ((++reportFrame[passSlot] % 300u) == 1u)
+        LOG_INFO("[TERRAIN_SHADOW_BATCH] pass=", passSlot,
+                 " visibleMega=", visibleMega, " indirectDraws=", indirectCount,
+                 " apiSubmits=", indirectCount ? 1 : 0, " fallbackDraws=", fallbackDraws);
+
 }
 
 void TerrainRenderer::removeTile(int tileX, int tileY) {
@@ -1192,6 +1412,15 @@ void TerrainRenderer::destroyChunkGPU(TerrainChunkGPU& chunk) {
     VkDescriptorPool pool = materialDescPool;
     VkDescriptorSet materialSet = chunk.materialSet;
 
+#ifdef WOWEE_PS4
+    VkTexture* alphaPackTexture = chunk.alphaPackTexture.release();
+    std::array<VkImageView, 3> alphaPackViews = {
+        chunk.alphaPackViews[0], chunk.alphaPackViews[1], chunk.alphaPackViews[2]
+    };
+    for (auto& view : chunk.alphaPackViews) view = VK_NULL_HANDLE;
+    chunk.alphaPackSampler = VK_NULL_HANDLE;
+#endif
+
     std::vector<VkTexture*> alphaTextures;
     alphaTextures.reserve(chunk.ownedAlphaTextures.size());
     for (auto& tex : chunk.ownedAlphaTextures) {
@@ -1208,7 +1437,11 @@ void TerrainRenderer::destroyChunkGPU(TerrainChunkGPU& chunk) {
     chunk.ownedAlphaTextures.clear();
 
     vkCtx->deferAfterAllFrameFences([device, allocator, vertexBuffer, vertexAlloc, indexBuffer, indexAlloc,
-                                     paramsUBO, paramsAlloc, pool, materialSet, alphaTextures]() {
+                                     paramsUBO, paramsAlloc, pool, materialSet, alphaTextures
+#ifdef WOWEE_PS4
+                                     , alphaPackTexture, alphaPackViews
+#endif
+                                     ]() {
         if (vertexBuffer) {
             AllocatedBuffer ab{}; ab.buffer = vertexBuffer; ab.allocation = vertexAlloc;
             destroyBuffer(allocator, ab);
@@ -1230,6 +1463,14 @@ void TerrainRenderer::destroyChunkGPU(TerrainChunkGPU& chunk) {
             tex->destroy(device, allocator);
             delete tex;
         }
+#ifdef WOWEE_PS4
+        for (VkImageView view : alphaPackViews)
+            if (view) vkDestroyImageView(device, view, nullptr);
+        if (alphaPackTexture) {
+            alphaPackTexture->destroy(device, allocator);
+            delete alphaPackTexture;
+        }
+#endif
     });
 }
 

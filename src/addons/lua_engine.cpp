@@ -1941,7 +1941,37 @@ static bool fillSpellTooltip(lua_State* L, wowee::ui::Widget* w,
     return true;
 }
 
+// Vehicle effects use the authored local profile, not player spell scaling.
+// Nil means this is an ordinary action; false means an empty vehicle slot.
+static int lua_PopulateVehicleActionTooltip(lua_State* L) {
+    auto* gh=getGameHandler(L);const auto view=localVehicleView(gh?gh->localServiceRealm():nullptr);
+    const int index=localVehicleActionIndex(int(luaL_optnumber(L,2,0)));
+    if(!view.active() || index<0){lua_pushnil(L);return 1;}
+    auto* widget=widgetOf(L,1);const auto* ability=view.ability(index);
+    if(!widget || !ability){lua_pushboolean(L,0);return 1;}
+    widget->isTooltip=true;widget->tooltipLines.clear();
+    const auto line=[&](const std::string& text,bool title=false) {
+        ui::Widget::TooltipLine value;value.left=text;
+        value.lc[0]=1.f;value.lc[1]=title?.82f:1.f;value.lc[2]=title?0.f:1.f;value.lc[3]=1.f;
+        widget->tooltipLines.push_back(std::move(value));
+    };
+    const auto* spell=view.realm->content().spell(ability->spellId);
+    const auto name=spell?spell->name:gh->getSpellName(ability->spellId);
+    line(name.empty()?"Vehicle ability":name,true);
+    line(std::to_string(ability->powerCost)+" Energy");
+    if(ability->cooldownMs)line(std::to_string(ability->cooldownMs/1000.f).substr(0,4)+" sec cooldown");
+    if(ability->damage)line(std::to_string(ability->damage)+" damage");
+    if(ability->repair)line("Repairs "+std::to_string(ability->repair)+" vehicle health");
+    if(ability->range>0)line(std::to_string(int(ability->range))+
+        (ability->projectileSpeed>0?" yd projectile travel limit":" yd range"));
+    if(ability->projectileSpeed>0)line("Aim the vehicle weapon before firing.");
+    widget->shown=true;markTreeDirty(L);lua_pushboolean(L,1);return 1;
+}
+
 int lua_Tooltip_SetAction(lua_State* L) {
+    lua_PopulateVehicleActionTooltip(L);
+    if(!lua_isnil(L,-1))return 1;
+    lua_pop(L,1);
     auto* w = widgetOf(L, 1);
     auto* gh = wowee::addons::getGameHandler(L);
     const int slot = static_cast<int>(luaL_optnumber(L, 2, 0)) - 1;
@@ -7068,6 +7098,8 @@ void LuaEngine::registerCoreAPI() {
     lua_setglobal(L_, "__WoweeSetWidgetText");
     lua_pushcfunction(L_, lua_Tooltip_SetText);
     lua_setglobal(L_, "__WoweeTooltipSetText");
+    lua_pushcfunction(L_, lua_PopulateVehicleActionTooltip);
+    lua_setglobal(L_, "__WoweeVehicleActionTooltip");
     lua_pushcfunction(L_, lua_EditBox_GetText);
     lua_setglobal(L_, "__WoweeEditGetText");
 
@@ -8233,6 +8265,8 @@ void LuaEngine::registerCoreAPI() {
         "function __WoweeFrameMT:SetAction(slot)\n"
         "    self:ClearLines()\n"
         "    if not slot then return false end\n"
+        "    local vehicle = __WoweeVehicleActionTooltip(self, slot)\n"
+        "    if vehicle ~= nil then return vehicle end\n"
         "    local actionType, id = GetActionInfo(slot)\n"
         "    if actionType == 'spell' and id and id > 0 then\n"
         "        self:SetSpellByID(id)\n"

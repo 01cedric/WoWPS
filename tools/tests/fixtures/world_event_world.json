@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "name": "Synthetic shared world event regression fixture",
+  "start": {"mapId": 0, "x": 0, "y": 0, "z": 0},
+  "items": [],
+  "spells": [],
+  "npcs": [
+    {"id": 50, "name": "Event herald", "health": 100, "hostile": false},
+    {"id": 51, "name": "Event guide", "health": 100, "hostile": false, "questGiver": true}
+  ],
+  "spawns": [
+    {"id": 1, "entry": 51, "mapId": 0, "x": 0, "y": 0, "z": 0, "requiredPhaseMask": 1}
+  ],
+  "quests": [
+    {"id": 1, "title": "Hear the announcement", "giverEntry": 51, "turnInEntry": 51, "objectives": []}
+  ],
+  "scriptActions": [
+    {"id": 100, "action": "spawn", "actorId": 100, "npcEntry": 50, "mapId": 0,
+      "x": 2, "y": 0, "z": 0, "orientation": 0, "lifetimeMs": 200},
+    {"id": 101, "action": "dialogue", "actorId": 100, "mapId": 0,
+      "text": "The shared event has begun."},
+    {"id": 102, "action": "despawn", "actorId": 100, "mapId": 0},
+    {"id": 103, "action": "dialogue", "actorId": 4294967295, "mapId": 0,
+      "text": "Your quest was accepted."}
+  ],
+  "worldEvents": [
+    {"id": 700, "name": "Test invasion", "clock": "simulation", "mapId": 0,
+      "enabled": true, "repeat": true, "initialDelayMs": 50,
+      "activeDurationMs": 200, "cooldownMs": 100,
+      "activePhaseMask": 2, "inactivePhaseMask": 4,
+      "startActionIds": [100, 101], "endActionIds": [102]}
+  ],
+  "scriptTriggers": [
+    {"trigger": "questAccept", "sourceId": 1, "scriptId": 600, "value": 1,
+      "actionIds": [103]}
+  ]
+}

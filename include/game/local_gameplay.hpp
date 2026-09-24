@@ -4,14 +4,22 @@
 #include "game/local_runes.hpp"
 #include "game/local_equipment.hpp"
 #include "game/local_travel.hpp"
+#include "game/reputation_standing.hpp"
+#include "game/local_quest_chain.hpp"
+#include "game/local_script_actions.hpp"
+#include "game/local_world_event.hpp"
+#include "game/local_vehicle_effects.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
+#include <random>
 #include <functional>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -27,6 +35,24 @@ struct LocalFactionTemplate {
     uint32_t id = 0, faction = 0, flags = 0, factionGroup = 0, friendGroup = 0, enemyGroup = 0;
     std::array<uint32_t, 4> enemies{}, friends{};
 };
+struct LocalFactionReputationBase {
+    uint32_t factionId = 0;
+    std::array<uint32_t,4> raceMasks{}, classMasks{};
+    std::array<int32_t,4> base{};
+};
+inline int32_t localFactionBaseReputation(const LocalFactionReputationBase& row, uint8_t race, uint8_t classId, bool* matched = nullptr) {
+    const uint32_t raceMask = race && race <= 32 ? (1u << (race - 1)) : 0;
+    const uint32_t classMask = classId && classId <= 32 ? (1u << (classId - 1)) : 0;
+    for (size_t i=0;i<4;++i) {
+        if ((!row.raceMasks[i] || (row.raceMasks[i] & raceMask)) &&
+            (!row.classMasks[i] || (row.classMasks[i] & classMask))) {
+            if (matched) *matched = true;
+            return row.base[i];
+        }
+    }
+    if (matched) *matched = false;
+    return 0;
+}
 struct LocalAreaTriggerVolume {
     uint32_t id = 0, mapId = 0;
     // Raw/server coordinates from AreaTrigger.dbc, not render-space coordinates.
@@ -65,7 +91,28 @@ struct LocalInstanceState {
     uint64_t groupId = 0;
 };
 
-struct LocalItemStack { uint32_t itemId = 0; uint16_t count = 0; uint8_t bagSlot=255; bool operator==(const LocalItemStack&) const = default; };
+struct LocalItemInstanceState {
+    // Concrete item-object state. These values intentionally mirror the
+    // per-instance portion of ItemDef so a local-realm item can travel through
+    // bank, mail, trade and auction escrow without being reconstructed from its
+    // template and losing its roll/enchant/durability state.
+    uint32_t instanceFlags = 0;
+    uint32_t permanentEnchantId = 0;
+    uint32_t temporaryEnchantId = 0;
+    std::array<uint32_t,3> socketEnchantIds{};
+    uint32_t curDurability = 0, maxDurability = 0;
+    int32_t randomPropertyId = 0;
+    uint32_t suffixFactor = 0;
+    bool soulbound = false;
+    bool operator==(const LocalItemInstanceState&) const = default;
+};
+struct LocalItemStack {
+    uint32_t itemId = 0;
+    uint16_t count = 0;
+    uint8_t bagSlot = 255;
+    LocalItemInstanceState instance{};
+    bool operator==(const LocalItemStack&) const = default;
+};
 inline constexpr size_t kLocalBankSlots = 28;
 struct LocalMerchantBuyback {
     uint32_t id = 0, itemId = 0, price = 0;
@@ -93,8 +140,32 @@ struct LocalHealingAuraView {
     uint32_t spellId=0,remainingMs=0,durationMs=0;
     uint64_t casterGuid=0;
     uint8_t stacks=1;
+    // Harmful (creature-cast) views only: the effect amounts the authority
+    // resolved at application. Healing views keep both zero.
+    int32_t armorModifier=0;
+    uint8_t slowPercent=0;
+    int8_t armorPercent=0; // LAN105: MOD_RESISTANCE_PCT on armor (TOTAL_PCT)
+    uint8_t controlKind=0; // LAN106: 1 = MOD_STUN, 2 = MOD_ROOT, LAN107: 3 = MOD_FEAR, 4 = MOD_CONFUSE, 5 = MOD_SILENCE
+    // LAN107: the remaining creature-cast amounts resolved at application.
+    // schoolMask scopes the damage-done and damage-taken modifiers.
+    int32_t attackPower=0,damageDoneFlat=0,damageTakenFlat=0;
+    int16_t damageDonePct=0,damageTakenPct=0,healingPct=0,hastePct=0;
+    uint8_t schoolMask=0;
+    bool breakOnDamage=false; // AURA_INTERRUPT_FLAG_TAKE_DAMAGE on the control
+    // LAN108: MOD_CASTING_SPEED_NOT_STACK, MOD_HIT_CHANCE, MOD_DODGE/PARRY/BLOCK_PERCENT,
+    // MOD_RESISTANCE on a magic school and MOD_DISARM from creature casts.
+    int16_t castSpeedPct=0;
+    int8_t hitChancePct=0,dodgePct=0,parryPct=0,blockPct=0;
+    int32_t resistance=0;
+    uint8_t resistanceSchool=0;
+    bool disarmed=false;
     bool operator==(const LocalHealingAuraView&) const = default;
 };
+/// Spell::EffectInterruptCast: the interrupted school(s) stay locked for the
+/// interrupting spell's duration (Unit::ProhibitSpellSchool).
+struct LocalSchoolLockout { uint8_t schoolMask=0; uint32_t remainingMs=0; bool operator==(const LocalSchoolLockout&) const = default; };
+/// Distinct school masks a character can be locked out of at once (wire bound).
+inline constexpr size_t kLocalMaxSchoolLockouts=8;
 /// What an owner projects: one indefinite raid area aura. There is no timer
 /// here by construction - every consumer of LocalStatAura::remainingMs treats it
 /// as a decrementing lease, and an indefinite emitter has no lease. Rules,
@@ -178,6 +249,219 @@ struct LocalQuestProgress {
     LocalQuestStatus status = LocalQuestStatus::Active;
     std::vector<uint16_t> progress;
 };
+struct LocalReputationEntry {
+    uint32_t factionId = 0;
+    int32_t standing = 0;
+};
+inline constexpr size_t kLocalMaxReputations = 128;
+
+// Persistent, authority-owned state for data-driven world scripts.  The value
+// is deliberately a signed 32-bit scalar: quest/event scripts can use it as a
+// counter, enum or boolean without inventing a new save field for every event.
+// Rows are kept sorted by scriptId so save/LAN validation is deterministic.
+struct LocalScriptState {
+    uint32_t scriptId = 0;
+    int32_t value = 0;
+    bool operator==(const LocalScriptState&) const = default;
+};
+inline constexpr size_t kLocalMaxScriptStates = 64;
+
+// Save37/LAN92: bounded one-shot script timers.  Only the timer identity and
+// remaining authority time are persisted; the action remains immutable world
+// content.  Rows are kept sorted by timerId for deterministic save/wire data.
+struct LocalScriptTimer {
+    uint32_t timerId = 0;
+    uint32_t remainingMs = 0;
+    bool operator==(const LocalScriptTimer&) const = default;
+};
+inline constexpr size_t kLocalMaxScriptTimers = 16;
+
+// Small data-driven bridge from authoritative gameplay events into the
+// persistent state introduced by Save36/LAN91.  5.3 extends the same atomic
+// transition with start/restart/cancel operations for bounded script timers.
+enum class LocalScriptTriggerKind : uint8_t {
+    QuestAccept = 0, QuestComplete = 1, QuestReward = 2, NpcTalk = 3, NpcKill = 4,
+    VehicleEnter = 5, VehicleExit = 6, QuestAbandon = 7, AreaEnter = 8, AreaLeave = 9, ObjectUse = 10, EscortStart = 11, EscortWaypoint = 12, EscortComplete = 13, EscortFail = 14
+};
+enum class LocalScriptValueOp : uint8_t { None = 0, Set = 1, Add = 2 };
+struct LocalScriptTrigger {
+    LocalScriptTriggerKind kind = LocalScriptTriggerKind::QuestAccept;
+    uint32_t sourceId = 0;
+    uint32_t requiredScriptId = 0;
+    int32_t requiredValue = 0;
+    uint32_t scriptId = 0;
+    LocalScriptValueOp valueOp = LocalScriptValueOp::None;
+    int32_t value = 0;
+    uint32_t addPhaseMask = 0, removePhaseMask = 0;
+    uint32_t scheduleTimerId = 0, scheduleDelayMs = 0, cancelTimerId = 0;
+    std::vector<uint32_t> actionIds;
+};
+struct LocalScriptTimerAction {
+    uint32_t timerId = 0;
+    uint32_t requiredScriptId = 0;
+    int32_t requiredValue = 0;
+    uint32_t scriptId = 0;
+    LocalScriptValueOp valueOp = LocalScriptValueOp::None;
+    int32_t value = 0;
+    uint32_t addPhaseMask = 0, removePhaseMask = 0;
+    uint32_t scheduleTimerId = 0, scheduleDelayMs = 0, cancelTimerId = 0;
+    std::vector<uint32_t> actionIds;
+};
+struct LocalEscortPoint { float x=0,y=0,z=0; uint32_t waitMs=0; };
+struct LocalEscortRoute {
+    uint32_t id=0,questId=0,spawnId=0;
+    float speed=2.5f,followRadius=25,failRadius=100;
+    uint32_t timeoutMs=600000;
+    std::vector<LocalEscortPoint> points;
+    bool combat=false;
+    float combatChaseRadius=10;
+};
+struct LocalEscortProgress {
+    uint32_t routeId=0,nextPoint=0,waitMs=0,remainingMs=0;
+    float x=0,y=0,z=0;
+    uint32_t guideHealth=0; // Save41. Zero hydrates a legacy non-combat route once.
+    bool operator==(const LocalEscortProgress&)const=default;
+};
+inline bool validLocalEscortProgress(const LocalEscortProgress& e) {
+    if(!e.routeId)return e==LocalEscortProgress{};
+    return e.nextPoint<=64 && e.waitMs<=60000 && e.remainingMs && e.remainingMs<=1800000 && e.guideHealth<=1000000000 &&
+        std::isfinite(e.x)&&std::isfinite(e.y)&&std::isfinite(e.z)&&
+        std::abs(e.x)<=100000 && std::abs(e.y)<=100000 && std::abs(e.z)<=20000;
+}
+struct LocalScriptArea {
+    uint32_t id = 0, mapId = 0;
+    float x = 0, y = 0, z = 0, radius = 1, hysteresis = .5f;
+    uint32_t requiredPhaseMask = 0, excludedPhaseMask = 0;
+};
+inline constexpr size_t kLocalMaxScriptAreas = 32;
+inline bool validLocalScriptAreaIds(const std::vector<uint32_t>& ids) {
+    if(ids.size()>kLocalMaxScriptAreas)return false;
+    uint32_t previous=0;
+    for(auto id:ids) {if(!id || id<=previous)return false;previous=id;}
+    return true;
+}
+inline bool validLocalScriptMutation(uint32_t scriptId, LocalScriptValueOp valueOp, int32_t value,
+                                     uint32_t addPhaseMask, uint32_t removePhaseMask) {
+    if (addPhaseMask & removePhaseMask) return false;
+    if (unsigned(valueOp) > unsigned(LocalScriptValueOp::Add)) return false;
+    if (valueOp == LocalScriptValueOp::None) {
+        if (scriptId || value) return false;
+    } else if (!scriptId) return false;
+    return valueOp != LocalScriptValueOp::None || addPhaseMask || removePhaseMask;
+}
+inline bool validLocalScriptTrigger(const LocalScriptTrigger& trigger) {
+    if (!trigger.sourceId || (trigger.addPhaseMask & trigger.removePhaseMask)) return false;
+    if (unsigned(trigger.kind) > unsigned(LocalScriptTriggerKind::EscortFail) ||
+        unsigned(trigger.valueOp) > unsigned(LocalScriptValueOp::Add)) return false;
+    if ((trigger.scheduleTimerId == 0) != (trigger.scheduleDelayMs == 0)) return false;
+    if (trigger.scheduleTimerId && trigger.scheduleTimerId == trigger.cancelTimerId) return false;
+    const bool hasMutation = trigger.valueOp != LocalScriptValueOp::None || trigger.scriptId || trigger.value ||
+                             trigger.addPhaseMask || trigger.removePhaseMask;
+    if (hasMutation && !validLocalScriptMutation(trigger.scriptId, trigger.valueOp, trigger.value,
+                                                  trigger.addPhaseMask, trigger.removePhaseMask)) return false;
+    return validLocalScriptActionRefs(trigger.actionIds) &&
+           (hasMutation || trigger.scheduleTimerId || trigger.cancelTimerId || !trigger.actionIds.empty());
+}
+inline LocalScriptTrigger localScriptTimerTransition(const LocalScriptTimerAction& action) {
+    LocalScriptTrigger transition;
+    transition.sourceId=action.timerId;
+    transition.requiredScriptId=action.requiredScriptId;transition.requiredValue=action.requiredValue;
+    transition.scriptId=action.scriptId;transition.valueOp=action.valueOp;transition.value=action.value;
+    transition.addPhaseMask=action.addPhaseMask;transition.removePhaseMask=action.removePhaseMask;
+    transition.scheduleTimerId=action.scheduleTimerId;transition.scheduleDelayMs=action.scheduleDelayMs;
+    transition.cancelTimerId=action.cancelTimerId;
+    transition.actionIds=action.actionIds;
+    return transition;
+}
+inline bool validLocalScriptTimerAction(const LocalScriptTimerAction& action) {
+    return validLocalScriptTrigger(localScriptTimerTransition(action));
+}
+inline bool validLocalScriptStates(const std::vector<LocalScriptState>& states) {
+    if (states.size() > kLocalMaxScriptStates) return false;
+    uint32_t previous = 0;
+    for (const auto& state : states) {
+        if (!state.scriptId || state.scriptId <= previous) return false;
+        previous = state.scriptId;
+    }
+    return true;
+}
+inline bool validLocalScriptTimers(const std::vector<LocalScriptTimer>& timers) {
+    if (timers.size() > kLocalMaxScriptTimers) return false;
+    uint32_t previous = 0;
+    for (const auto& timer : timers) {
+        if (!timer.timerId || !timer.remainingMs || timer.timerId <= previous) return false;
+        previous = timer.timerId;
+    }
+    return true;
+}
+// P04 diminishing returns, on creatures and (2.35) on characters. Authority-only:
+// a guest renders what the host owns, and the diminished result already travels
+// as the control's remaining time, so this record is neither persisted nor replicated.
+struct LocalNpcDiminishing {
+    uint8_t group=0, hitCount=0, stack=0;
+    // Stamped when the last aura of the group is removed. Held at the width of
+    // the clock it is compared against: truncating it to 32 bits turns the
+    // window comparison into nonsense once a realm has been up 49.7 days, which
+    // would silently switch diminishing returns off rather than wrap.
+    uint64_t hitTimeMs=0;
+};
+/// 2.40: the gossip tables (gossip_menu, gossip_menu_option, npc_text and
+/// their `conditions` rows) as the catalog's gossip packs carry them.
+struct LocalGossipCondition {
+    uint8_t type = 0, elseGroup = 0;   // ConditionMgr.h ConditionTypes; the OR group
+    bool negative = false;
+    uint32_t value1 = 0, value2 = 0, value3 = 0;
+};
+struct LocalGossipMenuText {
+    uint32_t textId = 0;
+    std::vector<LocalGossipCondition> conditions;
+};
+struct LocalGossipOption {
+    uint16_t id = 0;
+    uint8_t icon = 0, type = 0;        // GossipOptionIcon, GossipOptionType
+    uint32_t npcFlag = 0, actionMenuId = 0, boxMoney = 0;
+    bool boxCoded = false;
+    std::string text, boxText;
+    std::vector<LocalGossipCondition> conditions;
+};
+struct LocalGossipMenu {
+    uint32_t id = 0;
+    std::vector<LocalGossipMenuText> texts;
+    std::vector<LocalGossipOption> options;
+};
+struct LocalGossipTextVariant {
+    float probability = 0;
+    uint8_t language = 0;
+    std::string maleText, femaleText;
+    std::array<uint16_t,6> emotes{};   // (delay, emote) x 3
+};
+struct LocalGossipText {
+    uint32_t id = 0;
+    std::vector<LocalGossipTextVariant> variants;
+};
+struct LocalGossipOwner { uint32_t entry = 0, menuId = 0, npcFlags = 0; };
+/// What a player sees of a creature's gossip (Player::PlayerTalkClass): the
+/// creature, the menu shown, its npc_text, the options that passed their
+/// conditions and the creature's flags, and whether the quest list is the
+/// page instead. `revision` grows with every change so a guest redraws.
+struct LocalGossipShownOption {
+    uint16_t id = 0;
+    uint8_t icon = 0, type = 0;
+    uint32_t actionMenuId = 0, boxMoney = 0;
+    std::string text, boxText;
+};
+struct LocalGossipState {
+    uint64_t npcGuid = 0;
+    uint32_t menuId = 0, textId = 0, revision = 0;
+    // OFFER_QUEST without directAdd: the quest whose details the page shows
+    // (SendQuestGiverQuestDetails), acceptable from this creature.
+    uint32_t offeredQuestId = 0;
+    bool questMenu = false;
+    std::vector<LocalGossipShownOption> options;
+    bool open() const { return npcGuid != 0; }
+};
+inline constexpr size_t kLocalMaxGossipOptions = 32;
+inline constexpr uint32_t kLocalGossipDefaultText = 0xffffff; // DEFAULT_GOSSIP_MESSAGE
 struct LocalRealmPlayer {
     uint64_t guid = 0;
     std::string name;
@@ -215,8 +499,52 @@ struct LocalRealmPlayer {
     // Strictly increasing unique IDs; objective data is no longer needed after
     // rewarding. Kept separate so completed quests never occupy active slots.
     std::vector<uint32_t> completedQuestIds;
+    // Standalone reputation is authoritative character progression. Only
+    // factions this character has actually met/changed are retained; an absent
+    // faction reads as neutral (0). Save34/LAN89.
+    std::vector<LocalReputationEntry> reputations;
+    // Save34 migration marker. Runtime-only: old saves/new characters seed the
+    // matching Faction.dbc base standings once; Save34+ restores exact state.
+    bool migrateLegacyReputation = true;
+    // Save36/LAN91. Bit 0 is the normal world; additional bits are authored
+    // script phases. Script variables are generic persistent event state.
+    uint32_t phaseMask = 1;
+    std::vector<LocalScriptState> scriptStates;
+    std::vector<LocalScriptTimer> scriptTimers;
+    // 5.4 vehicle occupancy is session-only. Saving an active seat would leave
+    // a character attached to an actor that may not exist after reconnect.
+    uint64_t vehicleGuid = 0;
+    uint32_t vehicleId = 0;
+    uint8_t vehicleSeat = 0;
+    bool vehicleControl = false;
+    // Authority-only distance budget, replenished by simulation time rather
+    // than packets. A guest cannot gain movement by flooding position reports.
+    float vehicleMoveAllowance = 0;
+    // Save38 remembers only the exit-script identity, never a live actor/seat.
+    uint32_t vehicleRecoveryId = 0;
+    // Save39: edge membership survives reload, so standing inside an area does
+    // not repeatedly award entry credit. Instance transfers create new edges.
+    std::vector<uint32_t> scriptAreaIds;
+    uint32_t scriptAreaInstanceId = 0;
+    LocalEscortProgress escort; // Save40: exact route cursor, position, wait and online timeout.
     std::vector<uint32_t> knownSpells;
     std::vector<LocalHealingAuraView> healingAuras; // transient presentation only; never saved
+    // Creature-cast periodic damage on this character: transient presentation
+    // derived by the authority (never saved), drawn as harmful auras.
+    std::vector<LocalHealingAuraView> harmfulAuras;
+    // 2.40: the gossip page open with a creature (Player::PlayerTalkClass);
+    // authority state mirrored to the owner's client, never saved.
+    LocalGossipState gossip;
+    // LAN107: creature knockbacks (SMSG_MOVE_KNOCK_BACK) - the sequence rises
+    // per knockback and the owning client applies the newest one once - and
+    // the school lockouts of creature interrupts.
+    uint32_t knockbackSequence=0;
+    float knockbackCos=0,knockbackSin=0,knockbackSpeedXY=0,knockbackSpeedZ=0;
+    std::vector<LocalSchoolLockout> schoolLockouts;
+    // Diminishing returns for creature controls on this character
+    // (Unit::GetDiminishing/IncrDiminishing). Authority-only; never saved or
+    // replicated - the diminished duration travels in harmfulAuras.
+    std::vector<LocalNpcDiminishing> diminishing;
     std::vector<LocalStatAura> statAuras; // timed recipient effects; shield capacity is bounded against content
     // What this character projects, and what it currently receives. The emitter
     // is saved; the derived applications are rebuilt by the authority and never
@@ -317,9 +645,146 @@ struct LocalRealmPlayer {
     float fallStartZ = 0;
     uint32_t fallRevision = 0;
 };
+
+inline bool validLocalVehicleState(const LocalRealmPlayer& p) {
+    if (!p.vehicleGuid) return !p.vehicleId && !p.vehicleSeat && !p.vehicleControl;
+    return p.vehicleId && p.vehicleSeat < 8 && !p.dead && !p.ghost && p.health &&
+        !p.flight.active && !p.transportEntry &&
+        (p.vehicleGuid & 0xffff000000000000ULL) == 0xf130000000000000ULL &&
+        uint32_t((p.vehicleGuid >> 32) & 0xffff) == p.instanceId;
+}
+inline void copyLocalVehicleState(LocalRealmPlayer& to, const LocalRealmPlayer& from) {
+    to.vehicleGuid=from.vehicleGuid;to.vehicleId=from.vehicleId;
+    to.vehicleSeat=from.vehicleSeat;to.vehicleControl=from.vehicleControl;
+}
+inline int32_t localScriptState(const LocalRealmPlayer& player, uint32_t scriptId) {
+    const auto found = std::lower_bound(player.scriptStates.begin(), player.scriptStates.end(), scriptId,
+        [](const LocalScriptState& state, uint32_t id) { return state.scriptId < id; });
+    return found != player.scriptStates.end() && found->scriptId == scriptId ? found->value : 0;
+}
+inline bool localSetScriptState(LocalRealmPlayer& player, uint32_t scriptId, int32_t value) {
+    if (!scriptId) return false;
+    auto found = std::lower_bound(player.scriptStates.begin(), player.scriptStates.end(), scriptId,
+        [](const LocalScriptState& state, uint32_t id) { return state.scriptId < id; });
+    if (found != player.scriptStates.end() && found->scriptId == scriptId) {
+        if (!value) player.scriptStates.erase(found);
+        else found->value = value;
+        return true;
+    }
+    if (!value) return true;
+    if (player.scriptStates.size() >= kLocalMaxScriptStates) return false;
+    player.scriptStates.insert(found, LocalScriptState{scriptId, value});
+    return true;
+}
+inline bool localScriptConditionMatches(const LocalRealmPlayer& player, uint32_t scriptId, int32_t value) {
+    return !scriptId || localScriptState(player, scriptId) == value;
+}
+inline bool localSetScriptTimer(LocalRealmPlayer& player, uint32_t timerId, uint32_t remainingMs) {
+    if (!timerId || !remainingMs) return false;
+    auto found = std::lower_bound(player.scriptTimers.begin(), player.scriptTimers.end(), timerId,
+        [](const LocalScriptTimer& timer, uint32_t id) { return timer.timerId < id; });
+    if (found != player.scriptTimers.end() && found->timerId == timerId) { found->remainingMs = remainingMs; return true; }
+    if (player.scriptTimers.size() >= kLocalMaxScriptTimers) return false;
+    player.scriptTimers.insert(found, LocalScriptTimer{timerId, remainingMs});
+    return true;
+}
+inline bool localCancelScriptTimer(LocalRealmPlayer& player, uint32_t timerId) {
+    if (!timerId) return false;
+    const auto found = std::lower_bound(player.scriptTimers.begin(), player.scriptTimers.end(), timerId,
+        [](const LocalScriptTimer& timer, uint32_t id) { return timer.timerId < id; });
+    if (found == player.scriptTimers.end() || found->timerId != timerId) return true;
+    player.scriptTimers.erase(found);
+    return true;
+}
+inline bool localApplyScriptMutation(LocalRealmPlayer& player, uint32_t requiredScriptId, int32_t requiredValue,
+                                     uint32_t scriptId, LocalScriptValueOp valueOp, int32_t value,
+                                     uint32_t addPhaseMask, uint32_t removePhaseMask) {
+    if (!validLocalScriptMutation(scriptId, valueOp, value, addPhaseMask, removePhaseMask) ||
+        !localScriptConditionMatches(player, requiredScriptId, requiredValue)) return false;
+    const uint32_t nextPhaseMask = (player.phaseMask | addPhaseMask) & ~removePhaseMask;
+    if (!nextPhaseMask) return false;
+    LocalRealmPlayer staged; staged.phaseMask = player.phaseMask; staged.scriptStates = player.scriptStates;
+    if (valueOp != LocalScriptValueOp::None) {
+        const int64_t current = localScriptState(staged, scriptId);
+        const int64_t next = valueOp == LocalScriptValueOp::Set ? int64_t(value) : current + int64_t(value);
+        if (next < INT32_MIN || next > INT32_MAX) return false;
+        if (next && !localScriptState(staged, scriptId) && staged.scriptStates.size() >= kLocalMaxScriptStates) return false;
+        if (!localSetScriptState(staged, scriptId, int32_t(next))) return false;
+    }
+    player.phaseMask = nextPhaseMask;
+    player.scriptStates = std::move(staged.scriptStates);
+    return true;
+}
+inline bool localScriptTriggerMatches(const LocalRealmPlayer& player, const LocalScriptTrigger& trigger) {
+    return localScriptConditionMatches(player, trigger.requiredScriptId, trigger.requiredValue);
+}
+inline bool localApplyScriptTrigger(LocalRealmPlayer& player, const LocalScriptTrigger& trigger) {
+    if (!validLocalScriptTrigger(trigger) || !localScriptTriggerMatches(player, trigger)) return false;
+    LocalRealmPlayer staged; staged.phaseMask = player.phaseMask; staged.scriptStates = player.scriptStates; staged.scriptTimers = player.scriptTimers;
+    const bool hasMutation = trigger.valueOp != LocalScriptValueOp::None || trigger.addPhaseMask || trigger.removePhaseMask;
+    if (hasMutation && !localApplyScriptMutation(staged, trigger.requiredScriptId, trigger.requiredValue, trigger.scriptId,
+                                                trigger.valueOp, trigger.value, trigger.addPhaseMask, trigger.removePhaseMask)) return false;
+    if (trigger.cancelTimerId && !localCancelScriptTimer(staged, trigger.cancelTimerId)) return false;
+    if (trigger.scheduleTimerId && !localSetScriptTimer(staged, trigger.scheduleTimerId, trigger.scheduleDelayMs)) return false;
+    player.phaseMask = staged.phaseMask;
+    player.scriptStates = std::move(staged.scriptStates);
+    player.scriptTimers = std::move(staged.scriptTimers);
+    return true;
+}
+inline bool localApplyScriptTimerAction(LocalRealmPlayer& player, const LocalScriptTimerAction& action) {
+    if (!validLocalScriptTimerAction(action) || !localScriptConditionMatches(player, action.requiredScriptId, action.requiredValue)) return false;
+    return localApplyScriptTrigger(player,localScriptTimerTransition(action));
+}
+inline bool localPhaseVisible(uint32_t playerPhaseMask, uint32_t requiredMask, uint32_t excludedMask) {
+    if (!playerPhaseMask) return false;
+    if (excludedMask && (playerPhaseMask & excludedMask)) return false;
+    return !requiredMask || (playerPhaseMask & requiredMask) != 0;
+}
+
+/// Standalone reputation helpers. The rank is the item_template convention
+/// (0=Hated .. 7=Exalted); standing is clamped to the WotLK range.
+inline int32_t localReputationStanding(const LocalRealmPlayer& player, uint32_t factionId) {
+    if (!factionId) return 0;
+    const auto found = std::find_if(player.reputations.begin(), player.reputations.end(),
+        [&](const LocalReputationEntry& row) { return row.factionId == factionId; });
+    return found == player.reputations.end() ? 0 : found->standing;
+}
+inline uint8_t localReputationRank(const LocalRealmPlayer& player, uint32_t factionId) {
+    const auto& standing = reputationStandingFor(localReputationStanding(player, factionId));
+    return uint8_t(std::clamp(standing.id - 1, 0, 7));
+}
+inline bool localMeetsReputation(const LocalRealmPlayer& player, uint32_t factionId, uint8_t requiredRank) {
+    return factionId == 0 || (requiredRank < 8 && localReputationRank(player, factionId) >= requiredRank);
+}
+inline bool localChangeReputation(LocalRealmPlayer& player, uint32_t factionId, int32_t delta) {
+    if (!factionId || !delta) return false;
+    auto found = std::lower_bound(player.reputations.begin(), player.reputations.end(), factionId,
+        [](const LocalReputationEntry& row, uint32_t id) { return row.factionId < id; });
+    const int32_t old = found != player.reputations.end() && found->factionId == factionId ? found->standing : 0;
+    const int64_t changed = std::clamp<int64_t>(int64_t(old) + delta, -42000, 42999);
+    if (changed == old) return false;
+    if (found == player.reputations.end() || found->factionId != factionId) {
+        if (player.reputations.size() >= kLocalMaxReputations) return false;
+        player.reputations.insert(found, LocalReputationEntry{factionId, int32_t(changed)});
+    } else found->standing = int32_t(changed);
+    return true;
+}
+inline bool validLocalReputations(const LocalRealmPlayer& player) {
+    if (player.reputations.size() > kLocalMaxReputations) return false;
+    uint32_t previous = 0;
+    for (const auto& row : player.reputations) {
+        if (!row.factionId || row.factionId <= previous || row.standing < -42000 || row.standing > 42999) return false;
+        previous = row.factionId;
+    }
+    return true;
+}
+
 struct LocalItemDefinition {
     uint32_t id = 0, displayId = 0;
     std::string name;
+    uint32_t requiredReputationFaction = 0;
+    uint8_t requiredReputationRank = 0; // 0=Hated .. 7=Exalted, item_template convention.
+
     uint16_t stack = 1;
     // slot retains legacy schema-1/catalog meaning. Use inventoryType through
     // localEquipmentSlotMask for runtime equipment compatibility.
@@ -485,6 +950,106 @@ struct LocalSpellDefinition {
     uint32_t visualId = 0, schoolMask = 0;
     uint32_t manaPercent = 0, baseLevel = 1, maxLevel = 0, damageMax = 0, healMax = 0;
     uint8_t snarePercent = 0; // Reviewed NPC movement reduction, strongest effect wins.
+    // Creature-cast auras on players (generated SmartAI family only):
+    // MOD_DECREASE_SPEED as a positive percentage, and MOD_RESISTANCE on
+    // armor as CalcValue's base (with the +1 die) and RealPointsPerLevel.
+    uint8_t npcSlowPercent = 0;
+    int32_t npcArmorAmount = 0, npcArmorAmountMax = 0; // 2.37: any sign, a die range
+    float npcArmorPerLevel = 0;
+    // MOD_RESISTANCE_PCT on armor (TOTAL_PCT), negative percentage; 2.37 also
+    // a bonus (npcArmorPercentWide carries the full range).
+    int8_t npcArmorPercent = 0;
+    int16_t npcArmorPercentWide = 0;
+    // A creature's MOD_STUN (1), MOD_ROOT (2), MOD_FEAR (3), MOD_CONFUSE (4) or
+    // MOD_SILENCE (5) on a player; npcBreakOnDamage carries
+    // AURA_INTERRUPT_FLAG_TAKE_DAMAGE (any damage removes the control).
+    uint8_t npcPlayerControl = 0;
+    bool npcBreakOnDamage = false;
+    // 2.36 creature caster profile (generated SmartAI family only). The target
+    // shape decides who the cast lands on: 0 one enemy, 1 the caster, 2 the
+    // enemies around the caster, 3 the enemies around the target, 4 a cone in
+    // front of the caster, 5 the caster and its allies around it, 6 (2.38)
+    // the enemies around the spell's destination - the explicit target's
+    // position, or the caster's without one (Spell::InitExplicitTargets).
+    uint8_t npcTargetShape = 0;
+    // 2.38 destination-only effects. SPELL_EFFECT_SUMMON: the entry, the
+    // count (BasePoints for the listed SummonProperties), the properties'
+    // category (0 wild, 1 ally, 2 pet) and type, whether the summon takes the
+    // summoner's faction (ally / pet / USE_SUMMONER_FACTION), the placement
+    // code (local_spell_import.hpp: LocalNpcDest) and the spread radius.
+    // SPELL_EFFECT_PERSISTENT_AREA_AURA: a dynamic object of npcGroundRadius at
+    // the placement whose aura kinds (the ordinary npc* aura fields of this
+    // definition) land on the enemies inside it.
+    uint32_t npcSummonEntry = 0;
+    uint8_t npcSummonCount = 0, npcSummonCategory = 0, npcSummonType = 0, npcSummonDest = 0, npcGroundDest = 0;
+    bool npcSummonOwnerFaction = false, npcGroundAura = false;
+    float npcSummonRadius = 0, npcGroundRadius = 0;
+    // SPELL_ATTR0_ALLOW_CAST_WHILE_DEAD: a dead creature's DEATH rows may cast it.
+    bool npcCastableWhileDead = false;
+    float npcAreaRadius = 0, npcConeDegrees = 0, npcJumpDistance = 0, npcChainMultiplier = 1;
+    uint8_t npcChainTargets = 0, npcMaxTargets = 0;
+    bool npcPositive = false, npcChannel = false, npcCosmetic = false, npcScales = false, npcCostScales = false;
+    // RealPointsPerLevel of the fixed-percentage auras (CalcValue's level term).
+    float npcSlowPerLevel = 0, npcArmorPercentPerLevel = 0;
+    // Amounts resolved through CalcValue at application (base with the +1 die,
+    // the die range, RealPointsPerLevel, creature scaling where the effect allows it).
+    struct NpcAmount { int32_t low = 0, high = 0; float perLevel = 0; bool scales = false; bool set = false; };
+    NpcAmount npcDamageTakenFlat, npcDamageTakenPct, npcHealingPct, npcHaste, npcDamagePct, npcDamageFlat, npcAttackPower,
+        npcKnockbackZ, npcPeriodicHealAmount, npcHealAmount;
+    uint8_t npcDamageTakenSchool = 0, npcDamagePctSchool = 0, npcDamageFlatSchool = 0;
+    // SPELL_EFFECT_KNOCK_BACK(_DEST): MiscValue / 10 is the horizontal speed.
+    float npcKnockbackSpeedXY = 0;
+    // SPELL_EFFECT_INTERRUPT_CAST: the player's cast stops and its school is
+    // locked for this spell's duration.
+    bool npcInterrupt = false;
+    // SPELL_EFFECT_HEALTH_LEECH / SPELL_AURA_PERIODIC_LEECH: the damage dealt
+    // times EffectValueMultiplier heals the caster.
+    bool npcLeech = false, npcPeriodicLeech = false;
+    float npcLeechMultiplier = 0;
+    // SPELL_EFFECT_TRIGGER_SPELL / SPELL_AURA_PERIODIC_TRIGGER_SPELL.
+    uint32_t npcTriggerSpellId = 0, npcPeriodicTriggerSpellId = 0, npcPeriodicTriggerIntervalMs = 0;
+    // 2.37 creature families. Auras resolved through CalcValue (NpcAmount):
+    // MOD_INCREASE/DECREASE_SPEED on the creature (npcSpeed), MOD_RESISTANCE on
+    // a magic school (npcResistance / npcResistanceSchool), MOD_CASTING_SPEED_NOT_STACK,
+    // MOD_HIT_CHANCE, MOD_DODGE/PARRY/BLOCK_PERCENT, SCHOOL_ABSORB, MOD_INCREASE_HEALTH(_PERCENT),
+    // DAMAGE_SHIELD, PROC_TRIGGER_DAMAGE; the immunities as masks; MOD_DISARM.
+    NpcAmount npcSpeed, npcResistance, npcCastSpeed, npcHitChance, npcDodge, npcParry, npcBlock, npcAbsorb, npcMaxHealth,
+        npcMaxHealthPct, npcDamageShield, npcProcDamage, npcPowerBurn, npcPowerDrain, npcHealPct, npcEnergize, npcEnergizePct;
+    uint8_t npcResistanceSchool = 0, npcAbsorbSchool = 0, npcSchoolImmunity = 0, npcDamageImmunity = 0;
+    uint32_t npcMechanicImmunity = 0; // bit per mechanic (1 << MiscValue)
+    bool npcDisarm = false, npcHealMax = false, npcCharge = false, npcUtility = false;
+    // SPELL_AURA_PROC_TRIGGER_SPELL / PROC_TRIGGER_DAMAGE: the proc flags
+    // (SpellMgr::LoadSpellProcs' entry), chance, charges and triggered spell.
+    uint32_t npcProcSpellId = 0, npcProcFlags = 0;
+    uint8_t npcProcChance = 0, npcProcCharges = 0;
+    // A control aura spending Spell.dbc proc charges on damage taken
+    // (AuraEffect::CheckEffectProc): the chance per damaging hit and charges.
+    uint8_t npcProcBreakChance = 0, npcProcBreakCharges = 0;
+    // SPELL_EFFECT_POWER_BURN / POWER_DRAIN multipliers (EffectValueMultiplier),
+    // SPELL_EFFECT_DISPEL (type, count), DISPEL_MECHANIC (mechanic, count),
+    // MODIFY_THREAT_PERCENT, KILL_CREDIT2 (entry), CREATE_ITEM (item, count),
+    // ADD_EXTRA_ATTACKS.
+    float npcPowerBurnMultiplier = 0, npcPowerDrainMultiplier = 0;
+    uint8_t npcDispelType = 0, npcDispelCount = 0, npcDispelMechanic = 0, npcDispelMechanicCount = 0, npcExtraAttacks = 0;
+    int16_t npcThreatPct = 0;
+    uint32_t npcKillCredit = 0, npcCreateItem = 0;
+    uint8_t npcCreateItemCount = 0;
+    // 2.39: an instakill of the caster, a stun (1) / root (2) the creature
+    // applies to itself, invisibility on itself.
+    bool npcInstakillSelf = false, npcInvisible = false;
+    uint8_t npcSelfControl = 0;
+    // Creature melee specials (DmgClass MELEE): Spell::EffectWeaponDmg's fixed
+    // bonus (WEAPON_DAMAGE / _NOSCHOOL / NORMALIZED) as CalcValue inputs, the
+    // WEAPON_PERCENT_DAMAGE percentage (0 = none) and whether the percentage
+    // effect precedes the bonus effect; SPELL_ATTR0_ON_NEXT_SWING(_NO_DAMAGE)
+    // replaces the creature's next main-hand swing. CalcValue's creature
+    // scaling covers WEAPON_DAMAGE and NORMALIZED_WEAPON_DMG, not _NOSCHOOL.
+    bool npcWeaponEffect = false, npcWeaponScales = false, npcWeaponPercentFirst = false, npcNextSwing = false;
+    uint32_t npcWeaponBonus = 0, npcWeaponBonusMax = 0;
+    float npcWeaponBonusPerLevel = 0;
+    uint16_t npcWeaponPercent = 0;
+    // SPELL_ATTR7_NO_ATTACK_DODGE / _PARRY / _MISS (Unit::MeleeSpellHitResult).
+    bool sourceNoAttackDodge = false, sourceNoAttackParry = false, sourceNoAttackMiss = false;
     // P04 control metadata, carried raw from Spell.dbc. `mechanic` is column 3
     // and `effectMechanic` columns 83-85; both were already read as a bare
     // `== 15` for the bleed rule and are now named. `auraInterruptFlags` is
@@ -551,6 +1116,9 @@ struct LocalSpellDefinition {
     std::array<uint8_t,3> sourceEffect{};
     std::array<uint16_t,3> effectAura{};
     bool sourceNoThreat = false, sourceChanneled = false, sourceDotStackingRule = false;
+    // SPELL_ATTR0_ABILITY / TRADESPELL: Unit::ModSpellCastTime leaves such a
+    // cast out of UNIT_MOD_CAST_SPEED (a creature's cast-speed view, 2.37).
+    bool sourceAbilityOrTrade = false;
     // P05 shared combat inputs , carried raw from Spell.dbc and from the
     // reference's computed custom attributes (the source audit):
     // column 39 `SpellLevel`, the flat initial threat of a cast
@@ -602,14 +1170,26 @@ struct LocalSpellDefinition {
     std::string iconPath, unsupportedReason;
 };
 struct LocalQuestObjective {
-    enum class Type : uint8_t { Kill = 0, Collect = 1, Talk = 2 };
+    enum class Type : uint8_t { Kill = 0, Collect = 1, Talk = 2, Script = 3 };
     Type type = Type::Kill;
     uint32_t entry = 0;
     uint16_t count = 1;
+    std::string text; // Authored label for script objectives; no invented NPC ID.
+};
+struct LocalQuestReputationReward {
+    uint32_t factionId = 0;
+    int32_t valueId = 0;       // QuestFactionReward.dbc column selector.
+    int32_t overrideValue = 0; // hundredths, as stored by quest_template.
 };
 struct LocalQuestDefinition {
     uint32_t id = 0, giverEntry = 0, turnInEntry = 0, prerequisite = 0;
     uint32_t allowableRaces = 0, allowableClasses = 0, requiredSkill = 0;
+    uint32_t requiredMinRepFaction = 0, requiredMaxRepFaction = 0;
+    int32_t requiredMinRepValue = 0, requiredMaxRepValue = 0;
+    // quest_template.RequiredFactionId/Value 1..2: both are minimum
+    // standing requirements and coexist with the addon min/max gates.
+    std::array<uint32_t, 2> requiredReputationFactions{};
+    std::array<int32_t, 2> requiredReputationValues{};
     uint8_t minLevel = 1;
     std::string title, description;
     uint32_t xp = 0, money = 0, rewardItem = 0;
@@ -619,6 +1199,8 @@ struct LocalQuestDefinition {
     // optional lists extend old content without changing character saves.
     std::vector<LocalItemStack> additionalRewards; // up to three more guaranteed items
     std::vector<LocalItemStack> rewardChoices;     // choose exactly one of up to six
+    std::vector<LocalQuestReputationReward> reputationRewards; // up to five source rewards
+    LocalQuestChainGate chainGate; // Immutable companion; no save/pack wire change.
 };
 inline size_t localQuestRewardCount(const LocalQuestDefinition& q) {
     return (q.rewardItem ? 1u : 0u) + q.additionalRewards.size();
@@ -630,12 +1212,16 @@ inline LocalItemStack localQuestRewardAt(const LocalQuestDefinition& q,size_t in
 inline bool validLocalQuestRewards(const LocalQuestDefinition& q) {
     if(bool(q.rewardItem)!=bool(q.rewardCount) || q.additionalRewards.size()>3 ||
        (!q.rewardItem && !q.additionalRewards.empty()) || q.rewardChoices.size()>6)return false;
+    if(q.reputationRewards.size()>5)return false;
     for(const auto& r:q.additionalRewards)if(!r.itemId || !r.count)return false;
     for(const auto& r:q.rewardChoices)if(!r.itemId || !r.count)return false;
+    for(const auto& r:q.reputationRewards)if(!r.factionId || r.valueId < -9 || r.valueId > 9)return false;
     return true;
 }
 struct LocalNpcDefinition {
     uint32_t id = 0, displayId = 0, health = 40, damage = 4, armor = 0, xp = 50, money = 0;
+    uint32_t requiredReputationFaction = 0;
+    uint8_t requiredReputationRank = 0;
     uint8_t level = 1;
     uint32_t faction = 0, unitFlags = 0;
     // creature_template.npcflag: which services this NPC offers. Zero in a
@@ -765,12 +1351,83 @@ inline constexpr uint32_t kLocalNpcFlagAnyVendor =
     kLocalNpcFlagVendor | kLocalNpcFlagVendorAmmo | kLocalNpcFlagVendorFood |
     kLocalNpcFlagVendorPoison | kLocalNpcFlagVendorReagent;
 
+// Authored vehicle weapon profiles. Effects are independent of rider stats.
+inline constexpr size_t kLocalVehicleAbilities=6;
+struct LocalVehicleAbility {
+    uint32_t spellId=0,powerCost=0,cooldownMs=0,damage=0,repair=0;
+    uint8_t seatMask=0;
+    float range=0;
+    float projectileSpeed=0,projectileGravity=0,projectileRadius=.5f;
+    uint32_t projectileLifetimeMs=0;
+    uint32_t castTimeMs=0;
+    float areaRadius=0;
+    uint8_t schoolMask=kLocalVehiclePhysicalSchool;
+    LocalVehiclePowerType powerType=LocalVehiclePowerType::Energy;
+    bool interruptOnMove=true;
+};
+struct LocalVehicleKit {
+    uint32_t id=0,maxPower=0,regenPerSecond=0;
+    float minPitch=-1.4f,maxPitch=1.4f,muzzleHeight=1.5f;
+    std::array<LocalVehicleAbility,kLocalVehicleAbilities> abilities{};
+};
+inline constexpr size_t kLocalMaxVehicleProjectiles=16;
+struct LocalVehicleProjectile {
+    uint32_t id=0,spellId=0,mapId=0,instanceId=0,phaseMask=0,remainingMs=0;
+    uint64_t sourceGuid=0,ownerGuid=0;
+    float x=0,y=0,z=0,vx=0,vy=0,vz=0,gravity=0;
+    // Authority only; never decoded from a guest command or a save.
+    uint64_t sourceEpoch=0;
+    uint32_t damage=0;
+    float radius=0,traveled=0,maxRange=0,areaRadius=0;
+    uint8_t schoolMask=kLocalVehiclePhysicalSchool;
+};
+inline constexpr size_t kLocalMaxVehicleCasts=16;
+struct LocalVehicleCast {
+    uint64_t sourceGuid=0,ownerGuid=0,targetGuid=0;
+    uint32_t spellId=0,remainingMs=0,totalMs=0,mapId=0,instanceId=0,phaseMask=0;
+    uint8_t slot=0,seat=0;
+    // Authority-only lifecycle and launch snapshots. The LAN deck omits these.
+    uint64_t sourceEpoch=0,targetEpoch=0;
+    uint32_t ownerPositionRevision=0;
+    float sourceX=0,sourceY=0,sourceZ=0,sourceOrientation=0,aimYaw=0,aimPitch=0;
+};
+// 2.39: a spawn's default movement (creature.MovementType / wander_distance,
+// creature_addon.path_id) and one waypoint_data node of a patrol path.
+struct LocalSpawnMotion {
+    uint8_t movementType = 0;   // 1 random within wanderDistance, 2 the waypoint path
+    uint16_t currentWaypoint = 0;
+    float wanderDistance = 0;
+    uint32_t pathId = 0;
+};
+struct LocalWaypointNode {
+    float x = 0, y = 0, z = 0, orientation = 0;
+    bool hasOrientation = false, smooth = false;
+    uint32_t delayMs = 0;
+    uint8_t moveType = 0;       // 0 walk, 1 run, 2 land, 3 takeoff
+    uint16_t id = 0;            // waypoint_data.point (MovementInform's data)
+};
 struct LocalNpcSpawn {
     uint32_t id = 0, entry = 0, mapId = 0;
     float x = 0, y = 0, z = 0, orientation = 0;
+    // Zero required/excluded masks mean unphased.  These are evaluated per
+    // player, so LAN peers in different phases can receive different NPC decks.
+    uint32_t requiredPhaseMask = 0, excludedPhaseMask = 0;
+    // 5.4: optional authority-owned scripted vehicle attached to this spawn.
+    // vehicleId is the script-visible identity; seats are 0..seatCount-1.
+    uint32_t vehicleId = 0;
+    uint8_t vehicleSeatCount = 0, vehicleControllerSeat = 0;
+    std::array<std::array<float,3>,8> vehicleSeatOffsets{};
+    // 2.39: the default movement (creature.MovementType: 1 random within
+    // wanderDistance of the spawn, 2 the creature_addon path starting at
+    // currentWaypoint) the catalog's motion table carries.
+    uint8_t movementType = 0;
+    uint16_t currentWaypoint = 0;
+    float wanderDistance = 0;
+    uint32_t pathId = 0;
 };
 inline constexpr size_t kLocalMaxNpcSnares = 8;
 inline constexpr size_t kLocalMaxNpcControls = 4;
+inline constexpr size_t kLocalMaxNpcBuffs = 16;
 // Four diminishing groups are reachable from the admitted spells; eight leaves
 // headroom without pretending to the reference's twenty-one.
 inline constexpr size_t kLocalMaxNpcDiminishing = 8;
@@ -803,17 +1460,6 @@ struct LocalNpcSnare {
 // and a rooted unit still swings, casts and turns, so root is not a control
 // this list models.
 enum class LocalNpcControlKind : uint8_t { Stun=0, Silence=1 };
-// P04 diminishing returns. Authority-only: a guest renders what the host owns,
-// and the diminished result already travels as LocalNpcControl::remainingMs, so
-// this record is neither persisted nor replicated.
-struct LocalNpcDiminishing {
-    uint8_t group=0, hitCount=0, stack=0;
-    // Stamped when the last aura of the group is removed. Held at the width of
-    // the clock it is compared against: truncating it to 32 bits turns the
-    // window comparison into nonsense once a realm has been up 49.7 days, which
-    // would silently switch diminishing returns off rather than wrap.
-    uint64_t hitTimeMs=0;
-};
 struct LocalNpcControl {
     uint32_t spellId=0, remainingMs=0;
     uint64_t casterGuid=0;
@@ -826,9 +1472,37 @@ struct LocalNpcThreatView {
 };
 struct LocalNpcThreat { uint64_t guid=0,amount=0; };
 inline constexpr size_t kLocalMaxNpcThreat=100;
+/// A creature aura from a creature cast (a self-buff, an ally's heal-over-time):
+/// AuraEffect::CalculateAmount resolved once at application, x stacks.
+struct LocalNpcBuff {
+    uint32_t spellId=0,remainingMs=0,durationMs=0;
+    uint64_t casterGuid=0;
+    uint8_t stacks=1;
+    int32_t hastePct=0,damagePct=0,damageFlat=0,attackPower=0,damageTakenFlat=0,damageTakenPct=0,healingPct=0;
+    uint8_t damagePctSchool=0,damageFlatSchool=0,damageTakenSchool=0;
+    uint32_t periodicHeal=0,periodicIntervalMs=0,periodicNextMs=0,periodicTriggerSpellId=0;
+    bool indefinite=false;
+    // 2.37 (authority-only; the wire carries the presentation row above):
+    // movement speed, magic resistance, cast speed, hit chance, dodge/parry/
+    // block, the remaining absorb, immunities, max health, the damage shield
+    // and the proc definition of the aura.
+    int32_t speedPct=0,resistance=0,castSpeedPct=0,hitChancePct=0,dodgePct=0,parryPct=0,blockPct=0,maxHealth=0,maxHealthPct=0;
+    uint32_t absorbRemaining=0,damageShield=0,procSpellId=0,procFlags=0,procDamage=0,mechanicImmunity=0;
+    uint8_t resistanceSchool=0,absorbSchool=0,schoolImmunity=0,damageImmunity=0,damageShieldSchool=0,procSchool=0,procChance=0,procCharges=0;
+    // 2.39 (authority-only): a self stun (1) / root (2), invisibility.
+    uint8_t selfControl=0;
+    bool invisible=false;
+    bool operator==(const LocalNpcBuff&) const = default;
+};
+/// The sum of one creature-buff field over the creature's live buffs
+/// (Unit::GetTotalAuraModifier for MOD_DODGE/PARRY/BLOCK_PERCENT, MOD_HIT_CHANCE).
+template<class Npc> int32_t localNpcBuffTotal(const Npc& n,int32_t LocalNpcBuff::*field) {
+    int32_t sum=0;for(const auto& b:n.npcBuffs)if(b.remainingMs||b.indefinite)sum+=b.*field;return sum;
+}
 struct LocalRealmNpc {
     uint64_t combatEpoch=0; // Authority-only identity of this NPC encounter.
     LocalNpcThreatView playerThreat;
+    bool viewerVehicleCombat=false; // Per-viewer LAN fact; never attributed as player threat.
     std::array<LocalNpcThreat,kLocalMaxNpcThreat> threat{}; // Authority-only, thousandths of threat.
     std::vector<LocalHealingAuraView> damageAuras; // Authority-derived periodic damage views.
     std::vector<LocalNpcSnare> snares; // Transient; replicated, never character-save data.
@@ -871,12 +1545,385 @@ struct LocalRealmNpc {
     float transportX = 0, transportY = 0, transportZ = 0, transportOrientation = 0;
     // Internal authority simulation values; never accepted from a client.
     uint32_t spawnId = 0;
+    uint32_t scriptActorId = 0; // Transient authored actor; never saved or client-created.
+    uint32_t scriptLifetimeMs = 0;
+    bool scriptActorRetired = false; // Hidden tombstone, pruned only at a stable tick boundary.
+    uint32_t requiredPhaseMask = 0, excludedPhaseMask = 0;
+    uint32_t vehicleId = 0;
+    uint8_t vehicleSeatCount = 0, vehicleControllerSeat = 0;
+    std::array<std::array<float,3>,8> vehicleSeatOffsets{}; // Immutable authority cache; clients follow owner positions.
+    uint32_t vehiclePower=0,vehicleGlobalCooldownMs=0;
+    std::array<uint32_t,kLocalVehicleAbilities> vehicleCooldownMs{};
+    std::array<std::array<float,2>,8> vehicleAim{}; // Per-seat hull-relative yaw / pitch, radians.
+    uint32_t vehicleRegenRemainder=0; // Authority-only fractional power, thousandths.
+    uint64_t escortOwner = 0; // Authority-only route reservation.
     float homeX = 0, homeY = 0, homeZ = 0, attackTimer = 0, respawnTimer = 0;
+    // 2.38: the spawn position (Creature::GetRespawnPosition); the home moves
+    // along an escort path, the spawn does not. Authority-only.
+    float spawnX = 0, spawnY = 0, spawnZ = 0, spawnOrientation = 0;
     uint32_t npcCastingSpellId=0,npcCastRemainingMs=0,npcSpellTimerMs=0,npcSpellReturnMs=0;
     uint64_t npcCastTargetGuid=0;
     bool npcSpellTimerInitialized=false,npcSpellLaunched=false,npcSpellReflected=false,npcSpellReflectReturn=false,npcSpellMissed=false;
+    // Further SmartAI rows of the script owner (row 0 uses npcSpellTimerMs)
+    // and the rows already run (SmartScriptHolder::runOnce).
+    std::vector<uint32_t> npcSpellExtraTimers;
+    uint32_t npcSpellDoneMask=0;
+    // SmartScript state: the event phase, the last invoker (mLastInvoker), the
+    // running timed action list and the two SmartAI switches. Authority-only.
+    uint8_t smartPhase=0;
+    uint64_t smartInvoker=0;
+    uint32_t smartListId=0,smartListTimer=0;
+    uint8_t smartListIndex=0,smartListTimerType=0;
+    bool npcCombatMove=true,npcAutoAttack=true;
+    // SMART_ACTION_EVADE / CALL_FOR_HELP requested by the script this tick.
+    bool smartEvadeRequested=false,smartCallForHelpEmote=false;
+    float smartCallForHelpRange=0;
+    // A channel in progress: the spell stays in npcCastingSpellId with
+    // npcChanneling set; the creature neither moves nor swings meanwhile.
+    bool npcChanneling=false;
+    uint32_t npcChannelRemainingMs=0;
+    // Buffs the creature carries from its own or an ally's SmartAI casts.
+    std::vector<LocalNpcBuff> npcBuffs;
+    // 2.37 SmartAI state (authority-only): SET_REACT_STATE (255 = template
+    // default), UNIT_FIELD_FLAGS bits set by the script, SET_FACTION (0 =
+    // template), SET_INVINCIBILITY_HP_LEVEL, SET_HEALTH_REGEN, DISABLE_EVADE,
+    // SET_SIGHT_DIST / SET_COMBAT_DISTANCE, ADD/REMOVE_IMMUNITY, extra
+    // attacks queued by SPELL_EFFECT_ADD_EXTRA_ATTACKS, the pending DIE and
+    // FORCE_DESPAWN delays and the respawn override of a forced despawn.
+    uint8_t npcReactState=255;
+    uint32_t npcUnitFlags=0,npcFactionOverride=0,npcInvincibleHp=0,npcSightDistance=0,npcCombatDistance=0;
+    bool npcRegenDisabled=false,npcEvadeDisabled=false,npcHomeReached=true;
+    uint8_t npcSchoolImmunity=0,npcDamageImmunity=0,npcExtraAttacks=0;
+    uint32_t npcMechanicImmunity=0,npcDieDelayMs=0,npcDespawnDelayMs=0,npcDespawnRespawnSeconds=0,npcCorpseDelayOverride=0;
+    std::vector<uint32_t> npcSpellImmunity;
+    bool npcDiePending=false,npcDespawnPending=false;
+    // The script's copy of UNIT_FIELD_FLAGS replaces the template's once it
+    // touched them; a forced despawn hides the corpse until the respawn;
+    // SET_EVENT_FLAG_RESET(0) keeps the phase across OnReset.
+    bool npcUnitFlagsOverride=false,npcDespawned=false,smartPhaseResetDisabled=false;
+    // COMBAT_STOP this tick: the creature leaves combat without an evade;
+    // FLEE_FOR_ASSIST requested this tick (Creature::DoFleeToGetAssistance).
+    bool smartCombatStopped=false,smartFleeRequested=false,smartFleeEmote=false;
+    // STORE_TARGET_LIST / SET_COUNTER / CREATE_TIMED_EVENT state.
+    std::vector<std::pair<uint32_t,std::vector<uint64_t>>> smartStoredTargets;
+    std::vector<std::pair<uint32_t,uint32_t>> smartCounters;
+    struct SmartTimedEvent { uint32_t id=0,timerMs=0,repeatMinMs=0,repeatMaxMs=0; uint8_t chance=100; bool once=false; };
+    std::vector<SmartTimedEvent> smartTimedEvents;
+    // 2.38 summons (TempSummon, authority-only): the summoner's guid, the
+    // TempSummonType (0 = not a summon), the timer and lifetime, the spell
+    // that made it; a dead summon keeps its corpse for npcCorpseRemainingMs;
+    // npcUnsummoned marks a removed summon until the stable tick boundary
+    // prunes it. smartSummons is SmartScript's own summon list.
+    uint64_t npcSummoner=0;
+    uint8_t npcSummonType=0;
+    uint32_t npcSummonTimerMs=0,npcSummonLifetimeMs=0,npcSummonSpellId=0,npcCorpseRemainingMs=0;
+    bool npcUnsummoned=false,npcSummonOwned=false; // owned: an ally / pet summon, gone with its summoner's death
+    std::vector<uint64_t> smartSummons;
+    // 2.38 movement (MotionMaster's active slot, authority-only): 0 idle, 1 a
+    // point (MOVE_TO_POS / MOVE_FORWARD, the id MOVEMENTINFORM carries), 2 an
+    // escort path, 3 random movement around the home, 4 following a unit,
+    // 5 a jump (EFFECT_MOTION_TYPE); the goal, the walk flag (SET_RUN 0),
+    // SET_ROOT, SET_VISIBILITY(0).
+    uint8_t npcMotion=0;
+    float npcMotionX=0,npcMotionY=0,npcMotionZ=0,npcMotionSpeed=0;
+    uint32_t npcMotionId=0,npcRandomDistance=0;
+    bool npcWalking=false,npcRooted=false,npcHidden=false;
+    // SmartAI escort state (SMART_ESCORT_*): the path, the point being moved
+    // to (1-based), the escort flags, the forced movement (0 own, 1 walk,
+    // 2 run), the pause timer, the quest, the despawn time, the invoker check.
+    uint32_t escortPathId=0,escortPauseMs=0,escortQuestId=0,escortInvokerCheckMs=0;
+    uint8_t escortIndex=0,escortMovement=0;
+    bool escortActive=false,escortPaused=false,escortForcedPause=false,escortReached=false,escortRepeat=false,escortReturning=false;
+    // SmartAI::SetDespawnTime / StartDespawn: 0 none, 1 armed, 2 counting, 3 hidden.
+    uint8_t smartDespawnState=0;
+    uint32_t smartDespawnMs=0;
+    // SmartAI::SetFollow: the unit, distance, angle, the arrival creature
+    // entry (INTERACTION_DISTANCE, alive state), the credit and its type.
+    uint64_t followGuid=0;
+    float followDistance=0,followAngle=0;
+    uint32_t followEndEntry=0,followCredit=0,followArrivedTimerMs=1000,followCheckMs=0;
+    uint8_t followCreditType=0;
+    bool followArrivedAlive=true;
+    // 2.39 default movement generators. RandomMovementGenerator: the wander
+    // distance, the current one of the 12 destination points (12 = the
+    // initial position), the move count and the next-move timer.
+    // WaypointMovementGenerator (waypoint_data): the path, the node moved
+    // to, repeat, the node delay, an explicit pause (MOVEMENT_PAUSE), the
+    // stall flags and the loaded path id (Creature::m_path_id).
+    // 2.39: SET/ADD/REMOVE_NPC_FLAG (cleared at respawn: JUST_RESPAWNED
+    // restores the template's flags), Unit::SetSpeed rates (SET_MOVEMENT_SPEED).
+    uint32_t npcFlagsOverride=0;
+    bool npcFlagsOverridden=false;
+    float npcRunSpeedRate=1.f,npcWalkSpeedRate=1.f;
+    // 2.39 Creature::_playerDamageReq / _damagedByPlayer: the damage players,
+    // their pets and vehicles dealt (capped at the remaining health) must
+    // reach half the max health, with a player among the attackers, for the
+    // death to reward (loot, experience, quest credit); reset at the respawn.
+    uint32_t npcPlayerDamage=0;
+    // 2.40 SET_GOSSIP_MENU (Creature::SetGossipMenuId; the template's menu
+    // returns at the respawn).
+    uint32_t npcGossipMenuOverride=0;
+    bool npcGossipMenuOverridden=false;
+    bool npcDamagedByPlayer=false;
+    uint8_t npcDefaultMotion=0; // 1 random, 2 waypoint path
+    float npcWanderDistance=0,npcRandomCenterX=0,npcRandomCenterY=0,npcRandomCenterZ=0;
+    uint8_t npcRandomPoint=12,npcRandomMoveCount=0;
+    bool npcRandomInit=false,npcRandomMoving=false;
+    std::array<uint8_t,12> npcRandomFactors{};
+    uint32_t npcRandomNextMoveMs=0;
+    uint32_t patrolPathId=0,patrolLoadedPath=0,patrolDelayMs=0,patrolPauseMs=0;
+    uint16_t patrolNode=0,patrolStartNode=0;
+    bool patrolRepeat=true,patrolReached=true,patrolStalled=false,patrolHasBeenStalled=false,patrolDone=false,patrolPaused=false,patrolMoving=false;
+    // SmartScript's text timer (TALK duration -> TEXT_OVER) and delayed talks.
+    uint32_t smartTextTimerMs=0,smartTalkerEntry=0;
+    uint8_t smartTextGroup=0;
+    bool smartTextTimerActive=false;
+    struct SmartPendingTalk { uint32_t delayMs=0; uint8_t group=0; uint64_t talker=0,target=0; };
+    std::vector<SmartPendingTalk> smartPendingTalks;
+    // SmartAI range mode (SetMainSpell / SetCurrentRangeMode): a caster in
+    // range mode chases only to npcAttackDistance and swings only inside melee
+    // range. Chosen once per spawn from the first COMBAT_MOVE row; SMART_ACTION_CAST
+    // results change it and it survives evades, as in the pinned SmartAI.
+    bool npcRangeMode=false,npcRangeInit=false;
+    float npcAttackDistance=0;
+    // Creature mana for SmartAI casts (Creature::InitStatsForLevel/Regenerate):
+    // authority-only, rebuilt on spawn, never saved or replicated.
+    bool npcManaReady=false;
+    uint32_t npcMana=0,npcMaxMana=0,npcManaRegenMs=2000,npcSinceManaUseMs=5000,npcCastManaCost=0;
+    // CURRENT_MELEE_SPELL: a queued next-swing special and the target it was cast at.
+    uint32_t npcNextSwingSpellId=0;uint64_t npcNextSwingTargetGuid=0;
+    // Spell::AddUnitTarget decides a melee special's hit result at launch; a
+    // missile carries it to impact (0 = not rolled, else outcome + 1).
+    uint8_t npcSpellMeleeOutcome=0;
+    // Original SmartAI speech: authority-only, never saved or replicated.
+    bool talkEngaged=false, smartTimersReady=false;
+    uint64_t talkOnceMask=0;
+    uint32_t talkKillCooldownMs=0;
+    std::vector<std::pair<uint8_t,uint32_t>> smartTimers; // ownerIndex -> remaining ms
+    // FLEE_FOR_ASSIST: 1 seek assistance, 2 timed flee, 3 distracted after the call.
+    uint8_t fleeMode=0;
+    uint32_t fleeMs=0;
+    float fleeX=0, fleeY=0, fleeZ=0;
+    uint64_t assistTargetGuid=0; // CallAssistance: attack this victim when the delay ends
+    uint32_t assistDelayMs=0;
+};
+
+// A realm command may commit gameplay and still fail its atomic character
+// save. The caller checkpoints this authority-only world slice before execute
+// and restores it when that wider transaction rolls back.
+struct LocalPendingScriptKill {
+    uint64_t playerGuid=0;
+    uint32_t npcEntry=0;
+    uint64_t xp=0;
+    uint32_t count=1;
+};
+struct LocalScriptActionCheckpoint {
+    std::vector<LocalRealmNpc> npcs;
+    std::vector<LocalScriptDialogue> dialogues;
+    std::vector<LocalPendingScriptKill> pendingKills;
+    uint64_t dialogueRevision = 0, overwrittenDialogues = 0, nextNpcEpoch = 0;
 };
 struct LocalMailboxSite {uint64_t guid=0;uint32_t mapId=0;float x=0,y=0,z=0,orientation=0;};
+enum class LocalGameObjectKind : uint8_t { Script, Door, Chest, Resource, Decorative, Chair };
+/// Shared lifecycle. Status 3 is a pooled spawn that the pool currently keeps
+/// absent (AzerothCore PoolMgr keeps only max_limit members spawned).
+inline constexpr uint8_t kLocalGameObjectReady=0, kLocalGameObjectOpen=1, kLocalGameObjectDepleted=2, kLocalGameObjectDormant=3;
+struct LocalGameObjectState {
+    uint32_t id=0, revision=1;
+    uint8_t status=0; // Ready/closed=0, open=1, depleted=2, pooled-dormant=3.
+    uint32_t remainingMs=0;
+    bool operator==(const LocalGameObjectState&) const = default;
+};
+/// One gameobject_loot_template row. `chance` is a percentage; a grouped row
+/// with chance 0 is an equal-chance member of its group (LootMgr.cpp).
+struct LocalGameObjectLootRow {
+    uint32_t itemId=0;
+    float chance=100;
+    uint8_t group=0;
+    uint16_t minCount=1,maxCount=1;
+    bool questRequired=false;
+    bool operator==(const LocalGameObjectLootRow&) const = default;
+};
+inline constexpr size_t kLocalMaxGameObjectLootRows=192;
+inline constexpr size_t kLocalMaxGameObjectToolItems=8;
+inline constexpr uint8_t kLocalMaxChairSlots=32;
+// Authored open-world objects. A shared spawn has one state across visible phases.
+struct LocalGameObject {
+    uint32_t id=0, entry=0, displayId=0, mapId=0;
+    std::string name;
+    float x=0,y=0,z=0,orientation=0,scale=1,useRadius=5;
+    uint32_t requiredPhaseMask=0,excludedPhaseMask=0,requiredScriptId=0,requiredQuestId=0;
+    int32_t requiredValue=0;
+    LocalGameObjectKind kind=LocalGameObjectKind::Script;
+    std::vector<LocalItemStack> loot;
+    uint32_t money=0,respawnMs=0,requiredSkillId=0,requiredSkill=0,toolItemId=0;
+    // Reviewed original chests/resources: rolled loot, alternative tools
+    // (TotemCategory members), GO_FLAG_INTERACT_COND quest-loot gating, a
+    // non-consumable chest and the pool that owns this spawn.
+    std::vector<LocalGameObjectLootRow> lootTable;
+    std::vector<uint32_t> toolItemIds;
+    bool questLootOnly=false, persistent=false;
+    uint32_t poolId=0;
+    // GAMEOBJECT_TYPE_CHAIR: data0 slots and data1 height (low/medium/high).
+    uint8_t chairSlots=0, chairHeight=0;
+};
+/// Original SMART_ACTION_TALK rows (tools/local_realm/compile_creature_talk.py).
+enum class LocalCreatureTalkEvent : uint8_t { Aggro=1, Kill=2, Death=3, QuestAccept=4, QuestReward=5,
+    UpdateIc=6, UpdateOoc=7, HealthPct=8 };
+enum class LocalCreatureSmartAction : uint8_t { Talk=1, FleeForAssist=2 };
+/// creature_text.Type values, which are the ChatMsg ids the client prints.
+inline constexpr uint8_t kLocalChatMonsterSay=12, kLocalChatMonsterYell=14, kLocalChatMonsterWhisper=15,
+    kLocalChatMonsterEmote=16, kLocalChatRaidBossEmote=41;
+struct LocalCreatureTalkLine { std::string text; uint8_t chatType=kLocalChatMonsterSay; float weight=100; };
+struct LocalCreatureTalkRule {
+    int64_t owner=0;          // >0 creature entry, <0 spawn guid script
+    uint32_t entry=0, questId=0, cooldownMinMs=0, cooldownMaxMs=0;
+    LocalCreatureTalkEvent event=LocalCreatureTalkEvent::Aggro;
+    uint8_t chance=100, ownerIndex=0; // ownerIndex: bit in LocalRealmNpc::talkOnceMask
+    bool once=false, keepOnEvade=false, invokerTarget=false, withEmote=false;
+    LocalCreatureSmartAction action=LocalCreatureSmartAction::Talk;
+    // Timed events: UPDATE_IC/OOC initial+repeat, HEALTH_PCT range+repeat.
+    uint32_t initialMinMs=0, initialMaxMs=0, repeatMinMs=0, repeatMaxMs=0;
+    uint8_t minPct=0, maxPct=100;
+    std::vector<LocalCreatureTalkLine> lines;
+};
+inline constexpr size_t kLocalMaxCreatureTalkRules=4096;
+/// A creature_text group the generated SmartAI family's TALK action names
+/// (2.37; compile_creature_talk.py's textGroups): the talker's entry and the
+/// group id with its weighted lines.
+struct LocalCreatureTextGroup {
+    uint32_t entry=0;
+    uint8_t group=0;
+    std::vector<LocalCreatureTalkLine> lines;
+};
+inline constexpr size_t kLocalMaxCreatureTextGroups=16384;
+/// World.conf defaults used by Creature::DoFleeToGetAssistance / CallAssistance.
+inline constexpr float kLocalFleeAssistanceRadius=30.f, kLocalAssistanceRadius=10.f;
+inline constexpr uint32_t kLocalAssistanceDelayMs=2000, kLocalFleeDelayMs=7000, kLocalSeekAssistanceTimeoutMs=10000;
+/// CreatureTextMgr listen ranges (ListenRange.Say / .TextEmote / .Yell).
+inline float localCreatureTalkRange(uint8_t chatType) {
+    return chatType==kLocalChatMonsterYell?300.f:chatType==kLocalChatRaidBossEmote?1000.f:25.f;
+}
+/// Race/class/gender placeholders the client expands in creature text.
+std::string localExpandCreatureText(const std::string& text,const LocalRealmPlayer* target);
+struct LocalChairSeat {
+    uint32_t objectId=0,mapId=0;
+    uint8_t slot=0,standState=0;
+    float x=0,y=0,z=0,orientation=0;
+};
+/// AzerothCore pool_template/pool_gameobject with equal member chances.
+struct LocalGameObjectPool {
+    uint32_t id=0, maxActive=1;
+    std::vector<uint32_t> members; // sorted object IDs
+};
+inline constexpr size_t kLocalMaxGameObjectPools=256;
+inline constexpr size_t kLocalMaxGameObjects=1024;
+inline bool localGameObjectStateful(LocalGameObjectKind kind) {
+    return kind==LocalGameObjectKind::Door || kind==LocalGameObjectKind::Chest || kind==LocalGameObjectKind::Resource;
+}
+/// Player::SkillGainChance for gathering (Player.cpp UpdateGatherSkill):
+/// grey at required+100, green +50, yellow +25, otherwise orange; returned in
+/// thousandths with the default rates 0/25/75/100 %.
+inline uint32_t localGatherSkillChance(uint32_t current,uint32_t required) {
+    if(current>=required+100)return 0;
+    if(current>=required+50)return 250;
+    if(current>=required+25)return 750;
+    return 1000;
+}
+/// GameObject::Use GAMEOBJECT_TYPE_CHAIR slot geometry: slots lie on the line
+/// through the object orthogonal to its facing, `size` apart and centred.
+inline std::array<float,2> localChairSlotPosition(const LocalGameObject& object,uint8_t slot) {
+    const float relative=object.scale*float(slot)-object.scale*float(object.chairSlots-1)/2.f;
+    const float orthogonal=object.orientation+1.57079632679f;
+    return {object.x+relative*std::cos(orthogonal),object.y+relative*std::sin(orthogonal)};
+}
+/// Stand state UNIT_STAND_STATE_SIT_LOW_CHAIR(4) + chair height.
+inline uint8_t localChairStandState(const LocalGameObject& object) { return uint8_t(4+std::min<uint8_t>(object.chairHeight,2)); }
+/// Nearest free slot, skipping slots another character occupies (within 0.1
+/// yards, as GameObject::Use does). Returns -1 when every slot is taken.
+template<class Occupied>
+inline int localChairNearestFreeSlot(const LocalGameObject& object,float px,float py,Occupied&& occupied) {
+    if(object.kind!=LocalGameObjectKind::Chair || !object.chairSlots)return -1;
+    int best=-1;float lowest=std::numeric_limits<float>::max();
+    for(uint8_t slot=0;slot<object.chairSlots;++slot) {
+        const auto pos=localChairSlotPosition(object,slot);
+        if(occupied(pos[0],pos[1]))continue;
+        const float d=std::hypot(px-pos[0],py-pos[1]);
+        if(d<=lowest){lowest=d;best=slot;}
+    }
+    return best;
+}
+/// LootTemplate::Process for one gameobject loot id and one looter. Ungrouped
+/// rows roll independently; each group yields at most one row: explicitly
+/// chanced rows first against one 0-100 roll, then a uniform equal-chance row.
+/// Quest rows reach only a player who still needs that item.
+template<class Rng,class NeedsItem>
+inline std::vector<LocalItemStack> localRollGameObjectLoot(const std::vector<LocalGameObjectLootRow>& rows,Rng& rng,NeedsItem&& needs) {
+    std::vector<LocalItemStack> out;
+    const auto chance=[&]{return std::uniform_real_distribution<float>(0.f,100.f)(rng);};
+    const auto emit=[&](const LocalGameObjectLootRow& row) {
+        if(row.questRequired && !needs(row.itemId))return;
+        const auto count=uint16_t(std::uniform_int_distribution<uint32_t>(row.minCount,std::max(row.minCount,row.maxCount))(rng));
+        for(auto& stack:out)if(stack.itemId==row.itemId){stack.count=uint16_t(std::min<uint32_t>(65535,stack.count+count));return;}
+        LocalItemStack stack;stack.itemId=row.itemId;stack.count=count;out.push_back(stack);
+    };
+    uint8_t maxGroup=0;
+    for(const auto& row:rows) {
+        if(row.group){maxGroup=std::max(maxGroup,row.group);continue;}
+        if(row.chance>=100.f || chance()<row.chance)emit(row);
+    }
+    for(uint32_t group=1;group<=maxGroup;++group) {
+        std::vector<const LocalGameObjectLootRow*> explicitRows,equalRows;
+        for(const auto& row:rows)if(row.group==group)(row.chance>0?explicitRows:equalRows).push_back(&row);
+        if(explicitRows.empty()&&equalRows.empty())continue;
+        const LocalGameObjectLootRow* picked=nullptr;
+        if(!explicitRows.empty()) {
+            float roll=chance();
+            for(const auto* row:explicitRows) {
+                if(row->chance>=100.f){picked=row;break;}
+                roll-=row->chance;
+                if(roll<0){picked=row;break;}
+            }
+        }
+        if(!picked && !equalRows.empty())
+            picked=equalRows[std::uniform_int_distribution<size_t>(0,equalRows.size()-1)(rng)];
+        if(picked)emit(*picked);
+    }
+    return out;
+}
+inline bool validLocalGameObjectLootTable(const std::vector<LocalGameObjectLootRow>& rows) {
+    if(rows.size()>kLocalMaxGameObjectLootRows)return false;
+    std::set<std::pair<uint8_t,uint32_t>> seen;
+    for(const auto& row:rows) {
+        if(!row.itemId || !std::isfinite(row.chance) || row.chance<0 || row.chance>100 || (!row.group && row.chance<=0) ||
+           !row.minCount || row.maxCount<row.minCount || !seen.insert({row.group,row.itemId}).second)return false;
+    }
+    return true;
+}
+inline uint64_t localGameObjectGuid(uint32_t id) { return 0xf110000100000000ULL | uint64_t(id); }
+inline bool localGameObjectVisible(const LocalGameObject& object,const LocalRealmPlayer& player) {
+    return !player.instanceId && object.mapId==player.mapId &&
+        localPhaseVisible(player.phaseMask,object.requiredPhaseMask,object.excludedPhaseMask);
+}
+inline bool localGameObjectUsable(const LocalGameObject& object,const LocalRealmPlayer& player) {
+    if(object.kind==LocalGameObjectKind::Decorative || !localGameObjectVisible(object,player) || player.dead || player.ghost || !player.health ||
+       player.vehicleGuid || player.flight.active || player.transportEntry || player.castingSpellId || player.attackTarget ||
+       !localScriptConditionMatches(player,object.requiredScriptId,object.requiredValue))return false;
+    // Range first: most of the ~900 placed objects are far away every frame.
+    const float dx=object.x-player.x,dy=object.y-player.y,dz=object.z-player.z;
+    if(!std::isfinite(dx+dy+dz) || dx*dx+dy*dy+dz*dz>object.useRadius*object.useRadius)return false;
+    if(object.requiredSkillId && std::none_of(player.professions.begin(),player.professions.end(),[&](const auto& skill){
+        return skill.skillId==object.requiredSkillId && skill.current>=object.requiredSkill;
+    }))return false;
+    if((object.toolItemId || !object.toolItemIds.empty()) && std::none_of(player.inventory.begin(),player.inventory.end(),[&](const auto& item){
+        return item.count && (item.itemId==object.toolItemId ||
+            std::find(object.toolItemIds.begin(),object.toolItemIds.end(),item.itemId)!=object.toolItemIds.end());
+    }))return false;
+    if(object.requiredQuestId && std::none_of(player.quests.begin(),player.quests.end(),[&](const auto& quest){
+        return quest.id==object.requiredQuestId && quest.status==LocalQuestStatus::Active;
+    }))return false;
+    return true;
+}
 struct LocalWorldContent {
     mutable bool mailboxSitesReady=false;
     mutable uint32_t mailboxMap=0;
@@ -892,8 +1939,39 @@ struct LocalWorldContent {
     // Sorted by spellId, like every other definition list here.
     std::vector<LocalRecipe> recipes;
     std::vector<LocalQuestDefinition> quests;
+    bool questChainCatalogRequired = false;
+    std::map<uint32_t, LocalQuestChainGate> questChainGates;
+    // Authored state/phase transitions keyed by quest ID or NPC entry. They are
+    // immutable content; only their results live in the character save.
+    std::vector<LocalScriptTrigger> scriptTriggers;
+    std::vector<LocalScriptTimerAction> scriptTimerActions;
+    std::vector<LocalScriptAction> scriptActions;
+    std::vector<LocalScriptArea> scriptAreas;
+    std::vector<LocalGameObject> gameObjects;
+    std::vector<LocalGameObjectPool> gameObjectPools;
+    // Sorted by (owner, event); guid-scripted spawns ignore their entry rules.
+    std::vector<LocalCreatureTalkRule> creatureTalk;
+    std::vector<LocalCreatureTextGroup> creatureTextGroups; // sorted by (entry, group)
+    const LocalCreatureTextGroup* creatureText(uint32_t entry,uint8_t group) const {
+        auto it=std::lower_bound(creatureTextGroups.begin(),creatureTextGroups.end(),std::pair<uint32_t,uint8_t>{entry,group},
+            [](const auto& a,const auto& key){return a.entry!=key.first?a.entry<key.first:a.group<key.second;});
+        return it!=creatureTextGroups.end()&&it->entry==entry&&it->group==group?&*it:nullptr;
+    }
+    std::vector<uint32_t> creatureGuidScripts;
+    std::vector<LocalEscortRoute> escortRoutes;
+    // Immutable shared schedules; mutable lifecycle belongs to LocalRealm and
+    // is persisted once for the authority rather than once per character.
+    std::vector<LocalWorldEventSchedule> worldEvents;
+    std::vector<LocalVehicleKit> vehicleKits;
     std::vector<LocalNpcDefinition> npcs;
     std::vector<LocalNpcSpawn> spawns;
+    // 2.39: waypoint_data paths of a content file without a catalog (tests);
+    // the catalog's paths.pack is the source otherwise.
+    std::map<uint32_t,std::vector<LocalWaypointNode>> waypointPaths;
+    // 2.40: the gossip tables of a test content (the catalog carries them otherwise).
+    std::map<uint32_t,LocalGossipMenu> gossipMenus;
+    std::map<uint32_t,LocalGossipText> gossipTexts;
+    std::map<uint32_t,LocalGossipOwner> gossipOwners;
     LocalRealmPlayer start;
     bool classResources = false, clientStarterSpells = false;
     std::string spellDiagnostic;
@@ -906,6 +1984,13 @@ struct LocalWorldContent {
     mutable std::map<uint32_t, LocalNpcDefinition> npcCache;
     mutable std::map<uint32_t, std::vector<uint32_t>> npcQuestCache;
     mutable std::string catalogError;
+    const LocalVehicleKit* vehicleKit(uint32_t id) const;
+    const LocalEscortRoute* escortRoute(uint32_t id) const;
+    const LocalWorldEventSchedule* worldEvent(uint32_t id) const;
+    const LocalGameObject* gameObject(uint32_t id) const;
+    const LocalGameObjectPool* gameObjectPool(uint32_t id) const;
+    const LocalScriptAction* scriptAction(uint32_t id) const;
+    const LocalGameObject* nearbyGameObject(const LocalRealmPlayer& player) const;
     const LocalItemDefinition* item(uint32_t id) const;
     const LocalSpellDefinition* spell(uint32_t id) const;
     const LocalRecipe* recipe(uint32_t spellId) const;
@@ -913,6 +1998,20 @@ struct LocalWorldContent {
     const LocalNpcDefinition* npc(uint32_t id) const;
     std::vector<LocalQuestDefinition> questsForNpc(uint32_t entry) const;
 };
+/// Whether an active quest still needs this item (collect objective below its
+/// count). Mirrors Player::HasQuestForItem for quest loot and INTERACT_COND.
+bool localPlayerNeedsQuestItem(const LocalRealmPlayer& player,const LocalWorldContent& content,uint32_t itemId);
+/// Base usability plus GO_FLAG_INTERACT_COND quest-loot gating.
+bool localGameObjectUsable(const LocalGameObject& object,const LocalRealmPlayer& player,const LocalWorldContent& content);
+const LocalVehicleAbility* localVehicleCastAbility(const LocalVehicleCast& cast,const LocalWorldContent& content);
+bool validLocalVehicleCastView(const LocalVehicleCast& cast,const LocalWorldContent& content);
+inline std::array<float,3> localVehicleSeatPosition(const LocalRealmNpc& vehicle,uint8_t seat) {
+    std::array<float,3> result{vehicle.x,vehicle.y,vehicle.z};
+    if(seat>=vehicle.vehicleSeatCount || seat>=8)return result;
+    const auto& offset=vehicle.vehicleSeatOffsets[seat];const float c=std::cos(vehicle.orientation),s=std::sin(vehicle.orientation);
+    result[0]+=offset[0]*c-offset[1]*s;result[1]+=offset[0]*s+offset[1]*c;result[2]+=offset[2];
+    return result;
+}
 struct LocalTradeItem {uint32_t item=0;uint16_t count=0,sourceCount=0;uint8_t bag=0;bool operator==(const LocalTradeItem&)const=default;};
 struct LocalGraveyardSite {
     uint32_t id = 0, mapId = 0, raceMask = 0, zoneId = 0; // zero mask: neutral sanctuary
@@ -977,12 +2076,18 @@ enum class LocalAction : uint8_t {
     PetAction=72,
     ReclaimCorpse=74,
     PetSpellAutocast=73, // Pet GUID, spell id and explicit bid 0/1.
+    EnterVehicle=75, ExitVehicle=76, UseGameObject=77, SwitchVehicleSeat=78, VehicleAbility=79, VehicleAim=80,
+    // 2.40 (LAN109): a gossip option chosen at the creature in `target` (`bid`
+    // the menu id, `id` the option id); a text emote (`id` the TextEmotes.dbc
+    // id) performed at the creature in `target` (SmartAI's RECEIVE_EMOTE).
+    GossipSelect=81, TextEmote=82,
 };
 /// The highest action a client may send. Anything above it is rejected at the
 /// wire rather than reaching the rules, so adding an action here is a
 /// deliberate act and a forgotten one is inert instead of dangerous.
-inline constexpr LocalAction kLocalActionMax = LocalAction::ReclaimCorpse;
+inline constexpr LocalAction kLocalActionMax = LocalAction::TextEmote;
 struct LocalRealmCommand { LocalAction action = LocalAction::StopAttack; uint64_t target = 0; uint32_t id = 0; uint32_t bid = 0, buyout = 0, durationMinutes = 0; uint64_t serviceNpcGuid = 0; uint16_t auctionCount = 1; uint16_t bankSourceCount = 0, bankDestinationCount = 0;
+    float vehicleAimYaw=0,vehicleAimPitch=0;
     std::string mailRecipient,mailSubject,mailBody;
     std::vector<LocalTradeItem> mailAttachments;
 };
@@ -994,6 +2099,9 @@ struct LocalRealmPet;
 class LocalGameplay {
 public:
     static constexpr size_t MaxInventory = 24, MaxQuests = 32, MaxNpcs = 128, MaxInstances = 128;
+    // Deferred kill facts stay bounded. A full queue rejects a lethal hit
+    // before the NPC death is published, so credit can never be discarded.
+    static constexpr size_t MaxPendingScriptKills = 256;
     // Authority-owned, transient single-target healing effects. Recasts replace
     // an existing rank rather than consuming another slot.
     static constexpr size_t MaxPeriodicHeals = 256, MaxPeriodicHealsPerTarget = 8;
@@ -1001,7 +2109,7 @@ public:
     //
     // Owner progress uses bounded multipart snapshots. These caps also bound
     // save parsing, memory use and reassembly; see local_realm.cpp's packet budget.
-    static constexpr size_t MaxSpells = 192, MaxRecipes = 96;
+    static constexpr size_t MaxSpells = 192, MaxRecipes = 1024;
     // Cooldowns are bounded separately because only the handful of abilities
     // actually cooling down are ever present; sizing this with the spellbook
     // would have spent 384 bytes a packet on entries that are never sent.
@@ -1026,6 +2134,13 @@ public:
     // Queried only on transfer/reset, never used as a combat actor roster.
     void setAuraOwnerProvider(std::function<std::vector<LocalRealmPlayer*>()> provider);
     bool loadContent(const std::string& path, std::string& error);
+    const std::vector<LocalGameObjectState>& gameObjectStates() const;
+    const LocalGameObjectState* gameObjectState(uint32_t id) const;
+    bool validateGameObjectStates(const std::vector<LocalGameObjectState>& states) const;
+    bool restoreGameObjectStates(const std::vector<LocalGameObjectState>& states);
+    const LocalGameObject* nearbyGameObject(const LocalRealmPlayer& player) const;
+    /// Deterministic loot/pool rolls for tests; the authority seeds from time.
+    void seedGameObjectRandom(uint32_t seed);
     bool loadCatalog(const std::string& directory, std::string& error);
     /// P05 line of sight . Optional: a realm with no collision pack
     /// installed answers every line-of-sight test with "visible", which is how
@@ -1043,12 +2158,15 @@ public:
     const std::vector<LocalGraveyardSite>& graveyards() const;
     bool setFactionTemplates(const std::vector<LocalFactionTemplate>& rows,
                              const std::array<uint32_t, 12>& raceTemplates, std::string& error);
+    bool setFactionReputationBases(const std::vector<LocalFactionReputationBase>& rows, std::string& error);
+    const std::vector<LocalFactionReputationBase>& factionReputationBases() const;
     const std::vector<LocalFactionTemplate>& factionTemplates() const;
     const std::array<uint32_t, 12>& raceFactionTemplates() const;
     // Shared attackability/aggression query for presentation; resolves the
     // same NPC and faction templates once rather than three times.
     struct NpcDisposition { bool attackable = false; bool aggressive = false; };
     NpcDisposition npcDisposition(const LocalRealmPlayer& player, const LocalRealmNpc& npc) const;
+    bool npcVisibleTo(const LocalRealmPlayer& player, const LocalRealmNpc& npc) const;
     bool canAttack(const LocalRealmPlayer& player, const LocalRealmNpc& npc) const;
     bool isAggressive(const LocalRealmPlayer& player, const LocalRealmNpc& npc) const;
     bool insidePortal(uint32_t portalId, const LocalRealmPlayer& player) const;
@@ -1071,6 +2189,11 @@ public:
     /// models. Empty rows leave the built-in fourteen in place.
     bool setSkillLines(const std::vector<LocalSkillLine>& lines, std::string& error);
     const std::vector<LocalSkillLine>& skillLines() const;
+    /// QuestFactionReward.dbc rows 1 (gains) and 2 (losses), columns 1..10.
+    /// Values are whole reputation points; quest_template overrides remain in
+    /// hundredths and win when present.
+    bool setQuestFactionRewards(const std::array<int32_t,10>& gains,
+                                const std::array<int32_t,10>& losses);
     /// The qualifying NPC of a kind the player is standing at, or nullptr.
     const LocalRealmNpc* serviceNpc(const LocalRealmPlayer& player, uint32_t npcFlag, uint64_t npcGuid = 0) const;
     /// What the merchant the player is standing at sells. Empty away from one.
@@ -1123,6 +2246,9 @@ public:
     static bool validCharacterOptions(uint8_t race, uint8_t classId, uint8_t gender);
     const LocalWorldContent& content() const;
     void refreshInventoryObjectives(LocalRealmPlayer& player);
+    bool refreshInventoryObjectives(LocalRealmPlayer& player,
+                                    const std::vector<LocalRealmPlayer*>& authorityPlayers,
+                                    std::string& error);
     void useContent(std::shared_ptr<LocalWorldContent> content);
     std::shared_ptr<LocalWorldContent> sharedContent() const;
     bool validatePlayer(const LocalRealmPlayer& player, std::string& error) const;
@@ -1136,11 +2262,19 @@ public:
     void initializePlayer(LocalRealmPlayer& player, bool fresh, uint8_t forcedLevel = 0);
     bool execute(LocalRealmPlayer& player, const LocalRealmCommand& command,
                  const std::vector<LocalRealmPlayer*>& players, std::string& result);
+    bool moveVehicle(LocalRealmPlayer& player, uint32_t mapId, float x, float y, float z,
+                     float orientation, uint8_t movement);
+    /// Forced detach always releases the seat, even if an exit script fails.
+    bool detachVehicle(LocalRealmPlayer& player);
     bool tick(float seconds, const std::vector<LocalRealmPlayer*>& players);
     // Atomically install the authenticated session roster (never saved/client supplied).
     bool setPartyMembership(const std::vector<LocalParty>& parties);
     // Restore the consumed corpse reservation after a failed atomic realm save.
     void restoreLootable(uint64_t guid, bool lootable);
+    const std::vector<LocalVehicleProjectile>& vehicleProjectiles() const;
+    void setRemoteVehicleProjectiles(std::vector<LocalVehicleProjectile> shots);
+    const std::vector<LocalVehicleCast>& vehicleCasts() const;
+    void setRemoteVehicleCasts(std::vector<LocalVehicleCast> casts);
     const std::vector<LocalRealmNpc>& npcs() const;
     void setRemoteNpcs(std::vector<LocalRealmNpc> npcs);
     // Owned creatures. Authority state; a guest receives them like NPCs and
@@ -1152,7 +2286,55 @@ public:
     // Recent authority health changes. Observation only; not saved or replicated.
     std::vector<LocalCombatEvent> combatEvents() const;
     uint64_t overwrittenCombatEvents() const;
+    // Applies the complete immutable action list to one staged copy of the
+    // world. No actor or dialogue is visible unless every action preflights.
+    bool executeScriptActions(const std::vector<uint32_t>& actionIds,
+                              const std::vector<LocalRealmPlayer*>& scope,
+                              std::string& error);
+    bool executeScriptActions(const std::vector<uint32_t>& actionIds,
+                              const std::vector<LocalRealmPlayer*>& viewers,
+                              const std::vector<LocalRealmPlayer*>& authorityPlayers,
+                              std::string& error);
+    LocalScriptActionCheckpoint scriptActionCheckpoint() const;
+    void restoreScriptActionCheckpoint(LocalScriptActionCheckpoint checkpoint);
+    static bool validPendingScriptKills(const std::vector<LocalPendingScriptKill>& kills);
+    const std::vector<LocalPendingScriptKill>& pendingScriptKills() const;
+    bool restorePendingScriptKills(std::vector<LocalPendingScriptKill> kills);
+    const std::vector<LocalScriptDialogue>& scriptDialogues() const;
+    // 2.40 gossip: the texts and menus of the loaded content / catalog for the
+    // dialogue page; a guest fills the option texts of a received page from
+    // its own catalog; the realm reports the active game events for the
+    // ACTIVE_EVENT gossip conditions.
+    bool gossipTextFor(uint32_t textId, LocalGossipText& out) const;
+    bool gossipMenuFor(uint32_t menuId, LocalGossipMenu& out) const;
+    void resolveGossipOptions(LocalGossipState& state) const;
+    void setActiveWorldEvents(std::vector<uint32_t> ids);
+    bool setRemoteScriptDialogues(std::vector<LocalScriptDialogue> dialogues);
+    uint64_t overwrittenScriptDialogues() const;
 private:
+    // Run one player command while the caller still owns any combat-stack
+    // references. The public execute() wrapper drains resulting immutable kill
+    // facts only after this implementation has completely unwound.
+    bool executeUnsettled(LocalRealmPlayer& player, const LocalRealmCommand& command,
+        const std::vector<LocalRealmPlayer*>& players, std::string& result);
+    // Apply queued XP, objective credit and authored kill actions at a point
+    // where no combat iterator retains an NPC reference. Returns whether any
+    // queued fact committed; refused facts remain queued for a later boundary.
+    bool settlePendingScriptKills(const std::vector<LocalRealmPlayer*>& players,
+        const std::set<uint64_t>* playerFilter=nullptr);
+    bool detachVehicleScoped(LocalRealmPlayer& player,const std::vector<LocalRealmPlayer*>& players);
+    bool executeScriptActionsScoped(const std::vector<uint32_t>& actionIds,
+        const std::vector<LocalRealmPlayer*>& viewers,
+        const std::vector<LocalRealmPlayer*>& authorityPlayers,std::string& error);
+    bool executeVehicleAbility(LocalRealmPlayer& player,const LocalRealmCommand& command,
+        const std::vector<LocalRealmPlayer*>& players,std::string& result,
+        bool finishing=false,const LocalVehicleCast* pending=nullptr);
+    bool canDamageVehicleArea(const LocalRealmNpc& primary,const LocalRealmNpc& hull,LocalRealmPlayer& owner,
+        uint32_t raw,uint8_t schoolMask,float centerX,float centerY,float centerZ,
+        float radius,const std::vector<LocalRealmPlayer*>& players);
+    bool damageVehicleArea(LocalRealmNpc& primary,LocalRealmNpc& hull,LocalRealmPlayer& owner,
+        uint32_t raw,uint32_t spell,uint8_t schoolMask,float centerX,float centerY,float centerZ,
+        float radius,const std::vector<LocalRealmPlayer*>& players);
     bool executeCastSpell(LocalRealmPlayer& player, const LocalRealmCommand& command,
         const std::vector<LocalRealmPlayer*>& players, std::string& result, bool finishing);
     struct Impl;

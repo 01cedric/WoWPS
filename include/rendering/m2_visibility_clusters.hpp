@@ -7,6 +7,21 @@
 #include <vector>
 
 namespace wowee::rendering {
+// Conservative distance broad phase using the same enclosing spheres as the
+// frustum broad phase. Invalid inputs fail open; the per-instance predicate
+// remains authoritative. Padding protects tangencies from float rounding.
+inline bool m2ClusterWithinDistance(const glm::vec3& center, float radius,
+                                    const glm::vec3& camera, float maxDistance) {
+    if (!(radius >= 0.0f) || !(maxDistance >= 0.0f) ||
+        !std::isfinite(radius) || !std::isfinite(maxDistance)) return true;
+    const glm::vec3 delta = center - camera;
+    const float distanceSquared = glm::dot(delta, delta);
+    const float reach = radius + maxDistance;
+    const float paddedReach = reach + 0.01f + 0.00001f * reach;
+    if (!std::isfinite(distanceSquared) || !std::isfinite(paddedReach)) return true;
+    return distanceSquared <= paddedReach * paddedReach;
+}
+
 // Placement-order blocks keep streamed tile doodads together. Bounds enclose
 // the SAME padded spheres used by the final cull, with outward rounding slack.
 // They reject work only; final per-instance predicates and draw order survive.

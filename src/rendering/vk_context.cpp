@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <string>
 #include <stdexcept>
@@ -138,6 +139,17 @@ void VkContext::shutdown() {
     if (device) {
         vkDeviceWaitIdle(device);
     }
+#if defined(__ORBIS__) || defined(PS4) || defined(WOWEE_PS4)
+    // A three-buffer frame may have been submitted but intentionally not yet
+    // handed to VideoOut. Its render-finished semaphore is still alive here.
+    if (deferredPresentValid_) {
+        const VkResult presentResult = flushDeferredPresent();
+        if (presentResult != VK_SUCCESS && presentResult != VK_SUBOPTIMAL_KHR) {
+            LOG_WARNING("shutdown: deferred present flush returned ",
+                        static_cast<int>(presentResult));
+        }
+    }
+#endif
 
     // Clear deferred cleanup queues WITHOUT executing them.  By this point the
     // sub-renderers (which own the descriptor pools/buffers these lambdas
@@ -1227,6 +1239,46 @@ static bool requestIdentityTransform(vkb::SwapchainBuilder& builder,
 }
 #endif
 
+#if defined(__ORBIS__) || defined(PS4) || defined(WOWEE_PS4)
+static bool ps4DeferredPresentEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("WOWEE_VK_DEFER_PRESENT");
+        return !(value && *value == '0');
+    }();
+    return enabled;
+}
+
+VkResult VkContext::flushDeferredPresent() {
+    if (!deferredPresentValid_) return VK_SUCCESS;
+    if (deferredPresentSwapchain_ == VK_NULL_HANDLE ||
+        deferredPresentSemaphore_ == VK_NULL_HANDLE ||
+        deferredPresentSwapchain_ != swapchain) {
+        LOG_ERROR("PS4 deferred present lost its swapchain/semaphore ownership");
+        deferredPresentValid_ = false;
+        deferredPresentSemaphore_ = VK_NULL_HANDLE;
+        deferredPresentSwapchain_ = VK_NULL_HANDLE;
+        return VK_ERROR_SURFACE_LOST_KHR;
+    }
+
+    VkPresentInfoKHR presentInfo{};
+    presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    presentInfo.waitSemaphoreCount = 1;
+    presentInfo.pWaitSemaphores = &deferredPresentSemaphore_;
+    presentInfo.swapchainCount = 1;
+    presentInfo.pSwapchains = &deferredPresentSwapchain_;
+    presentInfo.pImageIndices = &deferredPresentImageIndex_;
+
+    const VkResult result = vkQueuePresentKHR(presentQueue, &presentInfo);
+    deferredPresentValid_ = false;
+    deferredPresentSemaphore_ = VK_NULL_HANDLE;
+    deferredPresentSwapchain_ = VK_NULL_HANDLE;
+    if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
+        platform::ps4::hideSplashScreen();
+    }
+    return result;
+}
+#endif
+
 bool VkContext::createSwapchain(int width, int height) {
 #if defined(__ORBIS__) || defined(PS4) || defined(WOWEE_PS4)
     if (width <= 0 || height <= 0) {
@@ -1320,8 +1372,13 @@ bool VkContext::createSwapchain(int width, int height) {
     swapchainExtent = createInfo.imageExtent;
     presentsOffNativeTransform_ = false;
     swapchainDirty = false;
+    deferredPresentPrimed_ = false;
+    deferredPresentValid_ = false;
+    deferredPresentSemaphore_ = VK_NULL_HANDLE;
+    deferredPresentSwapchain_ = VK_NULL_HANDLE;
     LOG_INFO("PS4 VideoOut swapchain created: ", width, "x", height,
-             " images=", imageCount, " surface=none");
+             " images=", imageCount, " surface=none deferredPresent=",
+             (ps4DeferredPresentEnabled() && imageCount >= 3 ? "enabled" : "disabled"));
     return true;
 #else
     vkb::SwapchainBuilder swapchainBuilder{physicalDevice, device, surface};
@@ -2627,6 +2684,9 @@ VkDescriptorSet VkContext::uploadImGuiTexture(const uint8_t* rgba, int width, in
 
 void VkContext::releaseSurface() {
     if (device) vkDeviceWaitIdle(device);
+#if defined(__ORBIS__) || defined(PS4) || defined(WOWEE_PS4)
+    if (deferredPresentValid_) (void)flushDeferredPresent();
+#endif
 
     for (auto fb : swapchainFramebuffers) {
         if (fb) vkDestroyFramebuffer(device, fb, nullptr);
@@ -2708,6 +2768,17 @@ bool VkContext::recreateSwapchain(int width, int height) {
         deviceLost_ = true;
         return false;
     }
+#if defined(__ORBIS__) || defined(PS4) || defined(WOWEE_PS4)
+    if (deferredPresentValid_) {
+        const VkResult presentResult = flushDeferredPresent();
+        if (presentResult < 0 && presentResult != VK_ERROR_OUT_OF_DATE_KHR) {
+            LOG_ERROR("Swapchain rebuild stopped: deferred present failed: ",
+                      static_cast<int>(presentResult));
+            deviceLost_ = true;
+            return false;
+        }
+    }
+#endif
     // Tear down every view-dependent framebuffer before releasing the views.
     destroyOverlayRenderPass();
     retainedFrameImage_ = false;
@@ -2873,6 +2944,34 @@ void VkContext::resetFrameSyncState() {
         deviceLost_ = true;
         return;
     }
+
+#if defined(__ORBIS__) || defined(PS4) || defined(WOWEE_PS4)
+    // Deferred present retains one renderFinished semaphore from the previous
+    // CPU frame. The semaphore arrays below are about to be destroyed and
+    // remade, so consume that present while its handle and GPU label are still
+    // valid. 2.08 could leave deferredPresentSemaphore_ pointing at the freed
+    // VkPs4Semaphore object; the next menu frame then resolved its stale label
+    // and crashed in vk_ps4_sync_resolve_semaphore(). The wait-idle above
+    // proves the render batch itself has finished, so this present cannot
+    // extend GPU use of any renderer resource being rebuilt.
+    if (deferredPresentValid_) {
+        const VkResult presentResult = flushDeferredPresent();
+        if (presentResult != VK_SUCCESS && presentResult != VK_SUBOPTIMAL_KHR) {
+            LOG_ERROR("Frame sync reset could not retire deferred present: ",
+                      static_cast<int>(presentResult));
+            deviceLost_ = presentResult == VK_ERROR_DEVICE_LOST;
+            if (deviceLost_) return;
+            swapchainDirty = true;
+        }
+    }
+    // The first frame after a sync reset must present normally before the
+    // one-frame pipeline is primed again. This also guarantees no stale
+    // semaphore ownership survives even if the previous frame had no flip.
+    deferredPresentPrimed_ = false;
+    deferredPresentValid_ = false;
+    deferredPresentSemaphore_ = VK_NULL_HANDLE;
+    deferredPresentSwapchain_ = VK_NULL_HANDLE;
+#endif
 
     // Retire the upload batches now. The wait above means every one of them has
     // finished, so this frees each fence, command buffer and staging buffer
@@ -3554,19 +3653,61 @@ void VkContext::endFrame(VkCommandBuffer cmd, uint32_t imageIndex) {
     consecutiveRecordingFailures_ = 0;
     retainedFrameImage_ = false;
 
-    VkPresentInfoKHR presentInfo{};
-    presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-    presentInfo.waitSemaphoreCount = 1;
-    presentInfo.pWaitSemaphores = &renderSem;
-    presentInfo.swapchainCount = 1;
-    presentInfo.pSwapchains = &swapchain;
-    presentInfo.pImageIndices = &imageIndex;
+    VkResult result = VK_SUCCESS;
+#if defined(__ORBIS__) || defined(PS4) || defined(WOWEE_PS4)
+    // ps4_vulkan must prove render completion before VideoOut can consume an
+    // image. Doing that proof in the same frame's present serialized the CPU
+    // behind the GPU and showed up as ~tens of milliseconds inside endFrame.
+    // With three scanout images, retain exactly one submitted frame and present
+    // it at the end of the *next* CPU-recorded frame. The GPU therefore gets
+    // one frame of useful overlap while image ownership remains unambiguous.
+    // The two-image fallback stays synchronous: it has no spare scanout image
+    // and would otherwise force AcquireNextImageKHR to reclaim an unpresented
+    // buffer. WOWEE_VK_DEFER_PRESENT=0 restores the synchronous path.
+    const bool deferredPresent = ps4DeferredPresentEnabled() && swapchainImages.size() >= 3;
+    bool presentedThisEnd = false;
 
-#ifdef WOWEE_PS4
-    if (bootTrace) platform::ps4::reportBootStage("gpu: present begin");
-#endif
-    VkResult result = vkQueuePresentKHR(presentQueue, &presentInfo);
-#ifdef WOWEE_PS4
+    if (deferredPresent && deferredPresentPrimed_) {
+        if (deferredPresentValid_) {
+            if (bootTrace) platform::ps4::reportBootStage("gpu: previous present begin");
+            result = flushDeferredPresent();
+            presentedThisEnd = true;
+        }
+        if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
+            deferredPresentImageIndex_ = imageIndex;
+            deferredPresentSemaphore_ = renderSem;
+            deferredPresentSwapchain_ = swapchain;
+            deferredPresentValid_ = true;
+            if (bootTrace) platform::ps4::reportBootStage(
+                presentedThisEnd ? "gpu: previous present complete; current deferred"
+                                 : "gpu: current present deferred");
+        }
+    } else {
+        // Prime VideoOut with one ordinary frame so the splash disappears
+        // immediately and the display has a known current image before the
+        // one-frame pipeline begins. Also used permanently with two buffers.
+        if (deferredPresentValid_) {
+            result = flushDeferredPresent();
+            presentedThisEnd = true;
+        }
+        if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
+            VkPresentInfoKHR presentInfo{};
+            presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+            presentInfo.waitSemaphoreCount = 1;
+            presentInfo.pWaitSemaphores = &renderSem;
+            presentInfo.swapchainCount = 1;
+            presentInfo.pSwapchains = &swapchain;
+            presentInfo.pImageIndices = &imageIndex;
+            if (bootTrace) platform::ps4::reportBootStage("gpu: present begin");
+            result = vkQueuePresentKHR(presentQueue, &presentInfo);
+            presentedThisEnd = true;
+            if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
+                platform::ps4::hideSplashScreen();
+                deferredPresentPrimed_ = deferredPresent;
+            }
+        }
+    }
+
     markPhase(3);
     if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
         static CpuPhaseWindow<4> endProfile;
@@ -3578,19 +3719,22 @@ void VkContext::endFrame(VkCommandBuffer cmd, uint32_t imageIndex) {
                      " presentMeanUs=", endProfile.meanUs(3),
                      " commandEndMaxUs=", endProfile.maxUs[0],
                      " queueSubmitMaxUs=", endProfile.maxUs[2],
-                     " presentMaxUs=", endProfile.maxUs[3]);
+                     " presentMaxUs=", endProfile.maxUs[3],
+                     " deferredPresent=", deferredPresent ? 1 : 0);
             endProfile.reset();
         }
     }
-    if (bootTrace) platform::ps4::reportBootStage(result == VK_SUCCESS
-        ? "gpu: present complete" : "gpu: present returned error");
-#endif
-#if defined(__ORBIS__) || defined(PS4) || defined(WOWEE_PS4)
-    if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
-        // VideoOut has confirmed the first frame; initialization can be slow,
-        // so retain the system splash until an actual present succeeds.
-        platform::ps4::hideSplashScreen();
-    }
+    if (bootTrace && !presentedThisEnd)
+        platform::ps4::reportBootStage("gpu: no flip this frame (deferred pipeline priming)");
+#else
+    VkPresentInfoKHR presentInfo{};
+    presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    presentInfo.waitSemaphoreCount = 1;
+    presentInfo.pWaitSemaphores = &renderSem;
+    presentInfo.swapchainCount = 1;
+    presentInfo.pSwapchains = &swapchain;
+    presentInfo.pImageIndices = &imageIndex;
+    result = vkQueuePresentKHR(presentQueue, &presentInfo);
 #endif
     if (result < 0 && result != VK_ERROR_OUT_OF_DATE_KHR) {
         LOG_ERROR("endFrame[", endFrameCounter, "] vkQueuePresentKHR FAILED: ",
@@ -3741,11 +3885,10 @@ void VkContext::beginUploadBatch() {
 
     if (!inUploadBatch_) {
         pollUploadBatches();
-        VkDeviceSize pendingBytes = 0;
-        for (const auto& batch : inFlightBatches_) {
-            for (const auto& staging : batch.stagingBuffers) pendingBytes += staging.info.size;
-            for (const auto& staging : batch.rawStaging) pendingBytes += staging.bytes;
-        }
+        // pollUploadBatches() keeps this aggregate exact as batches retire.
+        // Avoid walking every staging allocation of every outstanding upload
+        // each frame while terrain is being incrementally finalized.
+        const VkDeviceSize pendingBytes = inFlightUploadBytes_;
         // Bound outstanding batch metadata and staging lifetimes even when
         // uploads are produced faster than completed frames retire them.
         // Byte threshold is an admission watermark: a single current batch
@@ -3866,6 +4009,8 @@ void VkContext::finishUploadBatch(bool synchronous) {
     batch.separateQueue = separateQueue;
     batch.stagingBuffers = std::move(batchStagingBuffers_);
     batch.rawStaging = std::move(batchRawStaging_);
+    for (const auto& staging : batch.stagingBuffers) batch.stagingBytes += staging.info.size;
+    for (const auto& staging : batch.rawStaging) batch.stagingBytes += staging.bytes;
     inFlightBatches_.push_back(std::move(batch));
     batchCmd_ = VK_NULL_HANDLE;
     auto& pending = inFlightBatches_.back();
@@ -3882,6 +4027,7 @@ void VkContext::finishUploadBatch(bool synchronous) {
         LOG_ERROR("[UPLOAD_FAILURE] submit result=", static_cast<int>(submitted));
         throw std::runtime_error("GPU upload submission failed");
     }
+    inFlightUploadBytes_ += pending.stagingBytes;
     ++batchesSubmitted_;
     if (synchronous && !waitAllUploads())
         throw std::runtime_error("GPU upload completion failed");
@@ -3905,6 +4051,8 @@ void VkContext::pollUploadBatches() {
             }
             vkFreeCommandBuffers(device, pool, 1, &it->cmd);
             vkDestroyFence(device, it->fence, nullptr);
+            inFlightUploadBytes_ = it->stagingBytes <= inFlightUploadBytes_
+                ? inFlightUploadBytes_ - it->stagingBytes : 0;
             it = inFlightBatches_.erase(it);
             ++batchesRetired_;
         } else if (result == VK_NOT_READY) {
@@ -3947,6 +4095,7 @@ bool VkContext::waitAllUploads() {
         ++batchesRetired_;
     }
     inFlightBatches_.clear();
+    inFlightUploadBytes_ = 0;
     return true;
 }
 

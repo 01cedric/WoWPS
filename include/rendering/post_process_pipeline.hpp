@@ -192,6 +192,8 @@ private:
         VkExtent2D extent{};
         AllocatedImage images[frames][2]{};
         AllocatedBuffer uniforms[frames][3]{};
+        bool compositeUniformDirty[frames]{true, true};
+        uint32_t uniformRefreshes = 0;
         VkFramebuffer framebuffers[frames][2]{};
         VkFramebuffer compositeFramebuffer = VK_NULL_HANDLE;
         VkRenderPass renderPass = VK_NULL_HANDLE;
@@ -246,6 +248,15 @@ private:
         VkFramebuffer framebuffer[frames]{};
         VkFramebuffer resolveFramebuffer[frames]{};
         VkDescriptorSet sets[frames * 3]{}; // raymarch, resolve, denoise/composite per frame
+        VkImageView descriptorShadowView[frames]{};
+        VkImageLayout descriptorShadowLayout[frames]{};
+        VkImageView descriptorCompositeSourceView[frames]{};
+        VkImageLayout descriptorCompositeSourceLayout[frames]{};
+        glm::mat4 cachedProjection{1.0f};
+        glm::mat4 cachedInverseProjection{1.0f};
+        bool cachedInverseProjectionValid = false;
+        uint32_t descriptorRefreshes = 0;
+        uint32_t projectionInverseRebuilds = 0;
     } volumetric_;
     bool initVolumetricResources();
     void destroyVolumetricResources(); // caller has waited for all frames

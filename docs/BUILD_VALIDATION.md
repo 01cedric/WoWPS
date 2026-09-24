@@ -1,48 +1,98 @@
-# WoWPS 2.00 — build and package validation
+# WoWPS Update 2.10 — build and package validation
 
-## Delivered identity
+Validated on 2026-09-23. These results describe this release's source, host tests
+and package; they do not certify a PS4 installation or a live server session.
 
-|Field|Value|
-|-|-|
-|Public release|2.00|
-|BUILD\_VERSION / APP\_VER / VERSION|02.00|
-|TITLE / TITLE\_ID|WoWPS / WOWE00001|
-|CONTENT\_ID|IV0000-WOWE00001\_00-WOWEEPS4CLIENT00|
-|Build type|PS4 Release, OpenOrbis target|
-|Host compiler|clang / clang++ 17.0.0 with the supplied OpenOrbis SDK|
-|Validation date|2026-09-20|
+## Release identity
 
-## Checks performed
+| Field | Value |
+|---|---|
+| Public release / CMake project | 2.10 / 2.10.0 |
+| BUILD_VERSION / packaged APP_VER / VERSION | 02.10 |
+| TITLE / TITLE_ID | WoWPS / WOWE00001 |
+| CONTENT_ID | IV0000-WOWE00001_00-WOWEEPS4CLIENT00 |
+| Build | PS4 Release, supplied OpenOrbis SDK |
+| Host compiler / build tools | Clang 18.1.3, CMake 3.28.3, Ninja 1.11.1 |
+| Save / LAN format | Save45 / LAN109, unchanged |
 
-* Initial clean configure/compile/link completed successfully. The final integration rebuild and final PKG creation also returned exit code 0. Compiler warnings remain; this is not a warning-free-build claim.
-* **28/28 package hash, signature and structural checks passed** using the toolchain's package validator.
-* **138 extracted runtime files**, including the executable, match the staged inputs by SHA-256. This includes **95 packaged shader binaries**. The package tool's generated keystone is accounted for separately.
-* **30 lighting GLSL/SPIR-V manifest pairs passed** the source/binary hash and SPIR-V header guard. This is a pairing/integrity check, not a new hardware rendering test or recompilation of unchanged shader sources.
-* The actual package SFO contains **APP\_VER 02.00**, **VERSION 02.00**, **TITLE WoWPS** and **TITLE\_ID WOWE00001**. The packager adds its normal PUBTOOLINFO/PUBTOOLVER fields; those are not expected to be byte-identical to the staging SFO.
-* **10/10 self-contained host suites passed**, with no detected AddressSanitizer/UndefinedBehaviorSanitizer error in their output. Individual runners apply sanitizers where implemented; this is not a claim that every runner is instrumented.
-* A lexical comparison of **1,342 production C/C++ source/header files** found no control-flow or numeric-token changes after accounting for the renamed identifiers. The three changed runtime literals are two renamed include paths and a release-labelled diagnostic. This is a source comparison, not full behavioral certification.
-* **113 retained binary/data archive files** compared unchanged to their supplied inputs. Runtime world/game values are not rewritten to hide numbers resembling versions.
-* Syntax checks passed for **119 Python files**, **157 shell files**, **49 strict JSON files** and the comment-enabled grass-biome JSON file. Public local documentation links were checked.
-* Project license text and third-party author/license notices are retained. Renamed references in the local-data notice are updated without removing its attribution or terms.
+## Build and package
 
-## Host suites
+- Fresh CMake configuration, full compile/link, final integration rebuild and
+  PKG creation completed successfully. Existing compiler warnings remain.
+- The OpenOrbis package validator passed all **28 hash, signature and structural
+  checks**. These are homebrew package checks, not retail signing/notarization.
+- **148 extracted runtime files**, including the executable and **95 shader
+  binaries**, match their staged inputs by SHA-256. The generated keystone is
+  accounted for separately; the icon and SFO were extracted from package entries.
+- The actual package SFO contains APP_VER and VERSION `02.10`, TITLE `WoWPS`,
+  TITLE_ID `WOWE00001` and the content ID above.
+- **30 lighting GLSL/SPIR-V manifest pairs** passed their source/binary integrity
+  checks. Unchanged shader sources were not recompiled or hardware-rendered here.
 
-|Suite|Result|
-|-|:-:|
-|Lighting shader pairing|PASS|
-|Runtime package staging safety|PASS|
-|M2 cutout shader source/coverage|PASS|
-|BLP DXT5 alpha classification|PASS|
-|Solid-floor recovery|PASS|
-|Graveyard eligibility/sites|PASS|
-|Local wall-clock synchronization|PASS|
-|Death FrameXML bridge|PASS|
-|Ghost presentation routing|PASS|
-|Settings category access/input|PASS|
+## Host regression checks
 
-Reproduce these checks with `python3 tools/tests/run\_release\_checks.py build-test-results`. Other native suites and data-dependent regressions remain available in `tools/tests/`; the complete suite collection was not rerun for this release preparation.
+The self-contained release runner passed **11 suites**. No AddressSanitizer or
+UndefinedBehaviorSanitizer errors were detected in their output. Instrumentation
+is enabled by the individual runners; not every check is sanitizer-instrumented.
 
-## Not performed
+| Suite | Coverage | Result |
+|---|---|---|
+| Network/authentication | Production TCP, SRP/auth handler and world socket | PASS |
+| Lighting shader pairs | Committed GLSL/SPIR-V manifest | PASS |
+| Package staging | Repeat staging and unsafe output-directory rejection | PASS |
+| M2 cutout shader | Source and alpha-coverage guards | PASS |
+| BLP DXT5 alpha | Alpha classification | PASS |
+| Ground recovery | Solid-floor recovery rules | PASS |
+| Graveyard sites | Eligibility and site selection | PASS |
+| Local wall clock | Clock synchronization | PASS |
+| Death FrameXML | Death interface bridge | PASS |
+| Ghost presentation | Presentation routing | PASS |
+| Settings access | Category access and input | PASS |
 
-No PS4 installation or hardware play session was performed here. Original MPQ/DBC visual/UI acceptance, full LAN/external-server testing, sustained FPS, long-session stability, complete save migration and every class/quest/encounter remain unverified by these checks. Release cleanup is not a new gameplay implementation or a claim of completed WotLK parity.
+The new network suite covers proof framing at every split for four client
+builds; fragmented realm lists; short writes; EINTR/EAGAIN; status-query failures;
+reconnects; terminal failure responses followed by FIN; and deadline/descriptor
+guards. Eighteen synthetic authentication exchanges cover normal login, proof
+splits, padded SRP values, a zero-prefixed shared secret, saved credential hashes,
+account rejection and invalid server proofs, using both system OpenSSL and the
+bundled PS4 crypto implementation.
 
+Two additional world-transport exchanges test immediate encrypted replies and
+fragmented headers with the background receiver both disabled and enabled. They
+exercise the production socket/cipher transition using a fixture payload, not a
+complete GameHandler login or character/world-entry session. Host tests cannot
+prove console syscall behavior; the PS4 target was separately compiled/linked.
+
+Reproduce the host checks from the source root:
+
+```bash
+CXX=clang++ CC=clang python3 tools/tests/run_release_checks.py build-test-results
+```
+
+See [BUILD_PS4.md](BUILD_PS4.md) for build/package commands and
+[CONNECTING.md](CONNECTING.md) for endpoint settings and console acceptance.
+
+## Source preparation
+
+- Python and shell syntax checks passed for 148 Python files and 187 shell files.
+- Public documentation's local file links resolve. Every delivered source file
+  passes the repository's Git ignore check; no delivered file exceeds 100 MiB.
+- Project/third-party licences, notices and credits are retained. All 240
+  supplied runtime files under `assets/`, `Data/` and `addons/` remain unchanged.
+- Obsolete development handovers and superseded validation notes were removed
+  from the release copy. Public documentation is consolidated for Update 2.10.
+  Toolchains, build products, personal state, test logs and Python caches are
+  excluded from the source ZIP. Required renderer libraries remain included.
+
+## Still requires console testing
+
+No actual PS4 installation or live AzerothCore connection was performed here.
+Verify login, realm selection, character selection, world entry, logout and
+reconnection on your console/server. Original MPQ/DBC visuals, full LAN play,
+sustained FPS, long sessions, save migration and every class/quest/encounter
+remain outside these checks. Additional data-dependent tests were not all rerun.
+
+Back up saves and configuration before installing. `02.10` is numerically lower
+than higher-numbered development packages; do not delete saves to work around
+an installer version conflict. The display version does not downgrade save or
+LAN protocol identifiers.

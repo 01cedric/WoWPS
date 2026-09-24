@@ -5,6 +5,7 @@
 #include "game/local_regeneration_rates.hpp"
 #include "game/combat_handler.hpp"
 #include "game/local_realm.hpp"
+#include "addons/local_vehicle_api.hpp"
 #include "game/local_threat_view.hpp"
 #include "game/local_action_spell_ranks.hpp"
 #include <chrono>
@@ -154,11 +155,101 @@ void GameHandler::removeLocalExplorationPlayer(uint64_t guid) {
     LOG_INFO("[LOCAL_REALM] remote avatar removed guid=", guid);
 }
 
+bool GameHandler::localVehicleUiAvailable() const {
+    const auto v=addons::localVehicleView(localServiceRealm());return v.active();
+}
+bool GameHandler::localVehicleAimSettled() const {return localVehicleAimInput_.settled();}
+void GameHandler::requestLocalVehicleAim(float yaw,float pitch) {
+    const auto v=addons::localVehicleView(localServiceRealm());
+    if(!v.alive() || !v.aimed())return;
+    const double now=std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    localVehicleAimInput_.observe(v.player->guid,v.hull->guid,v.player->vehicleSeat,
+        v.hull->vehicleAim[v.player->vehicleSeat][0],v.hull->vehicleAim[v.player->vehicleSeat][1],now);
+    localVehicleAimInput_.edit(yaw,pitch,v.kit->minPitch,v.kit->maxPitch);
+}
+void GameHandler::setLocalVehicleAimDirection(int direction) {
+    const auto v=addons::localVehicleView(localServiceRealm());
+    localVehicleAimDirection_=v.alive() && v.aimed()?std::clamp(direction,-1,1):0;
+}
+void GameHandler::syncLocalVehicleUi() {
+    const auto v=addons::localVehicleView(localServiceRealm());
+    LocalVehicleUiState next;
+    if(v.player && v.hull) {
+        next.guid=v.hull->guid;next.seat=v.player->vehicleSeat;next.available=v.active();
+        next.health=v.hull->health;next.maxHealth=v.hull->maxHealth;
+        next.power=v.hull->vehiclePower;next.maxPower=v.kit?v.kit->maxPower:0;
+        if(v.active()) {
+            next.yaw=v.hull->vehicleAim[next.seat][0];next.pitch=v.hull->vehicleAim[next.seat][1];
+            for(int i=0;i<6;++i) {
+                next.cooldowns[size_t(i)]=v.cooldown(i);
+                if(v.usable(i))next.usableMask|=uint8_t(1u<<i);
+            }
+        }
+        for(const auto& p:v.realm->players())if(p.vehicleGuid==next.guid)
+            next.roster^=(p.guid*1099511628211ULL)^(uint64_t(p.vehicleSeat+1)*1469598103934665603ULL);
+    }
+    // Commands may refresh the snapshot; Lua event handlers can synchronously
+    // exit or change seats. Retain values only before either boundary.
+    const bool canAim=v.alive() && v.aimed();
+    const uint64_t owner=v.player?v.player->guid:0;
+    const uint32_t vehicleId=v.player?v.player->vehicleId:0;
+    const float minPitch=next.available?v.kit->minPitch:0;
+    const float maxPitch=next.available?v.kit->maxPitch:0;
+    auto* const realm=v.realm;
+    const auto old=localVehicleUiState_;
+    const bool identity=old.guid!=next.guid || old.seat!=next.seat || old.available!=next.available;
+    const bool angleChanged=next.available && (identity || old.pitch!=next.pitch);
+    const float normalizedAngle=maxPitch>minPitch?
+        std::clamp((next.pitch-minPitch)/(maxPitch-minPitch),0.f,1.f):0;
+    if(identity)localVehicleAimDirection_=0;
+    const double now=std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    const float elapsed=localVehicleAimLastTick_?float(std::clamp(now-localVehicleAimLastTick_,0.0,.1)):0;
+    localVehicleAimLastTick_=now;
+    localVehicleAimInput_.observe(owner,canAim?next.guid:0,next.seat,next.yaw,next.pitch,now);
+    if(canAim) {
+        if(localVehicleAimDirection_)localVehicleAimInput_.edit(localVehicleAimInput_.yaw,
+            localVehicleAimInput_.pitch+elapsed*localVehicleAimDirection_,minPitch,maxPitch);
+        if(localVehicleAimInput_.ready(now))localVehicleAimInput_.submitted(now,
+            realm->aimVehicle(localVehicleAimInput_.yaw,localVehicleAimInput_.pitch));
+    }
+    next.settled=localVehicleAimInput_.settled();
+    localVehicleUiState_=next;
+    vehicleId_=vehicleId;
+    if(old.guid && (old.guid!=next.guid || (old.available && !next.available))) {
+        fireAddonEvent("UNIT_EXITING_VEHICLE",{"player"});
+        fireAddonEvent("UNIT_EXITED_VEHICLE",{"player"});
+        fireAddonEvent("PLAYER_LOSES_VEHICLE_DATA",{"player"});
+    }
+    if(next.guid && identity) {
+        const std::vector<std::string> args{"player",next.available?"1":kEventNil,"Mechanical",kEventNil,kEventNil,"0"};
+        fireAddonEvent("UNIT_ENTERING_VEHICLE",args);fireAddonEvent("UNIT_ENTERED_VEHICLE",args);
+        fireAddonEvent("PLAYER_GAINS_VEHICLE_DATA",{"player","0"});
+    }
+    if(identity) {
+        fireAddonEvent("VEHICLE_UPDATE",{});fireAddonEvent("UPDATE_BONUS_ACTIONBAR",{});
+        fireAddonEvent("ACTIONBAR_PAGE_CHANGED",{});fireAddonEvent("ACTIONBAR_SLOT_CHANGED",{"0"});
+        fireAddonEvent("UNIT_DISPLAYPOWER",{"vehicle"});
+    }
+    if(identity || old.roster!=next.roster)fireAddonEvent("VEHICLE_PASSENGERS_CHANGED",{});
+    if(identity || old.health!=next.health)fireAddonEvent("UNIT_HEALTH",{"vehicle"});
+    if(identity || old.maxHealth!=next.maxHealth)fireAddonEvent("UNIT_MAXHEALTH",{"vehicle"});
+    if(identity || old.power!=next.power)fireAddonEvent("UNIT_ENERGY",{"vehicle"});
+    if(identity || old.maxPower!=next.maxPower)fireAddonEvent("UNIT_MAXENERGY",{"vehicle"});
+    bool cooldownChanged=identity;
+    for(size_t i=0;i<6;++i)if(next.cooldowns[i]>old.cooldowns[i] || (!next.cooldowns[i] && old.cooldowns[i]))cooldownChanged=true;
+    if(cooldownChanged)fireAddonEvent("ACTIONBAR_UPDATE_COOLDOWN",{});
+    if(identity || old.power!=next.power || old.health!=next.health || old.usableMask!=next.usableMask ||
+       old.settled!=next.settled || cooldownChanged)
+        fireAddonEvent("ACTIONBAR_UPDATE_USABLE",{});
+    if(angleChanged)fireAddonEvent("VEHICLE_ANGLE_UPDATE",{std::to_string(normalizedAngle)});
+}
+
 bool GameHandler::syncLocalRealmPlayer(const LocalRealmPlayer& snapshot, const LocalWorldContent& content) {
     if (!localExploration_ || snapshot.mapId != currentMapId_) return false;
     if (snapshot.ghost) localGhostUnits_.insert(snapshot.guid);
     else localGhostUnits_.erase(snapshot.guid);
     if (snapshot.guid == playerGuid) {
+        syncLocalVehicleUi();
         const bool ghostChanged = releasedSpirit_ != snapshot.ghost;
         const bool wasDead = playerDead_;
         playerDead_ = snapshot.dead;
@@ -256,15 +347,57 @@ bool GameHandler::syncLocalRealmPlayer(const LocalRealmPlayer& snapshot, const L
     if(snapshot.guid!=playerGuid && oldMount!=mountDisplay && otherPlayerMountCallback_)
         otherPlayerMountCallback_(snapshot.guid,mountDisplay);
     const float runMultiplier=mount ? 1.f+mount->mountSpeedPercent/100.f : localFormRunPercent(snapshot,content)/100.f;
+    // A creature's stun or root holds the local character in place
+    // (MOVEMENTFLAG_ROOT, as SMSG_FORCE_MOVE_ROOT sets it online); the host
+    // refuses a stunned character's actions.
+    if(snapshot.guid==playerGuid&&movementHandler_) {
+        const auto control=localPlayerControl(snapshot);
+        // A stun or root holds the character; a fear or confuse takes the
+        // sticks away and moves it (CameraController::setForcedMovement).
+        const bool held=(control&3u)!=0;
+        auto& info=movementHandler_->getMovementInfoMut();
+        if(held!=localControlRooted_) {
+            localControlRooted_=held;
+            if(held)info.flags|=static_cast<uint32_t>(MovementFlags::ROOT);
+            else info.flags&=~static_cast<uint32_t>(MovementFlags::ROOT);
+            LOG_INFO("[LOCAL_CONTROL] ",held?"rooted":"released"," control=",unsigned(control));
+        }
+        const uint8_t forced=held?0:(control&4u)?1:(control&8u)?2:0;
+        localForcedMoveHasSource_=false;
+        if(forced==1)for(const auto& view:snapshot.harmfulAuras)if(view.controlKind==3) {
+            if(auto fright=entityController_->getEntityManager().getEntity(view.casterGuid)) {
+                localForcedMoveFrom_=core::coords::canonicalToRender(glm::vec3(fright->getX(),fright->getY(),fright->getZ()));
+                localForcedMoveHasSource_=true;
+            }
+            break;
+        }
+        if(forced!=localForcedMoveMode_){localForcedMoveMode_=forced;LOG_INFO("[LOCAL_CONTROL] forced movement mode=",unsigned(forced));}
+        // A creature's knockback (SMSG_MOVE_KNOCK_BACK's fields; the host
+        // negates nothing, so the vertical speed is negated here as the wire
+        // reader expects an upward launch to arrive negative).
+        if(snapshot.knockbackSequence&&snapshot.knockbackSequence!=localKnockbackSequence_) {
+            const bool first=localKnockbackSequence_==0&&!localKnockbackSeen_;
+            localKnockbackSequence_=snapshot.knockbackSequence;localKnockbackSeen_=true;
+            if(!first&&knockBackCallback_){knockBackCallback_(snapshot.knockbackCos,snapshot.knockbackSin,snapshot.knockbackSpeedXY,-snapshot.knockbackSpeedZ);
+                LOG_INFO("[LOCAL_CONTROL] knockback xy=",snapshot.knockbackSpeedXY," z=",snapshot.knockbackSpeedZ);}
+        }
+        if(!snapshot.knockbackSequence)localKnockbackSeen_=true;
+    }
+    // Unit::UpdateSpeed: the strongest MOD_DECREASE_SPEED applies to every
+    // movement type after the positive modifiers (creature auras only here).
+    uint8_t slowPercent=0;
+    for(const auto& view:snapshot.harmfulAuras)slowPercent=std::max(slowPercent,std::min<uint8_t>(view.slowPercent,99));
     if(snapshot.guid==playerGuid && !snapshot.flight.active &&
-       (formChanged || mountAuraSpellId_!=snapshot.mountSpellId || currentMountDisplayId_!=mountDisplay || localRealmRunMultiplier_!=runMultiplier)) {
-        localRealmRunMultiplier_=runMultiplier;
+       (formChanged || mountAuraSpellId_!=snapshot.mountSpellId || currentMountDisplayId_!=mountDisplay || localRealmRunMultiplier_!=runMultiplier ||
+        localRealmSlowPercent_!=slowPercent)) {
+        localRealmRunMultiplier_=runMultiplier;localRealmSlowPercent_=slowPercent;
         mountAuraSpellId_=snapshot.mountSpellId;currentMountDisplayId_=mountDisplay;
         if(mountCallback_)mountCallback_(mountDisplay);
         const float multiplier=runMultiplier;
+        const float slow=float(100-slowPercent)/100.f;
         if(movementHandler_)movementHandler_->applyServerMovementSpeeds(
-            2.5f,7.f*multiplier,4.5f,4.72222f*(form?form->swimPercent/100.f:1.f),2.5f,7.f,4.5f,3.141593f,3.141593f);
-        LOG_INFO("[LOCAL_MOUNT] spell=",snapshot.mountSpellId," display=",mountDisplay," run=",7.f*multiplier);
+            2.5f*slow,7.f*multiplier*slow,4.5f*slow,4.72222f*(form?form->swimPercent/100.f:1.f)*slow,2.5f*slow,7.f*slow,4.5f*slow,3.141593f,3.141593f);
+        LOG_INFO("[LOCAL_MOUNT] spell=",snapshot.mountSpellId," display=",mountDisplay," run=",7.f*multiplier*slow," slow=",unsigned(slowPercent));
     }
     const bool equipmentChanged = formChanged || !localEquipmentVisuals_.count(snapshot.guid) ||
         localEquipmentVisuals_[snapshot.guid] != snapshot.equipment;
@@ -315,9 +448,10 @@ bool GameHandler::syncLocalRealmPlayer(const LocalRealmPlayer& snapshot, const L
             // (combat_handler.cpp:780-781); a partial resist is the damage line
             // followed by a RESIST line, exactly like a partial block.
             const bool fullResistLine=v.outcome==LocalMeleeOutcome::Resist&&v.resisted;
-            if((v.amount||localOutcomeNullifiesDamage(v.outcome))&&!fullResistLine)combatHandler_->addCombatText(type,int32_t(v.amount),v.spell,v.source==playerGuid,0,v.source,v.target);
-            if(v.blocked)combatHandler_->addCombatText(T::BLOCK,int32_t(v.blocked),v.spell,v.source==playerGuid,0,v.source,v.target);
-            if(v.resisted)combatHandler_->addCombatText(T::RESIST,int32_t(v.resisted),v.spell,v.source==playerGuid,0,v.source,v.target);
+            const bool outgoing=v.source==playerGuid || (snapshot.vehicleGuid && v.source==snapshot.vehicleGuid);
+            if((v.amount||localOutcomeNullifiesDamage(v.outcome))&&!fullResistLine)combatHandler_->addCombatText(type,int32_t(v.amount),v.spell,outgoing,0,v.source,v.target);
+            if(v.blocked)combatHandler_->addCombatText(T::BLOCK,int32_t(v.blocked),v.spell,outgoing,0,v.source,v.target);
+            if(v.resisted)combatHandler_->addCombatText(T::RESIST,int32_t(v.resisted),v.spell,outgoing,0,v.source,v.target);
         }
         if(comboPoints_!=snapshot.comboPoints||comboTarget_!=snapshot.comboTarget){
             comboPoints_=snapshot.comboPoints;comboTarget_=snapshot.comboTarget;
@@ -496,7 +630,14 @@ void GameHandler::syncLocalRealmNpc(const LocalRealmNpc& npc) {
     if(spellHandler_) {
         const auto now=uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
         const auto* prior=spellHandler_->getUnitAuras(npc.guid);
-        std::vector<AuraSlot> auras;auras.reserve(npc.snares.size()+npc.damageAuras.size()+npc.stormstrikeAuras.size()+npc.controls.size());
+        std::vector<AuraSlot> auras;auras.reserve(npc.snares.size()+npc.damageAuras.size()+npc.stormstrikeAuras.size()+npc.controls.size()+npc.npcBuffs.size());
+        // The creature's own buffs (2.36 SmartAI self-casts) draw as positive
+        // auras: flags without NEGATIVE (0x80), NOT_CASTER kept.
+        for(const auto& b:npc.npcBuffs) {
+            AuraSlot slot{};slot.spellId=b.spellId;slot.flags=0x1f;slot.level=npc.level;slot.charges=std::max<uint8_t>(1,b.stacks);
+            slot.durationMs=b.indefinite?0:b.remainingMs;slot.maxDurationMs=b.indefinite?0:b.durationMs;
+            slot.casterGuid=b.casterGuid;slot.receivedAtMs=now;auras.push_back(slot);
+        }
         for(const auto& a:npc.controls) {
             const auto* realm=localServiceRealm();const auto* d=realm?realm->content().spell(a.spellId):nullptr;
             AuraSlot slot{};slot.spellId=a.spellId;slot.flags=0x9f;slot.level=npc.level;slot.charges=1;
@@ -788,6 +929,8 @@ void GameHandler::presentLocalCast(const LocalRealmPlayer& snapshot, const Local
 }
 
 void GameHandler::resetLocalPresentation() {
+    if(vehicleId_) {vehicleId_=0;fireAddonEvent("UNIT_EXITED_VEHICLE",{"player"});}
+    localVehicleUiState_={};localVehicleAimInput_={};localVehicleAimDirection_=0;localVehicleAimLastTick_=0;
     playerDead_ = false;
     releasedSpirit_ = false;
     corpsePositionValid_ = false;
@@ -814,4 +957,12 @@ void GameHandler::resetLocalPresentation() {
     localCastCommittedThisFrame_ = false;
 }
 
+} // namespace wowee::game
+
+namespace wowee::game {
+void GameHandler::applyLocalStandState(uint8_t standState) {
+    if(standState>9 || standState==standState_)return;
+    standState_=standState;
+    if(standStateCallback_)standStateCallback_(standState_);
+}
 } // namespace wowee::game

@@ -251,6 +251,8 @@ private:
      * Find light volumes for blending (up to 4 with weight > 0)
      */
     [[nodiscard]] std::vector<WeightedVolume> findLightVolumes(const glm::vec3& playerPos, uint32_t mapId) const;
+    void findLightVolumes(const glm::vec3& playerPos, uint32_t mapId,
+                          std::vector<WeightedVolume>& out) const;
 
     /**
      * Get LightParams ID based on conditions

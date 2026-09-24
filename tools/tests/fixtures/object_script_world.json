@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "name": "Synthetic object interaction regression fixture",
+  "start": {"mapId": 0, "x": 0, "y": 0, "z": 0},
+  "items": [], "spells": [],
+  "npcs": [{"id": 50, "name": "Test guide", "health": 1000, "hostile": false, "questGiver": true}],
+  "spawns": [{"id": 1, "entry": 50, "mapId": 0, "x": 0, "y": 0, "z": 0}],
+  "quests": [{"id": 1, "title": "Test object sequence", "giverEntry": 50, "turnInEntry": 50,
+    "objectives": [{"type": "script", "entry": 600, "count": 1, "text": "Activate the test beacon"}]}],
+  "gameObjects": [{"id": 800, "entry": 1, "displayId": 1, "name": "Test beacon", "mapId": 0,
+    "x": 4, "y": 0, "z": 0, "requiredPhaseMask": 1, "requiredQuestId": 1,
+    "requiredScriptId": 610, "requiredValue": 0}],
+  "scriptTriggers": [
+    {"trigger": "questAccept", "sourceId": 1, "scriptId": 600, "value": 0},
+    {"trigger": "questAccept", "sourceId": 1, "scriptId": 610, "value": 0},
+    {"trigger": "objectUse", "sourceId": 800, "scriptId": 600, "value": 1},
+    {"trigger": "objectUse", "sourceId": 800, "scriptId": 610, "value": 1,
+      "scheduleTimerId": 901, "scheduleDelayMs": 100},
+    {"trigger": "questComplete", "sourceId": 1, "scriptId": 611, "operation": "add", "value": 1},
+    {"trigger": "questAbandon", "sourceId": 1, "scriptId": 600, "value": 0, "cancelTimerId": 901}
+  ],
+  "scriptTimers": [{"timerId": 901, "scriptId": 612, "value": 1}]
+}

@@ -54,6 +54,21 @@ uint16_t removeCarried(LocalRealmPlayer& player, uint32_t itemId, uint16_t count
     return removed;
 }
 
+/// Remove one concrete, transferable stack slice and return its instance
+/// snapshot. Auction escrow must retain the exact roll/enchant/durability state
+/// instead of recreating an item from the template at delivery time.
+bool takeCarriedSnapshot(LocalRealmPlayer& player,uint32_t itemId,uint16_t count,LocalItemStack& out) {
+    normalizeLocalInventory(player);
+    for(auto it=player.inventory.begin();it!=player.inventory.end();++it){
+        if(it->itemId!=itemId || it->count<count || !validLocalItemInstance(*it) ||
+           it->instance.soulbound || (it->instance.instanceFlags&1u))continue;
+        out=*it;out.count=count;out.bagSlot=255;it->count-=count;
+        if(!it->count)player.inventory.erase(it);
+        return true;
+    }
+    return false;
+}
+
 /// Put items into a player's bags, respecting the stack size and the bag
 /// limit. Returns false and changes nothing when they will not fit - a partial
 /// delivery would take the buyer's gold for half an order.
@@ -360,16 +375,17 @@ void LocalBotDirector::listFromBot(LocalBotState& bot, LocalRealmPlayer& player,
     const uint16_t count = static_cast<uint16_t>(
         std::max<uint16_t>(1, std::min<uint16_t>(stack.count,
             static_cast<uint16_t>(1 + nextRandom(bot.randomState) % 5u))));
-    const uint16_t removed = removeCarried(player, stack.itemId, count);
-    if (removed == 0) return;
+    LocalItemStack escrow;
+    if (!takeCarriedSnapshot(player, stack.itemId, count, escrow)) return;
 
     LocalAuction listing;
     listing.id = nextAuctionId_++;
-    listing.itemId = stack.itemId;
-    listing.count = removed;
+    listing.itemId = escrow.itemId;
+    listing.count = escrow.count;
+    listing.instance = escrow.instance;
     const auto multiplier = randomPriceMultiplier(bot.randomState);
     const auto variation = randomUnit(bot.randomState);
-    listing.buyout = LocalAuctionPricing::buyoutFor(*item, removed, variation, multiplier);
+    listing.buyout = LocalAuctionPricing::buyoutFor(*item, escrow.count, variation, multiplier);
     listing.bid = LocalAuctionPricing::bidFor(listing.buyout);
     listing.seller = player.guid;
     listing.sellerName = player.name;
@@ -391,7 +407,7 @@ bool LocalBotDirector::tick(float seconds, const LocalWorldContent& content,
         const size_t needed = size_t(itemDelivery) + size_t(proceeds);
         if (a.remainingSeconds > 0 || needed > MaxDeliveries - deliveries_.size()) { ++it; continue; }
         deliveries_.reserve(deliveries_.size() + needed);
-        if (itemDelivery) deliveries_.push_back({recipient, a.itemId, 0, a.count});
+        if (itemDelivery) { LocalAuctionDelivery d{recipient,a.itemId,0,a.count}; d.instance=a.instance; deliveries_.push_back(std::move(d)); }
         if (proceeds) deliveries_.push_back({a.seller, 0, a.highestBid, 0});
         it = auctions_.erase(it);
         changed = true;
@@ -493,9 +509,10 @@ bool LocalBotDirector::listItemPriced(LocalRealmPlayer& seller, uint32_t itemId,
         result = "Not enough unequipped items"; return false;
     }
     LocalRealmPlayer candidate = seller;
-    if (removeCarried(candidate, itemId, count) != count) return false;
+    LocalItemStack escrow;
+    if (!takeCarriedSnapshot(candidate,itemId,count,escrow)) { result = "That concrete item is bound or no longer available"; return false; }
     LocalAuction a;
-    a.id = nextAuctionId_; a.itemId = itemId; a.count = count;
+    a.id = nextAuctionId_; a.itemId = itemId; a.count = count; a.instance=escrow.instance;
     a.bid = bid; a.buyout = buyout; a.seller = seller.guid; a.sellerName = seller.name;
     a.remainingSeconds = float(durationMinutes) * 60.0f;
     result = "Auction posted: " + item->name;
@@ -527,7 +544,7 @@ bool LocalBotDirector::buyout(uint32_t auctionId, LocalRealmPlayer& buyer,
     if (needed > MaxDeliveries - deliveries_.size()) { result = "Auction delivery queue is full"; return false; }
     deliveries_.reserve(deliveries_.size() + needed);
     result = "Bought " + item->name + "; collect your mail at a mailbox";
-    deliveries_.push_back({buyer.guid,it->itemId,0,it->count});
+    { LocalAuctionDelivery d{buyer.guid,it->itemId,0,it->count}; d.instance=it->instance; deliveries_.push_back(std::move(d)); }
     if (proceeds) deliveries_.push_back({it->seller, 0, it->buyout, 0});
     if (refund)
         deliveries_.push_back({it->highestBidder, 0, it->highestBid, 0});
@@ -585,15 +602,17 @@ bool LocalBotDirector::cancelAuction(uint32_t id, LocalRealmPlayer& seller, std:
     }
     if (deliveries_.size() >= MaxDeliveries) {result = "Auction delivery queue is full"; return false;}
     result = "Auction cancelled; item returned when there is bag space";
-    deliveries_.push_back({seller.guid, it->itemId, 0, it->count});
+    { LocalAuctionDelivery d{seller.guid,it->itemId,0,it->count}; d.instance=it->instance; deliveries_.push_back(std::move(d)); }
     auctions_.erase(it); return true;
 }
 
 bool LocalBotDirector::restoreDeliveries(const std::vector<LocalAuctionDelivery>& entries) {
     if (entries.size() > MaxDeliveries) return false;
-    for (const auto& d : entries)
-        if (!d.recipient || (!d.itemId && !d.money) || (bool(d.itemId) != bool(d.count)) || d.money > 1000000000u)
-            return false;
+    for (const auto& d : entries) {
+        LocalItemStack stack{d.itemId,d.count,255,d.instance};
+        if (!d.recipient || (!d.itemId && !d.money) || (bool(d.itemId) != bool(d.count)) || d.money > 1000000000u ||
+            (d.itemId && !validLocalItemInstance(stack)) || (!d.itemId && d.instance!=LocalItemInstanceState{})) return false;
+    }
     deliveries_ = entries; return true;
 }
 
@@ -613,8 +632,8 @@ bool LocalBotDirector::deliver(LocalRealmPlayer& player, const LocalWorldContent
         }
         if (it->money > room) {++it; continue;}
         if (it->itemId) {
-            const auto* item = content.item(it->itemId);
-            if (!item || !giveCarried(player, *item, it->count)) {++it; continue;}
+            LocalItemStack stack{it->itemId,it->count,255,it->instance};
+            if (!content.item(it->itemId) || !addLocalInventoryStack(player,stack,content)) {++it; continue;}
         }
         player.money += it->money;
         it = deliveries_.erase(it); changed = true;
@@ -638,7 +657,9 @@ bool LocalBotDirector::restoreAuctions(const std::vector<LocalAuction>& auctions
     }
     uint32_t next = 1;
     for (const auto& listing : auctions) {
+        const LocalItemStack persisted{listing.itemId,listing.count,255,listing.instance};
         if (!listing.id || listing.id==UINT32_MAX || !listing.itemId || !listing.count || !listing.seller ||
+            !validLocalItemInstance(persisted) || listing.instance.soulbound || (listing.instance.instanceFlags&1u) ||
             listing.sellerName.empty() || listing.sellerName.size()>48 ||
             bool(listing.highestBid)!=bool(listing.highestBidder) ||
             listing.highestBidder==listing.seller || listing.highestBid>1000000000u ||

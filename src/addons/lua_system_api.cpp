@@ -1,6 +1,7 @@
 // lua_system_api.cpp - System, time, sound, locale, map, addons, instances, and utilities Lua API bindings.
 // Extracted from lua_engine.cpp as part of §5.1 (Tame LuaEngine).
 #include <array>
+#include "game/local_realm.hpp"
 #include "rendering/ps4_world_budget.hpp"
 #include "rendering/render_setting_bridge.hpp"
 #include "rendering/shadow_quality.hpp"
@@ -4091,7 +4092,36 @@ static int lua_CanExitVehicle(lua_State* L) {
     lua_pushboolean(L, gh && gh->isInVehicle() ? 1 : 0);
     return 1;
 }
-static int lua_IsVehicleAimAngleAdjustable(lua_State* L) { lua_pushboolean(L, 0); return 1; }
+static int lua_IsVehicleAimAngleAdjustable(lua_State* L) {
+    auto* gh=getGameHandler(L);const auto v=localVehicleView(gh?gh->localServiceRealm():nullptr);
+    // 3.3.5's skin adds this value to one: it requires 1/nil, not true/false.
+    if(v.alive() && v.aimed() && v.kit->maxPitch>v.kit->minPitch)lua_pushnumber(L,1);else lua_pushnil(L);return 1;
+}
+static int lua_VehicleAimGetNormAngle(lua_State* L) {
+    auto* gh=getGameHandler(L);const auto v=localVehicleView(gh?gh->localServiceRealm():nullptr);
+    const float width=v.active()?v.kit->maxPitch-v.kit->minPitch:0;
+    lua_pushnumber(L,width>0?std::clamp((v.hull->vehicleAim[v.player->vehicleSeat][1]-v.kit->minPitch)/width,0.f,1.f):0);return 1;
+}
+static int lua_VehicleAimRequestNormAngle(lua_State* L) {
+    auto* gh=getGameHandler(L);const auto v=localVehicleView(gh?gh->localServiceRealm():nullptr);
+    const float value=float(luaL_optnumber(L,1,0));
+    if(v.alive() && v.aimed() && std::isfinite(value)) {
+        const auto& aim=gh->localVehicleAimInput();
+        const bool sameSeat=aim.owner==v.player->guid && aim.vehicle==v.hull->guid && aim.seat==v.player->vehicleSeat;
+        gh->requestLocalVehicleAim(sameSeat?aim.yaw:v.hull->vehicleAim[v.player->vehicleSeat][0],
+            v.kit->minPitch+std::clamp(value,0.f,1.f)*(v.kit->maxPitch-v.kit->minPitch));
+    }
+    return 0;
+}
+static int lua_CanSwitchVehicleSeat(lua_State* L) {
+    auto* gh=getGameHandler(L);const auto v=localVehicleView(gh?gh->localServiceRealm():nullptr);
+    bool available=false;
+    if(v.player && v.hull && !v.player->dead && !v.hull->dead)for(uint8_t i=0;i<v.hull->vehicleSeatCount;++i) {
+        const bool occupied=std::any_of(v.realm->players().begin(),v.realm->players().end(),[&](const auto& p){return p.vehicleGuid==v.hull->guid && p.vehicleSeat==i;});
+        if(!occupied){available=true;break;}
+    }
+    lua_pushboolean(L,available);return 1;
+}
 
 // HasKey() - whether the player carries a key ring at all. The keyring exists
 // and holds keys, so the button that opens it is offered.
@@ -5307,22 +5337,38 @@ void registerSystemLuaAPI(lua_State* L) {
             return 1;
         }},
                 {"TurnInGuildCharter",       lua_ReturnNothing},
-                // Nothing is being driven, so aiming it does nothing
-                // and there is nothing to climb out of.
-                {"VehicleAimUpStart",        lua_ReturnNothing},
-                {"VehicleAimUpStop",         lua_ReturnNothing},
-                {"VehicleAimDownStart",      lua_ReturnNothing},
-                {"VehicleAimDownStop",       lua_ReturnNothing},
+                // Original vehicle controls share the acknowledged native aim.
+                {"VehicleAimUpStart", [](lua_State* L)->int {if(auto* gh=getGameHandler(L))gh->setLocalVehicleAimDirection(1);return 0;}},
+                {"VehicleAimUpStop", [](lua_State* L)->int {if(auto* gh=getGameHandler(L))gh->setLocalVehicleAimDirection(0);return 0;}},
+                {"VehicleAimDownStart", [](lua_State* L)->int {if(auto* gh=getGameHandler(L))gh->setLocalVehicleAimDirection(-1);return 0;}},
+                {"VehicleAimDownStop", [](lua_State* L)->int {if(auto* gh=getGameHandler(L))gh->setLocalVehicleAimDirection(0);return 0;}},
+                {"VehicleAimRequestNormAngle",lua_VehicleAimRequestNormAngle},
+                {"CanSwitchVehicleSeat",lua_CanSwitchVehicleSeat},
+                {"UnitSwitchToVehicleSeat", [](lua_State* L)->int {
+                    auto* gh=getGameHandler(L);const char* unit=luaL_optstring(L,1,"");const int seat=int(luaL_optnumber(L,2,0))-1;
+                    if(gh && std::strcmp(unit,"player")==0 && seat>=0 && seat<8)
+                        if(auto* realm=gh->localServiceRealm())realm->switchVehicleSeat(uint8_t(seat));return 0;
+                }},
+                {"CanEjectPassengerFromSeat",lua_ReturnFalse},
+                {"EjectPassengerFromSeat",lua_ReturnNothing},
+                {"GetVehicleUIIndicator", [](lua_State* L)->int {lua_pushnil(L);lua_pushnumber(L,0);return 2;}},
+                {"GetVehicleUIIndicatorSeat", [](lua_State* L)->int {lua_pushnil(L);lua_pushnil(L);lua_pushnil(L);return 3;}},
                 // The button and the slash command both end here, and it did
                 // nothing - so /leavevehicle, the main bar's button and the
                 // unit menu's entry were three ways of not getting off.
                 // CMSG_REQUEST_VEHICLE_EXIT was already written and had no
                 // caller outside this client's own bar.
+                {"VehicleNextSeat", [](lua_State* L) -> int {
+            if(auto* gh=getGameHandler(L))if(auto* realm=gh->localServiceRealm())realm->cycleVehicleSeat(1);return 0;
+        }},
+                {"VehiclePrevSeat", [](lua_State* L) -> int {
+            if(auto* gh=getGameHandler(L))if(auto* realm=gh->localServiceRealm())realm->cycleVehicleSeat(-1);return 0;
+        }},
                 {"VehicleExit", [](lua_State* L) -> int {
             if (auto* gh = getGameHandler(L)) gh->sendRequestVehicleExit();
             return 0;
         }},
-                {"VehicleAimGetNormAngle",   lua_ReturnZero},
+                {"VehicleAimGetNormAngle",   lua_VehicleAimGetNormAngle},
                 {"VehicleAimGetNormPower",   lua_ReturnZero},
                 {"GetMapInfo",               lua_GetMapInfo},
                 {"GetExpansionLevel",        lua_GetExpansionLevel},
@@ -5890,6 +5936,7 @@ void registerSystemLuaAPI(lua_State* L) {
                 {"IsAttackAction", [](lua_State* L) -> int {
             auto* gh = getGameHandler(L);
             const int slot = static_cast<int>(luaL_optnumber(L, 1, 0)) - 1;
+            if(gh && gh->localVehicleUiAvailable() && localVehicleActionIndex(slot+1)>=0)return lua_ReturnFalse(L);
             if (!gh || slot < 0) { lua_pushboolean(L, 0); return 1; }
             const auto& bar = gh->getActionBar();
             // 6603 is Auto Attack, the one action that flashes the button red
@@ -5903,6 +5950,7 @@ void registerSystemLuaAPI(lua_State* L) {
                 {"IsConsumableAction", [](lua_State* L) -> int {
             auto* gh = getGameHandler(L);
             const int slot = static_cast<int>(luaL_optnumber(L, 1, 0)) - 1;
+            if(gh && gh->localVehicleUiAvailable() && localVehicleActionIndex(slot+1)>=0)return lua_ReturnFalse(L);
             if (!gh || slot < 0) { lua_pushboolean(L, 0); return 1; }
             const auto& bar = gh->getActionBar();
             bool consumable = false;
@@ -5917,6 +5965,7 @@ void registerSystemLuaAPI(lua_State* L) {
                 {"IsEquippedAction", [](lua_State* L) -> int {
             auto* gh = getGameHandler(L);
             const int slot = static_cast<int>(luaL_optnumber(L, 1, 0)) - 1;
+            if(gh && gh->localVehicleUiAvailable() && localVehicleActionIndex(slot+1)>=0)return lua_ReturnFalse(L);
             if (!gh || slot < 0) { lua_pushboolean(L, 0); return 1; }
             const auto& bar = gh->getActionBar();
             bool worn = false;
@@ -5934,6 +5983,7 @@ void registerSystemLuaAPI(lua_State* L) {
                 {"IsStackableAction", [](lua_State* L) -> int {
             auto* gh = getGameHandler(L);
             const int slot = static_cast<int>(luaL_optnumber(L, 1, 0)) - 1;
+            if(gh && gh->localVehicleUiAvailable() && localVehicleActionIndex(slot+1)>=0)return lua_ReturnFalse(L);
             if (!gh || slot < 0) { lua_pushboolean(L, 0); return 1; }
             const auto& bar = gh->getActionBar();
             bool stackable = false;
@@ -6304,7 +6354,8 @@ void registerSystemLuaAPI(lua_State* L) {
                 // three warrior stances 1 to 3, 0 for the travel forms.
                 {"GetBonusBarOffset", [](lua_State* L) -> int {
             auto* gh = getGameHandler(L);
-            lua_pushnumber(L, gh ? static_cast<double>(gh->getBonusActionBarOffset()) : 0.0);
+            lua_pushnumber(L,gh && gh->localVehicleUiAvailable()?kLocalVehicleBonusOffset:
+                gh?static_cast<double>(gh->getBonusActionBarOffset()):0.0);
             return 1;
         }},
                 {"GetNumBattlegroundTypes",  lua_GetNumBattlegroundTypes},
@@ -6386,6 +6437,7 @@ void registerSystemLuaAPI(lua_State* L) {
                 {"IsAutoRepeatAction", [](lua_State* L) -> int {
             auto* gh = getGameHandler(L);
             const int slot = static_cast<int>(luaL_optnumber(L, 1, 0)) - 1;
+            if(gh && gh->localVehicleUiAvailable() && localVehicleActionIndex(slot+1)>=0)return lua_ReturnFalse(L);
             bool repeating = false;
             if (gh && slot >= 0) {
                 const auto& bar = gh->getActionBar();

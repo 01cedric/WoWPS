@@ -2642,6 +2642,19 @@ bool Application::rebuildSessionRenderer() {
         gameHandler->setUnstuckHearthCallback(nullptr);
         gameHandler->setVehicleStateCallback(nullptr);
         gameHandler->setWorldEntryCallback(nullptr);
+
+        // Installed directly by setState(IN_GAME), rather than by the handler
+        // objects above. Detach them before the old renderer/appearance graph is
+        // destroyed so a delayed packet cannot enter a half-torn-down session.
+        // setState(IN_GAME) installs fresh callbacks on the next character login.
+        gameHandler->setMeleeSwingCallback(nullptr);
+        gameHandler->setRangedWeaponSwapCallback(nullptr);
+        gameHandler->setLogoutCompleteCallback(nullptr);
+        gameHandler->setKnockBackCallback(nullptr);
+        gameHandler->setCameraShakeCallback(nullptr);
+        gameHandler->setAutoFollowCallback(nullptr);
+        gameHandler->setPlayerModelRebuildCallback(nullptr);
+        gameHandler->setFaceCameraProvider(nullptr);
     }
     if (authHandler) authHandler->setOnSuccess(nullptr);
     // No callbacks are pumped during this boundary. setupUICallbacks below replaces
@@ -2776,6 +2789,11 @@ void Application::performLogoutToLogin() {
 
     if (gameHandler) {
         gameHandler->disconnect();
+        // GameHandler::disconnect deliberately preserves taxi recovery for a
+        // transient network reconnect. This path is a real session boundary:
+        // the next login may be a different character, so carrying the old
+        // passenger/flight destination across it would relocate the new player.
+        gameHandler->forceClearTaxiAndMovementState();
     }
 
     // --- Per-session flags ---
@@ -2882,6 +2900,8 @@ void Application::applyServerMovementState(float deltaTime) {
         renderer->getCameraController()->setRunBackSpeedOverride(gameHandler->getServerRunBackSpeed());
         renderer->getCameraController()->setTurnRateOverride(gameHandler->getServerTurnRate());
         renderer->getCameraController()->setMovementRooted(gameHandler->isPlayerRooted());
+        renderer->getCameraController()->setForcedMovement(gameHandler->localForcedMovementMode(),
+            gameHandler->localForcedMovementFrom(), gameHandler->localForcedMovementHasSource());
         renderer->getCameraController()->setGravityDisabled(gameHandler->isGravityDisabled());
         renderer->getCameraController()->setFeatherFallActive(gameHandler->isFeatherFalling());
         renderer->getCameraController()->setWaterWalkActive(gameHandler->isWaterWalking());
@@ -3309,7 +3329,7 @@ void Application::applyServerMovementState(float deltaTime) {
             auto* tr = gameHandler->getTransportManager()->getTransport(
                 gameHandler->getPlayerTransportGuid());
             if (tr) {
-                // Ride along at a fixed offset from the transport's current position
+                // Ride along at a fixed transport-local offset
                 // (set once at boarding - see GameHandler::updateM2TransportBoarding),
                 // plus whatever the player has walked on the deck since then. WASD
                 // input runs earlier in the frame and moves renderer's character
@@ -3319,7 +3339,7 @@ void Application::applyServerMovementState(float deltaTime) {
                 // still moves the player, instead of either (a) fully locking
                 // movement or (b) recomputing offset from the absolute position,
                 // which is a no-op identity once fed back into
-                // lockedCanonical = tr->position + offset: the character's render
+                // lockedCanonical = transportTransform * offset: the character's render
                 // position could never actually change due to the tram moving, so
                 // riding appeared to "float" in place no matter how far the tram
                 // traveled underneath.
@@ -3348,8 +3368,18 @@ void Application::applyServerMovementState(float deltaTime) {
                     const bool hasMovementInput = renderer->getCameraController() &&
                         renderer->getCameraController()->isMoving();
                     if (hasMovementInput) {
-                        localOffset.x += walkDelta.x;
-                        localOffset.y += walkDelta.y;
+                        // walkDelta is a canonical/world vector while the rider
+                        // offset is transport-local.  Rotate the vector into the
+                        // current model frame (w=0: translation intentionally
+                        // ignored) before accumulating it.  Without this, walking
+                        // on a tram while it turns rotates the hull but not the
+                        // passenger offset and creates sideways drift.
+                        const glm::vec3 walkRender =
+                            core::coords::canonicalToRender(walkDelta);
+                        const glm::vec3 walkLocal =
+                            glm::mat3(tr->invTransform) * walkRender;
+                        localOffset.x += walkLocal.x;
+                        localOffset.y += walkLocal.y;
                     }
                     // Keep a generous distance clamp as a secondary backstop for any
                     // other source of drift (e.g. knockback, server-forced movement)
@@ -3391,11 +3421,14 @@ void Application::applyServerMovementState(float deltaTime) {
                     // physics instead of staying pinned to the boarding-time value.
                     // Without this, floor clamping can hold world-Z static unless the
                     // player is jumping, which makes lifts appear to not move vertically.
-                    localOffset.z = tentativeCanonical.z - tr->position.z;
+                    localOffset.z = glm::vec3(
+                        tr->invTransform * glm::vec4(renderPos, 1.0f)).z;
                 }
                 gameHandler->setPlayerTransportOffset(localOffset);
 
-                glm::vec3 lockedCanonical = tr->position + localOffset;
+                glm::vec3 lockedCanonical =
+                    gameHandler->getTransportManager()->getPlayerWorldPosition(
+                        gameHandler->getPlayerTransportGuid(), localOffset);
                 renderPos = core::coords::canonicalToRender(lockedCanonical);
                 renderer->getCharacterPosition() = renderPos;
                 lastM2RideLockedCanonical_ = lockedCanonical;
@@ -4383,10 +4416,25 @@ void Application::update(float deltaTime) {
         try {
             if (auto* cc = renderer->getCameraController()) {
                 const auto* self = localRealm_ ? localRealm_->localPlayer() : nullptr;
-                const bool ghost = self && self->ghost;
-                const bool eligible = self && (!self->dead || ghost) && !self->flight.active &&
-                    !self->transportEntry && !characterIntroOwnsView();
-                cc->setGroundRecoveryContext(self ? self->mapId : UINT32_MAX, eligible, ghost);
+                bool ghost = false;
+                bool eligible = false;
+                uint32_t recoveryMap = UINT32_MAX;
+                if (self) {
+                    ghost = self->ghost;
+                    recoveryMap = self->mapId;
+                    eligible = (!self->dead || ghost) && !self->flight.active &&
+                        !self->transportEntry && !characterIntroOwnsView();
+                } else if (gameHandler && gameHandler->getState() == game::WorldState::IN_WORLD) {
+                    // External realms need the same geometry-failure safety as the
+                    // built-in authority. Recovery itself still requires a recent
+                    // confirmed floor and refuses taxi/transport/dead-body states.
+                    ghost = gameHandler->isPlayerGhost();
+                    recoveryMap = gameHandler->getCurrentMapId();
+                    eligible = (!gameHandler->isPlayerDead() || ghost) &&
+                        !gameHandler->isOnTaxiFlight() && !gameHandler->isOnTransport() &&
+                        !characterIntroOwnsView();
+                }
+                cc->setGroundRecoveryContext(recoveryMap, eligible, ghost);
             }
             if (localRealm_) localRealm_->setLocalZone(renderer->getCurrentZoneId());
             renderer->update(deltaTime);

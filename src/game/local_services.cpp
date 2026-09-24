@@ -111,6 +111,14 @@ uint64_t localVendorBuyTotal(const LocalItemDefinition& item, uint32_t count) {
     if (unit > UINT64_MAX / count) return UINT64_MAX;
     return unit * count;
 }
+uint64_t localVendorDiscountedBuyTotal(const LocalItemDefinition& item, uint32_t count, uint8_t reputationRank) {
+    const uint64_t base=localVendorBuyTotal(item,count);
+    const uint16_t basis=localReputationDiscountBasisPoints(reputationRank);
+    if(!basis || base==UINT64_MAX)return base;
+    // Retail money is integral copper. Round the percentage down after the full
+    // bundle price, matching the server's floor-at-copper behavior.
+    return (base * (10000u-basis)) / 10000u;
+}
 uint32_t localVendorBuyPrice(const LocalItemDefinition& item, uint32_t count) {
     return uint32_t(std::min<uint64_t>(localVendorBuyTotal(item,count),1000000000ULL));
 }

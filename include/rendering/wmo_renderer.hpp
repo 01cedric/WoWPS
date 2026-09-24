@@ -32,6 +32,7 @@ namespace wowee {
 namespace pipeline {
     struct WMOModel;
     struct WMOGroup;
+    struct DetachedWmoGeometry;
     class AssetManager;
 }
 
@@ -100,7 +101,14 @@ public:
      */
     bool isModelLoaded(uint32_t id) const;
     // Terrain owns a disposable parse; release only groups whose upload committed.
-    size_t releaseUploadedGeometry(pipeline::WMOModel& model, uint32_t id) const noexcept;
+    // Retire a bounded number of already-uploaded source groups. Returning true
+    // means the currently committed prefix has been fully released. Terrain
+    // streaming uses a one-group slice on PS4 so allocator coalescing cannot
+    // turn a geometry retirement into a 40-50 ms main-thread hitch.
+    bool releaseUploadedGeometry(pipeline::WMOModel& model, uint32_t id,
+                                 size_t maxGroups = static_cast<size_t>(-1),
+                                 size_t* bytesReleased = nullptr,
+                                 pipeline::DetachedWmoGeometry* detached = nullptr) noexcept;
     /// Whether this instance's model has finished uploading its groups, and so
     /// whether a failed floor query means "nothing under you" rather than "not
     /// loaded yet". The two need telling apart: a rider held in place waiting
@@ -683,6 +691,10 @@ private:
         bool countedGeometryGroups = false;
         size_t nextTextureIndex = 0;
         size_t nextGroupIndex = 0;
+        // Source CPU geometry is no longer needed once its GPU/collision copy is
+        // committed. Retire it incrementally rather than freeing the whole prefix
+        // on one main-thread frame.
+        size_t releasedSourceGroupIndex = 0;
         bool groupUploadInProgress = false;
         bool terrainManaged = false;
         size_t nextMaterialGroupIndex = 0;

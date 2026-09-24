@@ -36,6 +36,10 @@ public:
     // Default is false (treat hash outputs as little-endian integers).
     void setHashBigEndian(bool enabled) { hashBigEndian_ = enabled; }
 
+    // Wrath realms hash the complete 32-byte wire values and trim leading
+    // zero pairs when interleaving S. Keep legacy realm behavior separate.
+    void setWrathMode(bool enabled) { wrathMode_ = enabled; }
+
     // Get client public ephemeral (A) - send to server
     [[nodiscard]] std::vector<uint8_t> getA() const;
 
@@ -88,6 +92,7 @@ private:
     bool initialized = false;
     bool useHashedK_ = false;
     bool hashBigEndian_ = false;
+    bool wrathMode_ = true;
 };
 
 } // namespace auth

@@ -3,6 +3,8 @@
 #include "ui/local_nameplate_policy.hpp"
 #include "ui/local_pad_focus.hpp"
 #include "addons/addon_manager.hpp"
+#include "addons/lua_engine.hpp"
+#include "addons/local_vehicle_api.hpp"
 #include "core/coordinates.hpp"
 #include "game/local_realm.hpp"
 #include "game/local_services.hpp"
@@ -27,6 +29,7 @@
 #include <orbis/Pad.h>
 #endif
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -50,15 +53,20 @@ std::string itemName(const game::LocalWorldContent& content, uint32_t id) {
 }
 std::string objectiveName(const game::LocalWorldContent& content, const game::LocalQuestObjective& objective) {
     if (objective.type == game::LocalQuestObjective::Type::Collect) return itemName(content, objective.entry);
+    if(objective.type==game::LocalQuestObjective::Type::Script)return objective.text;
     const auto* npc = content.npc(objective.entry);
     return npc ? npc->name : "Target " + std::to_string(objective.entry);
 }
 }
 
 void Application::renderLocalRealmOverlay() {
-    if (!localRealmEntered_ || !localRealm_ || state != AppState::IN_GAME || !renderer) return;
+    if (!localRealmEntered_ || !localRealm_ || state != AppState::IN_GAME || !renderer) {
+        localVehicleAim_={};return;
+    }
     const auto* livePlayer = localRealm_->localPlayer();
-    if (!livePlayer) return;
+    if (!livePlayer) { localVehicleAim_={};return; }
+    // Original FrameXML controls and the fallback share one acknowledged aim.
+    auto& localVehicleAim_=gameHandler?gameHandler->localVehicleAimInput():this->localVehicleAim_;
     // Action methods may mutate snapshots; retain a stable view for this frame.
     const auto self = *livePlayer;
     if (self.dead) {
@@ -121,6 +129,18 @@ void Application::renderLocalRealmOverlay() {
     auto interactWith = [&](const game::LocalRealmNpc& npc) {
         if (self.dead) return;
         if (npc.dead) { localRealm_->loot(npc.guid); return; }
+        if(npc.vehicleId) {
+            // Prefer the driving seat, then a free passenger seat. The host
+            // rechecks occupancy when the command arrives.
+            const auto occupied=[&](uint8_t seat) {
+                for(const auto& p:localRealm_->players())if(p.vehicleGuid==npc.guid && p.vehicleSeat==seat)return true;
+                return false;
+            };
+            uint8_t seat=npc.vehicleControllerSeat;
+            if(occupied(seat))for(seat=0;seat<npc.vehicleSeatCount && occupied(seat);++seat){}
+            localRealm_->enterVehicle(npc.guid,seat);
+            return;
+        }
         // The realm validates range, map, life state and faction. Preserve its
         // diagnostic when the selected character cannot be spoken to.
         if (!localRealm_->interact(npc.guid) || !game::localNpcInTalkRange(self,npc)) return;
@@ -133,6 +153,8 @@ void Application::renderLocalRealmOverlay() {
     };
     auto interact = [&] {
         if (self.dead) return;
+        if(self.vehicleGuid){localRealm_->exitVehicle();return;}
+        if(const auto* object=localRealm_->nearbyGameObject()){useLocalRealmObject(object->id);return;}
         const auto* npc = target();
         if (!npc || distanceTo(self, *npc) > 8.0f) {
             npc = nullptr;
@@ -148,13 +170,88 @@ void Application::renderLocalRealmOverlay() {
     };
     const auto* actionTarget = target();
     const bool mailboxOwnsAction = !actionTarget || actionTarget->dead || !actionTarget->hostile;
-    if(keys && !self.dead && mailboxOwnsAction && game::nearbyLocalMailbox(content,self))
+    const auto* nearbyObject=localRealm_->nearbyGameObject();
+    if(keys && !self.dead && !self.vehicleGuid && mailboxOwnsAction && nearbyObject) {
+        const auto prompt="Square / 4: "+nearbyObject->name;
+        ImGui::GetForegroundDrawList()->AddText(ImVec2(24.f,io.DisplaySize.y*.58f),IM_COL32(255,220,130,255),prompt.c_str());
+    }
+    if(keys && !self.dead && !self.vehicleGuid && !nearbyObject && mailboxOwnsAction && game::nearbyLocalMailbox(content,self))
         ImGui::GetForegroundDrawList()->AddText(ImVec2(24.f,io.DisplaySize.y*.58f),IM_COL32(255,220,130,255),"Square: Mailbox");
+    const game::LocalRealmNpc* vehicle=nullptr;
+    for(const auto& npc:npcs)if(npc.guid==self.vehicleGuid){vehicle=&npc;break;}
+    const auto* vehicleKit=vehicle?content.vehicleKit(vehicle->vehicleId):nullptr;
+    const auto publishedVehicleCasts=localRealm_->vehicleCasts();
+    const game::LocalVehicleCast* vehicleCast=nullptr;
+    for(const auto& cast:publishedVehicleCasts)if(cast.sourceGuid==self.vehicleGuid && cast.ownerGuid==self.guid){vehicleCast=&cast;break;}
+    auto* vehicleTree=localFrameXml_.ready() && addonManager_ && addonManager_->getLuaEngine()?
+        &addonManager_->getLuaEngine()->widgets():nullptr;
+    const auto originalVehicleWidgetShown=[&](const ui::Widget* widget) {
+        if(!vehicleTree || !widget || !widget->visible || widget->alpha<=.001f ||
+           widget->rectW<=0 || widget->rectH<=0)return false;
+        for(const auto* parent=widget;parent;parent=vehicleTree->get(parent->parent))
+            if(!parent->shown)return false;
+        return true;
+    };
+    const bool originalVehicleBar=vehicleKit && vehicleTree &&
+        originalVehicleWidgetShown(vehicleTree->findByName("VehicleMenuBar")) &&
+        vehicleTree->findByName("VehicleMenuBarActionButton1");
+    const auto vehicleSlotAvailable=[&](size_t slot) {
+        return vehicleKit && self.vehicleSeat<8 && slot<game::kLocalVehicleAbilities &&
+            vehicleKit->abilities[slot].spellId && (vehicleKit->abilities[slot].seatMask&(1u<<self.vehicleSeat));
+    };
+    if(!vehicleSlotAvailable(localVehicleAbilitySlot_))for(size_t i=0;i<game::kLocalVehicleAbilities;++i)
+        if(vehicleSlotAvailable(i)){localVehicleAbilitySlot_=uint8_t(i);break;}
+    bool hasVehicleAim=false;
+    for(size_t i=0;i<game::kLocalVehicleAbilities;++i)
+        if(vehicleSlotAvailable(i) && vehicleKit->abilities[i].projectileSpeed>0)hasVehicleAim=true;
+    const bool validVehicleAim=hasVehicleAim && !self.dead && vehicle && !vehicle->dead;
+    const double aimNow=std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    const float confirmedYaw=validVehicleAim?vehicle->vehicleAim[self.vehicleSeat][0]:0;
+    const float confirmedPitch=validVehicleAim?vehicle->vehicleAim[self.vehicleSeat][1]:0;
+    localVehicleAim_.observe(self.guid,validVehicleAim?self.vehicleGuid:0,self.vehicleSeat,
+        confirmedYaw,confirmedPitch,aimNow);
+    bool vehicleInputClosed=false;
+    const auto vehicleIdentityCurrent=[&]() {
+        const auto* current=localRealm_->localPlayer();
+        return !vehicleInputClosed && current && !current->dead && current->guid==self.guid &&
+            current->vehicleGuid==self.vehicleGuid && current->vehicleSeat==self.vehicleSeat;
+    };
+    const auto editVehicleAim=[&](float yaw,float pitch) {
+        if(validVehicleAim && vehicleIdentityCurrent())
+            localVehicleAim_.edit(yaw,pitch,vehicleKit->minPitch,vehicleKit->maxPitch);
+    };
+    const auto leaveVehicle=[&]() {
+        vehicleInputClosed=true;localVehicleAim_={};localRealm_->exitVehicle();
+    };
+    const auto nextVehicleSeat=[&]() {
+        vehicleInputClosed=true;localVehicleAim_={};localRealm_->cycleVehicleSeat(1);
+    };
+    if(keys && validVehicleAim) {
+        const float aimStep=std::clamp(io.DeltaTime,0.f,.1f);
+        const int yawKeys=int(ImGui::IsKeyDown(ImGuiKey_Keypad4))-int(ImGui::IsKeyDown(ImGuiKey_Keypad6));
+        const int pitchKeys=int(ImGui::IsKeyDown(ImGuiKey_Keypad8))-int(ImGui::IsKeyDown(ImGuiKey_Keypad2));
+        if(yawKeys || pitchKeys)editVehicleAim(localVehicleAim_.yaw+yawKeys*aimStep,
+            localVehicleAim_.pitch+pitchKeys*aimStep);
+    }
+    const auto useVehicleSlot=[&](uint8_t slot) {
+        if(!vehicleSlotAvailable(slot) || !vehicleIdentityCurrent() || vehicleCast)return;
+        localVehicleAbilitySlot_=slot;
+        const auto& ability=vehicleKit->abilities[slot];
+        if(ability.projectileSpeed>0 && !localVehicleAim_.settled())return;
+        if(originalVehicleBar) {
+            addonManager_->runInterfaceCommand("UseAction("+std::to_string(addons::kLocalVehicleFirstAction+slot)+")");
+            return;
+        }
+        localRealm_->useVehicleAbility(slot,ability.projectileSpeed>0?0:
+            ability.repair?self.vehicleGuid:localRealmTarget_);
+    };
     auto primaryAction = [&](bool contextual) {
         // Corpse recovery owns the contextual action before mail, NPCs or
         // combat. The authority checks corpse identity, map/instance and range.
         if (self.ghost) { localRealm_->reclaimCorpse(); return; }
         if (self.dead) return;
+        if(self.vehicleGuid){if(contextual)leaveVehicle();else useVehicleSlot(localVehicleAbilitySlot_);return;}
+        if(contextual && mailboxOwnsAction && nearbyObject){useLocalRealmObject(nearbyObject->id);return;}
         if(contextual && mailboxOwnsAction && gameHandler)if(const auto* mailbox=game::nearbyLocalMailbox(content,self)) {
             gameHandler->openMailbox(mailbox->guid);return;
         }
@@ -186,11 +283,39 @@ void Application::renderLocalRealmOverlay() {
     };
 #ifdef WOWEE_PS4
     const auto& actionPad=platform::ps4::padState();
-    if(keys && localFrameXml_.ready() && !localFrameXml_.padBarFocused() && actionPad.connected &&
+    if(keys && self.vehicleGuid && actionPad.connected && !platform::ps4::keyboardCapturesInput() &&
+       !platform::ps4::inputTextFocus()) {
+        const bool yawModifier=(actionPad.buttons&ORBIS_PAD_BUTTON_L2)!=0;
+        const bool pitchModifier=(actionPad.buttons&ORBIS_PAD_BUTTON_R2)!=0;
+        const int heldDirection=((actionPad.buttons&ORBIS_PAD_BUTTON_R1)?1:0)-((actionPad.buttons&ORBIS_PAD_BUTTON_L1)?1:0);
+        if(validVehicleAim && heldDirection && yawModifier!=pitchModifier) {
+            const float step=heldDirection*std::clamp(io.DeltaTime,0.f,.1f);
+            editVehicleAim(localVehicleAim_.yaw-(yawModifier?step:0),
+                localVehicleAim_.pitch+(pitchModifier?step:0));
+            ui::noteInterfaceConsumedKey(ImGuiKey_GamepadL1);ui::noteInterfaceConsumedKey(ImGuiKey_GamepadR1);
+        }
+        const int direction=(yawModifier || pitchModifier)?0:
+            ((actionPad.pressed&ORBIS_PAD_BUTTON_R1)?1:0)-((actionPad.pressed&ORBIS_PAD_BUTTON_L1)?1:0);
+        if(direction)for(int i=1;i<=int(game::kLocalVehicleAbilities);++i) {
+            const auto slot=uint8_t((int(localVehicleAbilitySlot_)+direction*i+int(game::kLocalVehicleAbilities))%int(game::kLocalVehicleAbilities));
+            if(vehicleSlotAvailable(slot)){localVehicleAbilitySlot_=slot;break;}
+        }
+        if(direction){ui::noteInterfaceConsumedKey(ImGuiKey_GamepadL1);ui::noteInterfaceConsumedKey(ImGuiKey_GamepadR1);}
+        if((actionPad.pressed&ORBIS_PAD_BUTTON_SQUARE) &&
+           !(actionPad.pressed&ORBIS_PAD_BUTTON_TRIANGLE) &&
+           !ui::interfaceConsumedKey(ImGuiKey_GamepadFaceLeft) && (yawModifier || pitchModifier)) {
+            if(yawModifier && !pitchModifier)nextVehicleSeat();
+            if(pitchModifier && !yawModifier)useVehicleSlot(localVehicleAbilitySlot_);
+            ui::noteInterfaceConsumedKey(ImGuiKey_GamepadFaceLeft);
+        }
+    }
+    if(keys && (localFrameXml_.ready() || self.vehicleGuid) && !localFrameXml_.padBarFocused() && actionPad.connected &&
        !platform::ps4::keyboardCapturesInput() && (actionPad.pressed&ORBIS_PAD_BUTTON_SQUARE) &&
+       !platform::ps4::inputTextFocus() &&
+       (!self.vehicleGuid || !(actionPad.buttons&(ORBIS_PAD_BUTTON_L1|ORBIS_PAD_BUTTON_R1|ORBIS_PAD_BUTTON_L2|ORBIS_PAD_BUTTON_R2))) &&
        !(actionPad.pressed&ORBIS_PAD_BUTTON_TRIANGLE) && !ui::interfaceConsumedKey(ImGuiKey_GamepadFaceLeft))primaryAction(true);
 #endif
-    if (pressed(ImGuiKey_1)
+    if (!self.vehicleGuid && pressed(ImGuiKey_1)
 #ifdef WOWEE_PS4
         && !localFrameXml_.ready()
 #endif
@@ -206,25 +331,102 @@ void Application::renderLocalRealmOverlay() {
         // Square selects the talk/attack action for the current target.
         primaryAction(contextual);
     }
-    if (pressed(ImGuiKey_2)) cast(false);
-    if (pressed(ImGuiKey_3)) cast(true);
-    if (pressed(ImGuiKey_4)) interact();
-    if (pressed(ImGuiKey_5)) {
+    if (!self.vehicleGuid && pressed(ImGuiKey_2)) cast(false);
+    if (!self.vehicleGuid && pressed(ImGuiKey_3)) cast(true);
+    if (pressed(ImGuiKey_4)) { if(self.vehicleGuid)leaveVehicle();else interact(); }
+    if(self.vehicleGuid) {
+        if(keys && !vehicleKit)ImGui::GetForegroundDrawList()->AddText(ImVec2(24.f,io.DisplaySize.y*.58f),
+            IM_COL32(255,220,130,255),"Square / 4: Exit   L2+Square / V: Next seat");
+        if(pressed(ImGuiKey_V))nextVehicleSeat();
+        for(size_t i=0;i<game::kLocalVehicleAbilities;++i)if(pressed(ImGuiKey(int(ImGuiKey_F1)+i)))useVehicleSlot(uint8_t(i));
+        if(originalVehicleBar && !panelsOpen && !originalPanelOpen) {
+            if(const auto* button=vehicleTree->findByName("VehicleMenuBarActionButton"+std::to_string(localVehicleAbilitySlot_+1));
+               originalVehicleWidgetShown(button)) {
+                const float factor=vehicleTree->uiScale();
+                ImGui::GetForegroundDrawList()->AddRect(
+                    ImVec2(button->left*factor,io.DisplaySize.y-(button->bottom+button->rectH)*factor),
+                    ImVec2((button->left+button->rectW)*factor,io.DisplaySize.y-button->bottom*factor),
+                    IM_COL32(255,220,100,230),3.f,0,2.f);
+            }
+            ImGui::GetForegroundDrawList()->AddText(ImVec2(24.f,io.DisplaySize.y*.58f),IM_COL32(255,220,130,255),
+                "L1/R1: select   R2+Square / F1-F6: use\nL2+Square / V: next seat   Square / 4: exit");
+            if(vehicleCast) {
+                const auto* spell=content.spell(vehicleCast->spellId);
+                const auto tenths=(vehicleCast->remainingMs+99)/100;
+                const auto text=std::string("Casting ")+(spell?spell->name:"vehicle ability")+"  "+
+                    std::to_string(tenths/10)+"."+std::to_string(tenths%10)+"s";
+                ImGui::GetForegroundDrawList()->AddText(ImVec2(24.f,io.DisplaySize.y*.58f+42.f),IM_COL32(255,220,130,255),text.c_str());
+            }
+            if(validVehicleAim)ImGui::GetForegroundDrawList()->AddText(ImVec2(24.f,io.DisplaySize.y*.58f+(vehicleCast?62.f:42.f)),IM_COL32(210,210,210,255),
+                localVehicleAim_.settled()?"Numpad 4/6: yaw   8/2: elevation\nL2+L1/R1: yaw   R2+L1/R1: elevation":"Updating aim...");
+        }
+        if(vehicleKit && !originalVehicleBar && !panelsOpen && !originalPanelOpen) {
+            ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x*.5f,io.DisplaySize.y-165.f*scale),ImGuiCond_Always,ImVec2(.5f,1.f));
+            ImGui::SetNextWindowBgAlpha(.9f);
+            if(ImGui::Begin("Vehicle abilities",nullptr,ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoCollapse|ImGuiWindowFlags_NoFocusOnAppearing|ImGuiWindowFlags_NoNav)) {
+                ImGui::Text("%s   Health %u/%u   Energy %u/%u",vehicle->name.c_str(),vehicle->health,vehicle->maxHealth,vehicle->vehiclePower,vehicleKit->maxPower);
+                if(vehicleCast) {
+                    const auto* spell=content.spell(vehicleCast->spellId);
+                    ImGui::Text("Casting %s",spell?spell->name.c_str():"vehicle ability");
+                    const float progress=vehicleCast->totalMs?1.f-float(vehicleCast->remainingMs)/vehicleCast->totalMs:0;
+                    ImGui::ProgressBar(std::clamp(progress,0.f,1.f),ImVec2(300.f*scale,0));
+                }
+                for(size_t i=0;i<game::kLocalVehicleAbilities;++i)if(vehicleSlotAvailable(i)) {
+                    const auto& a=vehicleKit->abilities[i];const auto* spell=content.spell(a.spellId);
+                    const auto cooldown=std::max(vehicle->vehicleCooldownMs[i],vehicle->vehicleGlobalCooldownMs);
+                    ImGui::PushID(int(i));
+                    ImGui::BeginDisabled(vehicleCast || cooldown ||
+                        (a.powerType==game::LocalVehiclePowerType::Energy && vehicle->vehiclePower<a.powerCost) || self.dead ||
+                        (a.projectileSpeed>0 && !localVehicleAim_.settled()));
+                    const auto label=std::string(i==localVehicleAbilitySlot_?"> ":"  ")+"F"+std::to_string(i+1)+": "+(spell?spell->name:"Ability");
+                    if(ImGui::Button(label.c_str())){localVehicleAbilitySlot_=uint8_t(i);useVehicleSlot(uint8_t(i));}
+                    ImGui::EndDisabled();ImGui::SameLine();
+                    if(a.powerType==game::LocalVehiclePowerType::None)ImGui::Text("No cost   %.1fs",cooldown/1000.f);
+                    else ImGui::Text("%u energy   %.1fs",a.powerCost,cooldown/1000.f);
+                    if(ImGui::IsItemHovered())ImGui::SetTooltip("%.1fs cast   %.1f yd area   school %u",a.castTimeMs/1000.f,a.areaRadius,unsigned(a.schoolMask));
+                    ImGui::PopID();
+                }
+                if(validVehicleAim) {
+                    ImGui::Separator();
+                    constexpr float degrees=57.29577951308232f;
+                    float yaw=localVehicleAim_.yaw*degrees,pitch=localVehicleAim_.pitch*degrees;
+                    ImGui::SetNextItemWidth(260.f*scale);
+                    if(ImGui::SliderFloat("Yaw",&yaw,-180.f,180.f,"%.1f deg"))
+                        editVehicleAim(yaw/degrees,localVehicleAim_.pitch);
+                    ImGui::SetNextItemWidth(260.f*scale);
+                    if(ImGui::SliderFloat("Elevation",&pitch,vehicleKit->minPitch*degrees,vehicleKit->maxPitch*degrees,"%.1f deg"))
+                        editVehicleAim(localVehicleAim_.yaw,pitch/degrees);
+                    ImGui::TextDisabled("Numpad 4/6: yaw   8/2: elevation");
+                    ImGui::TextDisabled("L2+L1/R1: yaw   R2+L1/R1: elevation");
+                    if(!localVehicleAim_.settled())ImGui::TextUnformatted("Updating aim...");
+                }
+                ImGui::TextDisabled("L1/R1: select   R2+Square / F1-F6: use");
+                ImGui::TextDisabled("L2+Square / V: next seat   Square / 4: exit");
+                if(ImGui::Button("Next seat"))nextVehicleSeat();
+                ImGui::SameLine();if(ImGui::Button("Exit vehicle"))leaveVehicle();
+                if(vehicleCast){ImGui::SameLine();if(ImGui::Button("Cancel cast"))localRealm_->cancelCast();}
+            }
+            ImGui::End();
+        }
+    }
+    if(!gameHandler && keys && validVehicleAim && vehicleIdentityCurrent() && localVehicleAim_.ready(aimNow))
+        localVehicleAim_.submitted(aimNow,localRealm_->aimVehicle(localVehicleAim_.yaw,localVehicleAim_.pitch));
+    if (!self.vehicleGuid && pressed(ImGuiKey_5)) {
         if(localFrameXml_.ready()) addonManager_->runInterfaceCommand("ToggleBackpack()");
         else localRealmInventoryOpen_ = !localRealmInventoryOpen_;
     }
-    if (pressed(ImGuiKey_6)) {
+    if (!self.vehicleGuid && pressed(ImGuiKey_6)) {
         if(localFrameXml_.ready()) addonManager_->runInterfaceCommand("ToggleFrame(QuestLogFrame)");
         else localRealmJournalOpen_ = !localRealmJournalOpen_;
     }
-    if (pressed(ImGuiKey_7)) {
+    if (!self.vehicleGuid && pressed(ImGuiKey_7)) {
         for (const auto& stack : self.inventory) {
             const auto* item = content.item(stack.itemId);
             if (item && item->heal && stack.count) { localRealm_->useItem(item->id); break; }
         }
     }
-    if (pressed(ImGuiKey_8) && !self.dead) localRealm_->stopAttack();
-    if (pressed(ImGuiKey_9)) localRealmNpcPanelOpen_ = !localRealmNpcPanelOpen_;
+    if (!self.vehicleGuid && pressed(ImGuiKey_8) && !self.dead) localRealm_->stopAttack();
+    if (!self.vehicleGuid && pressed(ImGuiKey_9)) localRealmNpcPanelOpen_ = !localRealmNpcPanelOpen_;
     // A nested popup owns its Back press, including the frame where ImGui
     // has already dismissed a combo during NewFrame. Original FrameXML may
     // also have closed its panel earlier in this frame. Neither press may
@@ -249,6 +451,77 @@ void Application::renderLocalRealmOverlay() {
             localRealmInventoryOpen_ = localRealmJournalOpen_ = localRealmNpcPanelOpen_ = false;
         } else if (localFrameXml_.ready()) localFrameXml_.toggleGameMenu();
         else localRealmMenuOpen_ = !localRealmMenuOpen_;
+    }
+
+    // Native aiming aids use the same server->render conversion and Vulkan
+    // projection as nameplates. These bounded overlays are not spell models.
+    if(auto* camera=renderer->getCamera();camera && !panelsOpen && !originalPanelOpen) {
+        auto* draw=ImGui::GetBackgroundDrawList();
+        const auto project=[&](const glm::vec3& world,ImVec2& screen) {
+            const auto render=coords::canonicalToRender(coords::serverToCanonical(world));
+            const glm::vec4 clip=camera->getViewProjectionMatrix()*glm::vec4(render,1);
+            if(!std::isfinite(clip.w) || clip.w<=.01f)return false;
+            const glm::vec3 ndc=glm::vec3(clip)/clip.w;
+            if(!std::isfinite(ndc.x) || !std::isfinite(ndc.y) || !std::isfinite(ndc.z) ||
+               std::abs(ndc.x)>1 || std::abs(ndc.y)>1 || ndc.z<0 || ndc.z>1)return false;
+            screen=ImVec2((ndc.x*.5f+.5f)*io.DisplaySize.x,(ndc.y*.5f+.5f)*io.DisplaySize.y);
+            return true;
+        };
+        if(validVehicleAim && vehicleIdentityCurrent() && vehicleSlotAvailable(localVehicleAbilitySlot_)) {
+            const auto& ability=vehicleKit->abilities[localVehicleAbilitySlot_];
+            if(ability.projectileSpeed>0) {
+                const auto seat=game::localVehicleSeatPosition(*vehicle,self.vehicleSeat);
+                const glm::vec3 origin(seat[0],seat[1],seat[2]+vehicleKit->muzzleHeight);
+                const float heading=vehicle->orientation+confirmedYaw;
+                const float horizontal=ability.projectileSpeed*std::cos(confirmedPitch);
+                const glm::vec3 velocity(horizontal*std::cos(heading),horizontal*std::sin(heading),
+                    ability.projectileSpeed*std::sin(confirmedPitch));
+                const auto position=[&](float time) {
+                    return origin+velocity*time+glm::vec3(0,0,-.5f*ability.projectileGravity*time*time);
+                };
+                // Integrate speed analytically to trim the guide at the
+                // authored traveled-distance limit, including vertical shots.
+                const auto traveled=[&](double time) {
+                    const double gravity=ability.projectileGravity;
+                    if(gravity<=.000001)return double(ability.projectileSpeed)*time;
+                    const double h=std::abs(double(horizontal)),z=velocity.z;
+                    const auto primitive=[&](double v) {
+                        if(h<.000001)return .5*v*std::abs(v);
+                        return .5*(v*std::hypot(h,v)+h*h*std::asinh(v/h));
+                    };
+                    return (primitive(z)-primitive(z-gravity*time))/gravity;
+                };
+                double endTime=ability.projectileLifetimeMs*.001;
+                if(traveled(endTime)>ability.range) {
+                    double lo=0,hi=endTime;
+                    for(unsigned i=0;i<24;++i) {
+                        const double middle=(lo+hi)*.5;
+                        if(traveled(middle)>ability.range)hi=middle;else lo=middle;
+                    }
+                    endTime=lo;
+                }
+                ImVec2 previous;bool previousVisible=project(origin,previous);
+                for(unsigned i=1;i<=32;++i) {
+                    ImVec2 point;const bool visible=project(position(float(endTime*i/32)),point);
+                    if(visible && previousVisible)draw->AddLine(previous,point,IM_COL32(255,214,105,180),1.5f*scale);
+                    if(visible && i==32)draw->AddCircle(point,5.f*scale,IM_COL32(255,214,105,220),12,1.5f*scale);
+                    previous=point;previousVisible=visible;
+                }
+            }
+        }
+        size_t markerCount=0;
+        for(const auto& shot:localRealm_->vehicleProjectiles()) {
+            if(markerCount++>=game::kLocalMaxVehicleProjectiles)break;
+            if(shot.mapId!=self.mapId || shot.instanceId!=self.instanceId)continue;
+            const float dx=shot.x-self.x,dy=shot.y-self.y,dz=shot.z-self.z;
+            if(dx*dx+dy*dy+dz*dz>500.f*500.f)continue;
+            ImVec2 point;if(!project(glm::vec3(shot.x,shot.y,shot.z),point))continue;
+            const auto tint=shot.ownerGuid==self.guid?IM_COL32(255,227,126,240):IM_COL32(255,155,84,240);
+            draw->AddCircleFilled(point,3.f*scale,tint,8);
+            ImVec2 tail;
+            if(project(glm::vec3(shot.x-shot.vx*.04f,shot.y-shot.vy*.04f,shot.z-shot.vz*.04f),tail))
+                draw->AddLine(tail,point,tint,2.f*scale);
+        }
     }
 
     // World nameplates use the same Vulkan projection convention as GameScreen:
@@ -445,6 +718,43 @@ void Application::renderLocalRealmOverlay() {
         ImGui::TextColored(ImVec4(1,.3f,.2f,noticeAlpha),"%s",localRealmNotice_.text.c_str());
         ImGui::End();
     }
+    auto scriptDialogues=localRealm_->scriptDialogues();
+    // Original creature speech (creature_text) goes to the chat log as the
+    // monster say/yell/emote/whisper it is; authored script lines keep the
+    // centred notice. Revisions are monotonic per realm session.
+    for(const auto& dialogue:scriptDialogues)if(dialogue.chatType && dialogue.revision>localCreatureChatRevision_) {
+        localCreatureChatRevision_=dialogue.revision;
+        if(!gameHandler)continue;
+        game::MessageChatData chat;
+        chat.type=static_cast<game::ChatType>(dialogue.chatType);chat.language=game::ChatLanguage::UNIVERSAL;
+        chat.senderGuid=dialogue.speakerGuid;chat.receiverGuid=self.guid;chat.receiverName=self.name;chat.message=dialogue.text;
+        for(const auto& npc:npcs)if(npc.guid==dialogue.speakerGuid){chat.senderName=npc.name;break;}
+        gameHandler->addLocalChatMessage(chat);
+    }
+    std::erase_if(scriptDialogues,[](const auto& dialogue){return dialogue.chatType!=0;});
+    if(!scriptDialogues.empty()) {
+        const auto latest=std::max_element(scriptDialogues.begin(),scriptDialogues.end(),
+            [](const auto& a,const auto& b){return a.revision<b.revision;});
+        if(latest->revision!=localScriptDialogueNotice_.revision) {
+            std::string speaker;
+            if(latest->speakerGuid==self.guid)speaker=self.name;
+            if(speaker.empty())for(const auto& npc:npcs)if(npc.guid==latest->speakerGuid){speaker=npc.name;break;}
+            if(speaker.empty())for(const auto& player:localRealm_->players())if(player.guid==latest->speakerGuid){speaker=player.name;break;}
+            localScriptDialogueNotice_.observe(latest->revision,
+                speaker.empty()?latest->text:speaker+": "+latest->text,ImGui::GetTime());
+        }
+    }
+    const float dialogueAlpha=localScriptDialogueNotice_.alpha(ImGui::GetTime());
+    if(dialogueAlpha>0) {
+        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x*.5f,io.DisplaySize.y*.24f),ImGuiCond_Always,ImVec2(.5f,0));
+        ImGui::SetNextWindowSizeConstraints(ImVec2(0,0),ImVec2(io.DisplaySize.x*.72f,io.DisplaySize.y*.25f));
+        ImGui::Begin("##localScriptDialogue",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_AlwaysAutoResize|
+            ImGuiWindowFlags_NoBackground|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoInputs);
+        ImGui::PushTextWrapPos(io.DisplaySize.x*.68f);
+        ImGui::TextColored(ImVec4(1.f,.86f,.48f,dialogueAlpha),"%s",localScriptDialogueNotice_.text.c_str());
+        ImGui::PopTextWrapPos();
+        ImGui::End();
+    }
 
     if (localRealmDialogueNpc_) {
         const auto found = std::find_if(npcs.begin(), npcs.end(), [&](const auto& n) {
@@ -485,8 +795,20 @@ void Application::renderLocalRealmOverlay() {
             ImGui::TextColored(ImVec4(1,.84f,.38f,1),"%s",npc.name.c_str());
             ImGui::PopTextWrapPos();
             const auto quests=localRealm_->questsForNpc(npc.entry);
+            // 2.40: the creature's gossip page as the authority holds it.
+            const auto& gossip=self.gossip;
+            const bool gossipHere=gossip.open()&&gossip.npcGuid==npc.guid;
+            if(gossipHere&&gossip.revision!=localRealmGossipRevision_) {
+                localRealmGossipRevision_=gossip.revision;localRealmGossipConfirm_=0;localRealmDialogueFocus_=true;
+                if(gossip.offeredQuestId)localRealmDialogueQuest_=gossip.offeredQuestId;
+            }
             const game::LocalQuestDefinition* selected=nullptr;
             for(const auto& q:quests) if(q.id==localRealmDialogueQuest_ && game::localQuestOffered(self,npc,q)) selected=&q;
+            // A quest a script offered from this creature (OFFER_QUEST) has its
+            // details page here too, acceptable from it.
+            const game::LocalQuestDefinition* offeredDef=gossipHere&&gossip.offeredQuestId&&localRealmDialogueQuest_==gossip.offeredQuestId&&
+                !game::localQuestProgress(self,gossip.offeredQuestId)?content.quest(gossip.offeredQuestId):nullptr;
+            if(!selected&&offeredDef)selected=offeredDef;
             if(!selected) localRealmDialogueQuest_=0;
             const auto* progress=selected?game::localQuestProgress(self,selected->id):nullptr;
             ImGui::SetCursorPos(ImVec2(33*s,85*s));
@@ -528,7 +850,15 @@ void Application::renderLocalRealmOverlay() {
                     ImGui::EndDisabled();ImGui::PopID();
                 }
             } else {
-                ImGui::TextWrapped("%s",game::localNpcGreeting(self,npc,content).c_str());
+                // The npc_text of the gossip page (its variant kept by the
+                // page's revision), else the greeting.
+                std::string greeting;
+                if(gossipHere&&!gossip.questMenu&&gossip.textId&&gossip.textId!=game::kLocalGossipDefaultText) {
+                    game::LocalGossipText text;
+                    if(localRealm_->gossipText(gossip.textId,text))greeting=game::localGossipPageText(self,text,gossip.revision);
+                }
+                if(greeting.empty())greeting=game::localNpcGreeting(self,npc,content);
+                ImGui::TextWrapped("%s",greeting.c_str());
                 ImGui::Spacing();
                 bool offered=false;
                 for(const auto& q:quests) {
@@ -541,6 +871,48 @@ void Application::renderLocalRealmOverlay() {
                     }
                     if(clicked) {localRealmDialogueQuest_=q.id;localRealmDialogueFocus_=true;}
                     offered=true;
+                }
+                // 2.40: the gossip options the authority admitted (their
+                // conditions, the creature's flags), after the quests as the
+                // GossipFrame lists them. A gossip option goes to the
+                // authority (its GOSSIP_SELECT rows, the action menu, the box
+                // price); a service option opens the window this fallback
+                // has for it. Flights, the bank and the stable have no window
+                // here and are left to their own rows or the original UI.
+                if(gossipHere&&!gossip.questMenu) {
+                    static const char* icons[]={"[?] ","[$] ","[>] ","[T] ","[*] ","[*] ","[$] ","[...] ","[t] ","[x] ","[.] "};
+                    const game::LocalGossipShownOption* confirming=nullptr;
+                    for(const auto& o:gossip.options)if(o.id==localRealmGossipConfirm_)confirming=&o;
+                    if(confirming) {
+                        ImGui::Spacing();
+                        ImGui::TextWrapped("%s",confirming->boxText.empty()?"Are you sure?":confirming->boxText.c_str());
+                        if(confirming->boxMoney)ImGui::Text("Cost: %u copper",confirming->boxMoney);
+                        ImGui::PushID(int(confirming->id));
+                        ImGui::BeginDisabled(self.money<confirming->boxMoney);
+                        if(ImGui::Button("Accept")){localRealm_->gossipSelect(npc.guid,gossip.menuId,confirming->id);localRealmGossipConfirm_=0;}
+                        ImGui::EndDisabled();ImGui::SameLine();
+                        if(ImGui::Button("Cancel"))localRealmGossipConfirm_=0;
+                        ImGui::PopID();
+                        if(localRealmDialogueFocus_){ImGui::SetKeyboardFocusHere(-1);localRealmDialogueFocus_=false;}
+                        offered=true;
+                    } else for(const auto& o:gossip.options) {
+                        if(o.type==4||o.type==9||o.type==14)continue;
+                        const std::string label=std::string(o.icon<11?icons[o.icon]:"[?] ")+o.text+"##gossip"+std::to_string(o.id);
+                        const bool clicked=ImGui::Selectable(label.c_str(),false,0,ImVec2(0,26*s));
+                        if(!offered&&localRealmDialogueFocus_){ImGui::SetKeyboardFocusHere(-1);localRealmDialogueFocus_=false;}
+                        offered=true;
+                        if(!clicked)continue;
+                        switch(o.type) {
+                            case 3:localRealmVendorOpen_=true;break;
+                            case 5:localRealmTrainerOpen_=true;break;
+                            case 8:localRealm_->setHome(npc.guid);break;
+                            case 13:localRealmAuctionOpen_=true;break;
+                            case 16:localRealm_->resetTalents();break;
+                            default:break;
+                        }
+                        if(o.boxMoney||!o.boxText.empty())localRealmGossipConfirm_=o.id;
+                        else localRealm_->gossipSelect(npc.guid,gossip.menuId,o.id);
+                    }
                 }
                 // A flight master sells flights the same way a quest giver
                 // offers quests: one row per destination this character has
@@ -619,6 +991,7 @@ void Application::renderLocalRealmOverlay() {
             if(selected) {
                 const bool complete=progress && progress->status==game::LocalQuestStatus::Complete;
                 const bool accept=!progress && self.quests.size()<game::LocalGameplay::MaxQuests;
+                (void)offeredDef;
                 ImGui::BeginDisabled((!complete&&!accept) || (complete&&!selected->rewardChoices.empty()));
                 if(ImGui::Button(complete?"Complete Quest":progress?"In Progress":"Accept",ImVec2(138*s,24*s))) {
                     const bool okay=complete?localRealm_->turnInQuest(selected->id,npc.guid):localRealm_->acceptQuest(selected->id,npc.guid);

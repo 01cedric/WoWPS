@@ -9,6 +9,10 @@ a=body.index('    // Keep original instance order')
 b=body.index('        const M2ModelGPU* model = instance.cachedModel;',a)
 reference=body[:a]+'    for (const auto& instance : instances) {\n'+body[b:]
 reference=reference.replace('M2Renderer::gatherLocalLights(', 'M2Renderer::reference(')
+reference=reference.replace('auto& candidates = localLightCandidates_;', 'std::vector<Candidate> candidates;')
+header=(root/'include/rendering/m2_renderer.hpp').read_text()
+candidate=header[header.index('    struct LocalLightCandidate {'):header.index('    mutable std::vector<size_t> localLightInstanceIndices_;')]
+
 prefix=r'''
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -36,6 +40,7 @@ uint32_t gatherLocalLights(const glm::vec3&,glm::vec4*,glm::vec4*,uint32_t)const
 uint32_t reference(const glm::vec3&,glm::vec4*,glm::vec4*,uint32_t)const;
 };
 '''
+prefix=prefix.replace('mutable std::vector<size_t> localLightInstanceIndices_;', candidate+'mutable std::vector<size_t> localLightInstanceIndices_;')
 main=r'''
 int main(){
 M2ModelGPU models[7]; models[0].isLanternLike=true; models[0].batches.push_back({});
@@ -49,6 +54,13 @@ int comparisons=0;
 auto check=[&](){for(unsigned limit: {0u,1u,8u,32u,256u}){glm::vec4 ap[256]{},ac[256]{},bp[256]{},bc[256]{};auto n=r.gatherLocalLights(glm::vec3(clockSeconds,0,0),ap,ac,limit);auto m=r.reference(glm::vec3(clockSeconds,0,0),bp,bc,limit);assert(n==m);assert(!std::memcmp(ap,bp,n*sizeof(glm::vec4)));assert(!std::memcmp(ac,bc,n*sizeof(glm::vec4)));++comparisons;}};
 for(int frame=0;frame<30;++frame){clockSeconds=frame*13.7f; for(auto& v:r.instances)v.boneMatrices[0]=glm::translate(glm::mat4(1),glm::vec3(0,frame*0.3f,0));check();}
 assert(r.localLightInstanceIndices_.size()<1200);
+// An identical gather must reuse storage and still reproduce live values.
+clockSeconds=0; check();
+const auto* storage=r.localLightCandidates_.data();
+const auto capacity=r.localLightCandidates_.capacity();
+for(int repeat=0;repeat<20;++repeat)check();
+assert(storage==r.localLightCandidates_.data());
+assert(capacity==r.localLightCandidates_.capacity());
 // Mirror every topology invalidation: add, swap-remove, erase, model pointer refresh, clear.
 r.instances.push_back(r.instances[0]);r.localLightInstancesDirty_=true;check();
 r.instances[0]=std::move(r.instances.back());r.instances.pop_back();r.localLightInstancesDirty_=true;check();

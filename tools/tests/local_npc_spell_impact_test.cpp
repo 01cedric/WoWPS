@@ -43,6 +43,9 @@ static void reflectionLifecycle(unsigned mode) {
     f.p.statAuras.clear();awaitReflectEvent(f,launch);
     assert(f.p.health==health&&f.game.npcs()[0].health==before);
     auto n=f.game.npcs()[0];n.health=mode?1:before;n.targetGuid=f.q.guid;
+    // 2.39: the reward needs half the health dealt by players (the earlier
+    // fight of this fixture is implied), else the reflected kill credits nobody.
+    if(mode){n.npcPlayerDamage=n.maxHealth;n.npcDamagedByPlayer=true;}
     n.threat[0]={f.q.guid,10000};n.threat[1]={f.p.guid,1};f.game.setRemoteNpcs({n});
     std::vector<LocalRealmPlayer*> players{&f.p,&f.q};
     if(mode==2){f.p.dead=true;f.p.health=0;}

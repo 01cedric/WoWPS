@@ -6,6 +6,7 @@
 #include "core/window.hpp"
 #include "ui/unit_portrait.hpp"
 #include "ui/local_status_notice.hpp"
+#include "ui/local_vehicle_aim.hpp"
 #include "addons/local_framexml.hpp"
 #include "ui/widget_renderer.hpp"
 #include "core/input.hpp"
@@ -195,6 +196,9 @@ private:
     /// Put the local realm's zeppelins and ships on screen, through the same
     /// TransportManager a real server drives in online play.
     void syncLocalRealmTransports(const game::LocalRealmPlayer& self);
+    /// Square/keyboard use of the nearest local object; chairs seat locally.
+    void useLocalRealmObject(uint32_t objectId);
+    void updateLocalChairSeat(const game::LocalRealmPlayer& self);
     /// Read the taxi network out of the player's own client DBCs. Without it
     /// the local realm has no flight masters and no transports.
     void loadLocalTravelNetwork();
@@ -350,10 +354,17 @@ private:
     unsigned rendererUpdateOomFrames_ = 0;
     unsigned localPresentationOomFrames_ = 0;
     uint32_t localRealmPositionRevision_ = 0;
+    // The seat applied by useLocalRealmObject; any movement stands up.
+    uint32_t localChairMap_ = 0;
+    float localChairX_ = 0, localChairY_ = 0;
+    uint8_t localChairStandState_ = 0;
+    bool localChairSeatActive_ = false;
     uint32_t localRealmInstanceId_ = 0;
     bool localRealmWmoOnly_ = false;
     std::string localRealmTravelNotice_;
     uint64_t localRealmTarget_ = 0;
+    uint8_t localVehicleAbilitySlot_ = 0;
+    ui::LocalVehicleAimInput localVehicleAim_;
     std::unordered_map<uint32_t, std::string> localRealmSpellIconPaths_;
     std::unordered_map<uint32_t, VkDescriptorSet> localRealmSpellIconCache_;
     std::unordered_map<std::string, VkDescriptorSet> localRealmUiArt_;
@@ -383,7 +394,14 @@ private:
     uint64_t localRealmDialogueNpc_ = 0;
     uint32_t localRealmDialogueQuest_ = 0;
     bool localRealmDialogueFocus_ = true;
+    /// 2.40: the gossip page revision the conversation window last drew (a
+    /// script's OFFER_QUEST opens the details page once) and the option whose
+    /// confirmation box (BoxText / BoxMoney) is showing.
+    uint32_t localRealmGossipRevision_ = 0;
+    uint16_t localRealmGossipConfirm_ = 0;
     ui::LocalStatusNotice localRealmNotice_;
+    ui::LocalStatusNotice localScriptDialogueNotice_;
+    uint64_t localCreatureChatRevision_ = 0;
     std::unique_ptr<game::World> world;
     std::unique_ptr<pipeline::AssetManager> assetManager;
     std::unique_ptr<addons::AddonManager> addonManager_;

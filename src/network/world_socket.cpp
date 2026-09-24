@@ -142,61 +142,18 @@ WorldSocket::~WorldSocket() {
 bool WorldSocket::connect(const std::string& host, uint16_t port) {
     LOG_INFO("Connecting to world server: ", host, ":", port);
 
-    stopAsyncPump();
+    disconnect();
 
     // Socket open, non-blocking, and the address resolved.
     struct sockaddr_in serverAddr;
     sockfd = net::openResolvedSocket(host, port, serverAddr);
     if (sockfd == INVALID_SOCK) return false;
 
-    int result = ::connect(sockfd, (struct sockaddr*)&serverAddr, sizeof(serverAddr));
-    if (result < 0) {
-        int err = net::lastError();
-        if (!net::isInProgress(err)) {
-            LOG_ERROR("Failed to connect: ", net::errorString(err));
-            net::closeSocket(sockfd);
-            sockfd = INVALID_SOCK;
-            return false;
-        }
-
-        // Non-blocking connect in progress - wait up to 10s for completion.
-        // On Windows, calling recv() before the connect completes returns
-        // WSAENOTCONN; we must poll writability before declaring connected.
-        fd_set writefds, errfds;
-        FD_ZERO(&writefds);
-        FD_ZERO(&errfds);
-        FD_SET(sockfd, &writefds);
-        FD_SET(sockfd, &errfds);
-
-        struct timeval tv;
-        tv.tv_sec  = 10;
-        tv.tv_usec = 0;
-
-        int sel = ::select(static_cast<int>(sockfd) + 1, nullptr, &writefds, &errfds, &tv);
-        if (sel <= 0) {
-            LOG_ERROR("World server connection timed out (", host, ":", port, ")");
-            net::closeSocket(sockfd);
-            sockfd = INVALID_SOCK;
-            return false;
-        }
-
-        // Verify the socket error code - writeable doesn't guarantee success on all platforms
-        int sockErr = 0;
-        socklen_t errLen = sizeof(sockErr);
-        getsockopt(sockfd, SOL_SOCKET, SO_ERROR,
-                   reinterpret_cast<char*>(&sockErr), &errLen);
-        if (sockErr != 0) {
-            LOG_ERROR("Failed to connect to world server: ", net::errorString(sockErr));
-            net::closeSocket(sockfd);
-            sockfd = INVALID_SOCK;
-            return false;
-        }
+    if (!net::connectTCP(sockfd, serverAddr, 10)) {
+        LOG_ERROR("Unable to connect to world endpoint ", host, ":", port);
+        disconnect();
+        return false;
     }
-
-    // Disable Nagle's algorithm - send small packets immediately.
-    int one = 1;
-    setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY,
-               reinterpret_cast<const char*>(&one), sizeof(one));
 
     connected = true;
     LOG_INFO("Connected to world server: ", host, ":", port);
@@ -279,9 +236,13 @@ void WorldSocket::dumpRecentPacketHistoryLocked(const char* reason, size_t buffe
 }
 
 void WorldSocket::send(const Packet& packet) {
+    std::lock_guard<std::mutex> lock(ioMutex_);
+    sendPacketLocked(packet);
+}
+
+void WorldSocket::sendPacketLocked(const Packet& packet) {
     static const bool kLogCharCreatePayload = core::envFlagEnabled("WOWEE_NET_LOG_CHAR_CREATE", false);
     static const bool kLogSwapItemPackets = core::envFlagEnabled("WOWEE_NET_LOG_SWAP_ITEM", false);
-    std::lock_guard<std::mutex> lock(ioMutex_);
     if (!connected || sockfd == INVALID_SOCK) return;
 
     const auto& data = packet.getData();
@@ -396,40 +357,15 @@ void WorldSocket::send(const Packet& packet) {
     // Add payload (unencrypted)
     sendData.insert(sendData.end(), data.begin(), data.end());
 
-    // Debug: dump packet bytes for AUTH_SESSION
-    if (opcode == 0x1ED) {
-        LOG_DEBUG("AUTH_SESSION raw bytes: ",
-                  core::toHexString(sendData.data(), sendData.size(), true));
-    }
     if (isLoginPipelineCmsg(opcode)) {
         LOG_INFO("WS TX LOGIN opcode=0x", std::hex, opcode, std::dec,
                  " payload=", payloadLen, " enc=", encryptionEnabled ? "yes" : "no");
     }
 
-    // Send complete packet, retrying on partial sends. Non-blocking sockets
-    // can return fewer bytes than requested when the kernel buffer is full.
-    // Without a retry loop, the server receives a truncated packet and the
-    // TCP stream permanently desyncs (next header lands mid-payload).
-    size_t totalSent = 0;
-    while (totalSent < sendData.size()) {
-        ssize_t sent = net::portableSend(sockfd, sendData.data() + totalSent,
-                                          sendData.size() - totalSent);
-        if (sent < 0) {
-            int err = net::lastError();
-            if (net::isWouldBlock(err)) {
-                // Kernel buffer full - yield briefly and retry.
-                std::this_thread::sleep_for(std::chrono::microseconds(100));
-                continue;
-            }
-            LOG_ERROR("Send failed: ", net::errorString(err));
-            break;
-        }
-        if (sent == 0) break;  // connection closed
-        totalSent += static_cast<size_t>(sent);
-    }
-    if (totalSent != sendData.size()) {
-        LOG_WARNING("Incomplete send: ", totalSent, " of ", sendData.size(), " bytes");
-    }
+    // ioMutex_ is held here; never join the receive thread while holding it.
+    // On failure close the stream so later encrypted packets cannot follow a
+    // truncated packet. Backpressure has a deadline instead of an endless spin.
+    if (!net::sendAll(sockfd, sendData.data(), sendData.size())) closeSocketNoJoin();
 }
 
 void WorldSocket::update() {
@@ -570,6 +506,7 @@ void WorldSocket::pumpNetworkIO() {
         }
 
         int err = net::lastError();
+        if (net::isInterrupted(err)) continue;
         if (net::isWouldBlock(err)) {
             break;
         }
@@ -816,6 +753,19 @@ void WorldSocket::dispatchQueuedPackets() {
 
 void WorldSocket::initEncryption(const std::vector<uint8_t>& sessionKey, uint32_t build) {
     std::lock_guard<std::mutex> lock(ioMutex_);
+    initEncryptionLocked(sessionKey, build);
+}
+
+bool WorldSocket::sendAuthSession(const Packet& packet, const std::vector<uint8_t>& sessionKey, uint32_t build) {
+    std::lock_guard<std::mutex> lock(ioMutex_);
+    if (!connected || encryptionEnabled || sessionKey.size() != 40) return false;
+    sendPacketLocked(packet);
+    if (!connected) return false;
+    initEncryptionLocked(sessionKey, build);
+    return encryptionEnabled;
+}
+
+void WorldSocket::initEncryptionLocked(const std::vector<uint8_t>& sessionKey, uint32_t build) {
     if (sessionKey.size() != 40) {
         LOG_ERROR("Invalid session key size: ", sessionKey.size(), " (expected 40)");
         return;

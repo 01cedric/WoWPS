@@ -267,14 +267,12 @@ void GameHandler::sendAuthSession() {
 
     LOG_DEBUG("CMSG_AUTH_SESSION packet size: ", packet.getSize(), " bytes");
 
-    // Send packet (unencrypted - this is the last unencrypted packet)
-    socket->send(packet);
-
-    // Enable encryption IMMEDIATELY after sending AUTH_SESSION
-    // AzerothCore enables encryption before sending AUTH_RESPONSE,
-    // so we need to be ready to decrypt the response
-    LOG_INFO("Enabling encryption immediately after AUTH_SESSION");
-    socket->initEncryption(sessionKey, build);
+    // AzerothCore encrypts AUTH_RESPONSE. Prevent the receive thread from
+    // observing it between the last plaintext send and cipher initialization.
+    if (!socket->sendAuthSession(packet, sessionKey, build)) {
+        fail("Failed to send world authentication session");
+        return;
+    }
 
     setState(WorldState::AUTH_SENT);
     LOG_INFO("CMSG_AUTH_SESSION sent, encryption enabled, waiting for AUTH_RESPONSE...");
@@ -1064,6 +1062,10 @@ void GameHandler::sendPing() {
 }
 
 void GameHandler::sendRequestVehicleExit() {
+    if(localExploration_) {
+        if(auto* realm=localServiceRealm())realm->exitVehicle();
+        return;
+    }
     if (state != WorldState::IN_WORLD || vehicleId_ == 0) return;
     // CMSG_REQUEST_VEHICLE_EXIT has no payload - opcode only
     network::Packet pkt(wireOpcode(Opcode::CMSG_REQUEST_VEHICLE_EXIT));
@@ -1498,6 +1500,11 @@ void GameHandler::sanitizeMovementForTaxi() {
 
 void GameHandler::forceClearTaxiAndMovementState() {
     if (movementHandler_) movementHandler_->forceClearTaxiAndMovementState();
+    // This wrapper denotes an explicit movement/session boundary (unstuck,
+    // logout/character switch, local-world reset).  Unlike disconnect(), which
+    // deliberately preserves travel state for a transient reconnect, such a
+    // boundary must never leave an old cross-map passenger restore armed.
+    clearPendingPlayerTransportWorldTransfer();
 }
 
 void GameHandler::setPosition(float x, float y, float z) {
@@ -1529,6 +1536,13 @@ void GameHandler::sendAddonMessage(ChatType type, const std::string& message, co
 }
 
 void GameHandler::sendTextEmote(uint32_t textEmoteId, uint64_t targetGuid) {
+    if(localExploration_) {
+        // 2.40: the emote reaches the local authority for the targeted
+        // creature's SmartAI (RECEIVE_EMOTE); the chat line is the client's own.
+        auto* realm=localAuctionRealm_?localAuctionRealm_():nullptr;
+        if(realm && realm->ready() && targetGuid) realm->textEmote(textEmoteId,targetGuid);
+        return;
+    }
     if (chatHandler_) chatHandler_->sendTextEmote(textEmoteId, targetGuid);
 }
 

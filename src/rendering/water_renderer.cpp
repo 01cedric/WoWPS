@@ -1641,8 +1641,9 @@ std::optional<float> WaterRenderer::getWaterHeightAt(float glX, float glY) const
     return best;
 }
 
-std::optional<float> WaterRenderer::getNearestWaterHeightAt(float glX, float glY, float queryZ, float maxAbove) const {
-    std::optional<float> best;
+std::optional<WaterRenderer::WaterQuerySample> WaterRenderer::getNearestWaterSampleAt(
+        float glX, float glY, float queryZ, float maxAbove) const {
+    std::optional<WaterQuerySample> best;
     float bestDist = 1e9f;
 
     for (const auto& surface : surfaces) {
@@ -1654,18 +1655,26 @@ std::optional<float> WaterRenderer::getNearestWaterHeightAt(float glX, float glY
         if (!sampled) continue;
         const float h = *sampled;
 
-        // Only consider water that's above queryZ but not too far above
-        if (h < queryZ - 2.0f) continue;  // water below camera, skip
-        if (h > queryZ + maxAbove) continue;  // water way above camera, skip
+        // Liquid substantially below the feet cannot contain the character.
+        // Keep a small allowance for waves/mesh interpolation at shore seams.
+        if (h < queryZ - 2.0f) continue;
+        if (h > queryZ + maxAbove) continue;
 
-        float dist = std::abs(h - queryZ);
+        const float dist = std::abs(h - queryZ);
         if (!best || dist < bestDist) {
-            best = h;
+            best = WaterQuerySample{h, surface.liquidType, surface.wmoId};
             bestDist = dist;
         }
     }
 
     return best;
+}
+
+std::optional<float> WaterRenderer::getNearestWaterHeightAt(
+        float glX, float glY, float queryZ, float maxAbove) const {
+    const auto sample = getNearestWaterSampleAt(glX, glY, queryZ, maxAbove);
+    if (!sample) return std::nullopt;
+    return sample->height;
 }
 
 std::optional<uint16_t> WaterRenderer::getWaterTypeAt(float glX, float glY) const {
@@ -1688,10 +1697,7 @@ std::optional<uint16_t> WaterRenderer::getWaterTypeAt(float glX, float glY) cons
 bool WaterRenderer::isWmoWaterAt(float glX, float glY) const {
     for (const auto& surface : surfaces) {
         if (surface.wmoId == 0) continue;
-        if (surfaceGridPosition(surface.origin, surface.stepX, surface.stepY,
-                                surface.width, surface.height, glX, glY)) {
-            return true;
-        }
+        if (wateredGridPosition(surface, glX, glY)) return true;
     }
     return false;
 }

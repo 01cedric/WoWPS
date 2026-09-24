@@ -19,6 +19,9 @@ bool detectOutboundIPv4(std::array<uint8_t, 4>& outIp) {
     }
 
     sockaddr_in remote{};
+#ifdef WOWEE_PS4
+    remote.sin_len = sizeof(remote);
+#endif
     remote.sin_family = AF_INET;
     remote.sin_port = htons(53);
     if (inet_pton(AF_INET, "1.1.1.1", &remote.sin_addr) != 1) {

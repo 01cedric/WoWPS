@@ -31,7 +31,7 @@ public:
                m.senderName.size()>16 || m.subject.size()>64 || m.body.size()>160 ||
                m.money>1000000000 || m.cod>1000000000 || (!m.system && !m.sender) ||
                (m.cod && (m.money || !m.hasItems())) || count(m.recipient)>MaxInbox)return false;
-            for(const auto& item:m.items)if(bool(item.itemId)!=bool(item.count))return false;
+            for(const auto& item:m.items)if(!validLocalItemInstance(item))return false;
         }
         return true;
     }
@@ -58,15 +58,12 @@ inline bool prepareLocalMail(const LocalRealmPlayer& sender,const LocalRealmPlay
     out=sender;normalizeLocalInventory(out);out.money-=uint32_t(money+postage);
     mail={};mail.sender=sender.guid;mail.senderName=sender.name;mail.recipient=recipient.guid;
     mail.subject=subject;mail.body=body;mail.money=money;mail.cod=cod;
-    for(size_t i=0;i<attachments.size();++i){const auto& item=attachments[i];out.inventory[localInventoryIndex(out,item.bag)].count-=item.count;mail.items[i]={item.item,item.count};}
+    for(size_t i=0;i<attachments.size();++i){const auto& item=attachments[i];const auto index=localInventoryIndex(out,item.bag);
+        auto snapshot=out.inventory[index];snapshot.count=item.count;snapshot.bagSlot=255;mail.items[i]=snapshot;out.inventory[index].count-=item.count;}
     std::erase_if(out.inventory,[](const auto& item){return !item.count;});return true;
 }
 inline bool giveLocalMailItem(LocalRealmPlayer& player,const LocalItemStack& item,const LocalWorldContent& content) {
-    normalizeLocalInventory(player);
-    const auto* def=content.item(item.itemId);if(!def || !item.count)return false;
-    const unsigned limit=std::max(uint16_t(1),def->stack);unsigned left=item.count;
-    for(auto& stack:player.inventory)if(stack.itemId==item.itemId && stack.count<limit){const auto n=std::min(left,limit-stack.count);stack.count+=n;left-=n;}
-    while(left){if(player.inventory.size()>=LocalGameplay::MaxInventory)return false;const auto n=std::min(left,limit);player.inventory.push_back({item.itemId,uint16_t(n)});left-=n;}
-    normalizeLocalInventory(player);return true; // The caller uses a candidate player and commits only on success.
+    if(!item.itemId || !item.count || !validLocalItemInstance(item))return false;
+    return addLocalInventoryStack(player,item,content);
 }
 } // namespace wowee::game

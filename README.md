@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="ps4/sce_sys/icon0.png" alt="WoWPS" width="160">
+  <img src="ps4/sce\_sys/icon0.png" alt="WoWPS" width="160">
 </p>
 
-<h1 align="center">WoWPS</h1>
+<h1 align="center">WoWPS 2.10</h1>
 <p align="center"><em>World of Warcraft, running natively on PlayStation 4.</em></p>
 <p align="center">
-  <img alt="Release" src="https://img.shields.io/badge/release-2.00-blue">
+  <img alt="Release" src="https://img.shields.io/badge/release-2.10-blue">
   <img alt="Platform" src="https://img.shields.io/badge/platform-PS4%20homebrew-003791">
   <img alt="Client" src="https://img.shields.io/badge/client-WotLK%203.3.5a%20build%2012340-c8a04a">
   <img alt="Renderer" src="https://img.shields.io/badge/renderer-Vulkan%201.0%20over%20GNM-a41e22">
@@ -21,11 +21,12 @@ WoWPS is a native C++ client built for a homebrew-enabled PS4 with the OpenOrbis
 
 The world, characters, sounds and original FrameXML interface are read from your client archives. **Connected play** uses an external compatible AzerothCore, TrinityCore or MaNGOS server. **Standalone play** runs a separate, bounded local world simulation, either alone or with other consoles on the LAN. Local features must not be confused with the much wider server-side content available on an external realm.
 
-## Release 2.00 — changes since 1.90
+## Update 2.10 — changes since 2.00
 
-This release expands local combat, talents, spell and aura rules, pets, death and corpse recovery, and the original interface integration. It adds shadowed sun/moon shafts, height-dependent volumetric fog, bloom and live local-clock lighting, alongside extensive renderer, streaming, memory and draw-submission work.
-
-See [**CHANGELOG.md**](CHANGELOG.md) for the consolidated changes from **1.90 to 2.00**. Build and package validation are described in [docs/BUILD\_VALIDATION.md](docs/BUILD_VALIDATION.md). Compilation and package integrity do not establish console visual correctness or an FPS target.
+Update 2.10 fixes connected-realm TCP setup and Wrath authentication, expands
+local creature scripts, gossip, paths and world interactions, and incorporates
+the renderer, streaming, movement and persistence improvements made since 2.00. A successful build is not a
+guarantee of complete gameplay, visual correctness or a particular frame rate.
 
 ## Feature status
 
@@ -54,16 +55,17 @@ See [**CHANGELOG.md**](CHANGELOG.md) for the consolidated changes from **1.90 to
 |Status|Feature|Scope and limitations|
 |:-:|-|-|
 |✅|Local world and basic quest lifecycle|Explore, fight, loot, level; accept, track, complete, turn in and abandon supported catalog quests.|
-|⚠️|All original quests and progression|Adapted catalog objectives and rewards do not reproduce every condition, chain, event or script.|
+|⚠️|All original quests and progression|The 950-entry adapted catalog has 947 compiled source-backed admission gates and 3 explicitly blocked seasonal/recurring prerequisites. Objectives, rewards and scripts still do not reproduce all original content.|
 |⚠️|Combat and classes|Source-backed melee/ranged and selected spell rules, threat, regeneration, forms, combo points, cooldowns and talents. Complete classes, channels, coefficients and all secondary effects remain unfinished.|
 |⚠️|Auras and procs|Supported stacks, shields, periodic effects, rank/exclusive rules, charges, caster identity and bounded proc dispatch. General player control, item/enchant producers and complete profiles remain incomplete.|
 |⚠️|Death Knight systems|Runic Power and base-rune timers/costs exist. Full disease, Death-rune, weapon and talent behavior remains incomplete.|
 |⚠️|Pets and guardians|Owned actors, stats, threat, rewards, commands/lifecycle and Imp Firebolt with manual/autocast behavior are present. Complete Hunter/Warlock pets, stables and pet auras are unfinished.|
 |⚠️|Death, ghost runback and corpse reclaim|Automatic ghost release, faction/zone-aware graveyards, retained corpse and instance, and Square reclaim within 10 yards. End-to-end console/LAN and dungeon cases still need acceptance.|
-|⚠️|Ground recovery|Local/LAN recovery revalidates a previously stable solid floor. It preserves life/ghost state and does not override external-server authority. Mesh, lift and water edge cases remain test items.|
+|⚠️|Ground recovery|Local/LAN and connected-realm recovery revalidate a previously stable solid floor. Local authority persists the correction directly; connected realms use ordinary movement updates only (no GM command). Life/ghost state is preserved, while mesh, lift and water edge cases remain acceptance items.|
 |✅|Inventory and equipment|A local 24-slot backpack and 19 worn slots; moves, splits, merges, swaps and checked equipment changes. Additional bags, durability and full item-instance rules are not complete.|
 |⚠️|Talents and training|Saved ranks, points, tiers/prerequisites and supported normal talent routes; unavailable effects are not granted merely to open a tree.|
-|⚠️|Saves|Atomic realm persistence with rollback on supported transactions; ghost/corpse and pet/autocast state are included. Full migration, crash recovery and long-session acceptance remain necessary.|
+|⚠️|Scripted local content|Bounded dialogue, spawn, despawn, move and combat actions plus authored simulation-time world events are transactional and replicated within their documented profiles. The reviewed companion installs 861 placements: decorations, chairs, chests and gathering nodes, with pools and calendar/interval events. Creature gossip, patrols, combat scripts and supported spell effects are implemented within the documented profiles; unsupported rows and C++ encounter scripts remain blocked.|
+|⚠️|Saves|Atomic realm persistence with rollback on supported transactions; Save45 adds pooled-object dormancy plus schedule-ID/object-row migration on top of calendar events, deferred kill, ghost/corpse, pet, object and escort state. Full crash recovery and long-session acceptance remain necessary.|
 |⚠️|Travel|Taxi discovery/flights, ships, zeppelins, mounts and instance entrances are implemented within the local ruleset; full travel and transport acceptance remains open.|
 |❌|Complete dungeon/raid encounters|Entering an instance does not provide original boss scripts or full raid mechanics.|
 
@@ -80,7 +82,7 @@ See [**CHANGELOG.md**](CHANGELOG.md) for the consolidated changes from **1.90 to
 |⚠️|Host / Join LAN|Host-authoritative custom UDP realm; owner-private progress and replicated world, combat, pet and corpse state. Matching versions/content and further two-console testing are required.|
 |❌|Guilds and guild banks|No working local guild authority/storage.|
 |❌|Standalone PvP, battlegrounds and arenas|No complete player-versus-player ruleset, match objectives or rating system.|
-|❌|Reputation and full durability rules|Not implemented as complete standalone systems.|
+|⚠️|Reputation and durability|Source-backed reputation gates and persistent item-instance foundations exist; complete faction, durability and repair rules remain unfinished.|
 
 The auction board is bounded at 256 listings, with up to 224 shared by simulated sellers and walking bots. The remainder is reserved for human listings. These are local simulation limits, not claims about the original retail economy.
 
@@ -90,17 +92,27 @@ The client contains login, realm/character selection, movement, combat, quest, i
 
 ## Install and upgrade
 
-1. **Back up your saves first:** `/data/wow_ps/saves/local_realm/`. Keep the complete directory, including identity and backup files; retain your configuration/action-bar files as well.
-2. Install the **WoWPS 2.00** PKG on a compatible homebrew-enabled PS4. The title remains **WoWPS**, title ID **WOWE00001**.
-3. Copy your original WotLK client `Data` directory to `/data/wow_ps/Data/`, retaining locale subdirectories and MPQ layout. Launch WoWPS.
+1. **Back up your saves first:** `/data/wow\_ps/saves/local\_realm/`. Keep the complete directory, including identity and backup files; retain your configuration/action-bar files as well.
+2. Install the **WoWPS 2.10** PKG on a compatible homebrew-enabled PS4. The title remains **WoWPS**, title ID **WOWE00001**.
+3. Copy your original WotLK client `Data` directory to `/data/wow\_ps/Data/`, retaining locale subdirectories and MPQ layout. Launch WoWPS.
 
-For solo play choose **Single Player**. For LAN, one console chooses **Host LAN**, the others **Join LAN**. All participants must use **2.00** with matching content. External realms use the connected-client/server setup.
+For solo play choose **Single Player**. For LAN, one console chooses **Host LAN**, the others **Join LAN**. All participants must use **2.10** with matching content. External realms use the connected-client/server setup.
 
-**Compatibility:** the package stores `APP\_VER=02.00`; the public release is **2.00**. Local saves use **format 32** and read formats **1–31**. The LAN gameplay protocol is **87**. These storage/network identifiers are independent of the public release number and must not be renumbered. Older clients do not understand the new save format; do not downgrade a migrated save without restoring a backup.
+**Compatibility:** this release uses `APP\_VER=02.10`, Save45 (reads
+Save1–45), and LAN109. All LAN peers need this release and matching content.
+These save and network identifiers are independent of the display version.
+Back up saves before upgrading; do not open migrated saves with an older build.
+If a higher-numbered development package is installed, the requested 02.10
+release number is numerically lower. Back up saves and configuration before
+attempting installation, and do not delete them to resolve a version conflict.
+
+For an external AzerothCore realm, use **External Realm**, the server's reachable IP or
+DNS name, and its **auth port** (normally 3724). The realm-list world endpoint
+must also be reachable from the PS4. See [connection setup and troubleshooting](docs/CONNECTING.md).
 
 **Optional collision data:** the local line-of-sight rule supports collision data extracted from your own MPQs. No extracted collision pack is supplied. Without one, that visibility query defaults to visible and cannot prevent casting through walls. A host and its guests must use matching collision content.
 
-Runtime logs are written below `/data/wow_ps/wowps/logs/`. Keep `boot`, `wowps` and `vulkan_icd` logs together when reporting a fault.
+Runtime logs are written below `/data/wow\_ps/wowps/logs/`. Keep `boot`, `wowps` and `vulkan\_icd` logs together when reporting a fault.
 
 ## Controller
 
@@ -144,7 +156,7 @@ export OO\_PS4\_TOOLCHAIN=/path/to/OpenOrbis-PS4-Toolchain
 ./tools/ps4/build\_ps4\_pkg.sh --jobs 3
 ```
 
-`BUILD\_VERSION` is the shared source of client/package identity. This release contains `02.00`. The source includes the required vendored PS4 rendering components and checked shader binaries, but not original client data or the external toolchain.
+`BUILD\_VERSION` is the shared source of client/package identity. Update 2.10 contains `02.10`. The source includes the required vendored PS4 rendering components and checked shader binaries, but not original client data or the external toolchain.
 
 ## Credits and licenses
 

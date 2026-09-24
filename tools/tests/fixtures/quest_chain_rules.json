@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "quests": [
+    {"id": 10, "maxLevel": 20, "alternatives": [[{"questId": 1, "statusMask": 8}], [{"questId": 2, "statusMask": 8}, {"questId": 3, "statusMask": 8}]]},
+    {"id": 11, "alternatives": [[{"questId": 1, "statusMask": 14}]]},
+    {"id": 12, "alternatives": [[{"questId": 2, "statusMask": 1}, {"questId": 3, "statusMask": 9}]]},
+    {"id": 13, "unsupportedReason": "Synthetic unsupported source condition", "alternatives": []}
+  ]
+}

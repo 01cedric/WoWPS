@@ -1,0 +1,224 @@
+{
+  "commit": "4e80596cdaa21fa31830522f6f2d7ed8750bfffd",
+  "license": "LICENSE-AC-GPL-2.0.txt",
+  "repository": "https://github.com/azerothcore/azerothcore-wotlk",
+  "schemaVersion": 1,
+  "tables": {
+    "conditions.sql": {
+      "archive": "vendor_source_sql.tar.gz",
+      "bytes": 1213953,
+      "sha256": "1a40806e454211118e0b459e09eb70e0e09807987ead6b321bbd371b93ffeb7d",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/conditions.sql"
+    },
+    "creature.sql": {
+      "archive": "world_source_sql.tar.gz",
+      "bytes": 15059945,
+      "sha256": "f54ddfe7ee00080b4b0bc970a809d6f947f6fb2627dbcd67e92b402fb34cb701",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/creature.sql"
+    },
+    "creature_addon.sql": {
+      "archive": "world_script_source_sql.tar.gz",
+      "bytes": 981894,
+      "sha256": "45e002f38f9e5dcf3c5e8e16775fe03e6d16aca6219773a54f79dc9c0d88429f",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/creature_addon.sql"
+    },
+    "creature_questender.sql": {
+      "archive": "world_source_sql.tar.gz",
+      "bytes": 112487,
+      "sha256": "926b56956cba585f14b9fb2fa9ea5ba52096fc18182b9a3dab02fc9a0462bb72",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/creature_questender.sql"
+    },
+    "creature_queststarter.sql": {
+      "archive": "world_source_sql.tar.gz",
+      "bytes": 105851,
+      "sha256": "9c9598115adbc69d8c2d152e0fdb92fbbc727a42417837443d1cee5f3eee0a0a",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/creature_queststarter.sql"
+    },
+    "creature_template.sql": {
+      "archive": "world_source_sql.tar.gz",
+      "bytes": 5423056,
+      "sha256": "0066e4fd35b809986dd325487515087f5a95f4ffe50ea03846c8d8bf5196870a",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/creature_template.sql"
+    },
+    "creature_template_addon.sql": {
+      "archive": "world_script_source_sql.tar.gz",
+      "bytes": 317396,
+      "sha256": "d28a938ce4da22bb481c71635ebd0488e4b7d0bc3c1d745100f22067ad36f5f4",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/creature_template_addon.sql"
+    },
+    "creature_text.sql": {
+      "archive": "world_script_source_sql.tar.gz",
+      "bytes": 2158133,
+      "sha256": "43bfddd2f9e307ac2a7e3ac7fe083ac174b3917c1064e46f34c00adbfbd1ce8f",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/creature_text.sql"
+    },
+    "game_event.sql": {
+      "archive": "world_script_source_sql.tar.gz",
+      "bytes": 21578,
+      "sha256": "8758276915fd2a1dbdb6d688ca03c9b7ddb79b2c2387ca2fb03c01cb63c09cd0",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/game_event.sql"
+    },
+    "game_event_condition.sql": {
+      "archive": "world_script_source_sql.tar.gz",
+      "bytes": 2179,
+      "sha256": "6c60eacdd248fb89a1f2bd94fb4f5c1fdd7e0ae071c3dc04069997abbf7ae7fe",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/game_event_condition.sql"
+    },
+    "game_event_creature.sql": {
+      "archive": "world_source_sql.tar.gz",
+      "bytes": 150498,
+      "sha256": "cd1325ab9497ad3012360a938bbb5d50555831b55df40699d0be85c44bd00cc4",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/game_event_creature.sql"
+    },
+    "game_event_creature_quest.sql": {
+      "archive": "world_script_source_sql.tar.gz",
+      "bytes": 6231,
+      "sha256": "e7e79ae5e8b33f94111ea8e58d08bb56dc1fb66d316b1cd2660c4b7cecdd25fc",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/game_event_creature_quest.sql"
+    },
+    "game_event_gameobject.sql": {
+      "archive": "world_script_source_sql.tar.gz",
+      "bytes": 381807,
+      "sha256": "d8db3e72753b3fd82e279fe569861594cd1fa4c74e6a6c0260697123ac6afbaf",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/game_event_gameobject.sql"
+    },
+    "game_event_gameobject_quest.sql": {
+      "archive": "world_script_source_sql.tar.gz",
+      "bytes": 3452,
+      "sha256": "3f4f4a16bfb8235fc9e6e9e7668b3a30696bfac4a3a3bc5c323cfafec348f91f",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/game_event_gameobject_quest.sql"
+    },
+    "game_event_model_equip.sql": {
+      "archive": "world_script_source_sql.tar.gz",
+      "bytes": 2006,
+      "sha256": "6d8dd07896dc7f3084c8e57fd80be53ea7107f355bdc407904f3c09527f79250",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/game_event_model_equip.sql"
+    },
+    "game_event_npcflag.sql": {
+      "archive": "world_script_source_sql.tar.gz",
+      "bytes": 2058,
+      "sha256": "a91b9f60477284c852d5101f6072beabdcdac03dfe6c1d0076f1086152f03aa3",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/game_event_npcflag.sql"
+    },
+    "game_event_pool.sql": {
+      "archive": "world_script_source_sql.tar.gz",
+      "bytes": 2043,
+      "sha256": "5b079bf5de00e229edcdac4ad60be84b565a5b7938230d4785ff7e8903dd0c89",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/game_event_pool.sql"
+    },
+    "game_event_prerequisite.sql": {
+      "archive": "world_script_source_sql.tar.gz",
+      "bytes": 1938,
+      "sha256": "73905d39ea2be51aac7a2a879e313a82ff3eb3572793f2b0a2ce86466bee3dd5",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/game_event_prerequisite.sql"
+    },
+    "game_event_quest_condition.sql": {
+      "archive": "world_script_source_sql.tar.gz",
+      "bytes": 2012,
+      "sha256": "185c99b8539f374cfa7ed8f7c2202bbf7ab026bf52fae642bc29eaf22665e495",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/game_event_quest_condition.sql"
+    },
+    "gameobject.sql": {
+      "archive": "world_script_source_sql.tar.gz",
+      "bytes": 10312797,
+      "sha256": "3e5713c2a0fa480c82b1753bfea6f1b94a4dec4f29a052ba979c049915a90a42",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/gameobject.sql"
+    },
+    "gameobject_loot_template.sql": {
+      "archive": "world_script_source_sql.tar.gz",
+      "bytes": 1220816,
+      "sha256": "348ff855dbfd979030a259fb97f3e969aa48873b50822f6fa3620a2666f4d7bc",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/gameobject_loot_template.sql"
+    },
+    "gameobject_questender.sql": {
+      "archive": "world_script_source_sql.tar.gz",
+      "bytes": 8820,
+      "sha256": "4e0c371a8f47ee53bac822753389c54d734d9e0aeb0e73b73b1eb124745e7e4b",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/gameobject_questender.sql"
+    },
+    "gameobject_queststarter.sql": {
+      "archive": "world_script_source_sql.tar.gz",
+      "bytes": 8732,
+      "sha256": "5d497aeacadf10c0fa077590a0020ac9048e259445355e74954cb77d7b38d39b",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/gameobject_queststarter.sql"
+    },
+    "gameobject_template.sql": {
+      "archive": "world_script_source_sql.tar.gz",
+      "bytes": 2347184,
+      "sha256": "5878b10d2ad512f9385be22a44e6f62f45fb59b7cca0187c13a64e2d14c79140",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/gameobject_template.sql"
+    },
+    "gameobject_template_addon.sql": {
+      "archive": "world_script_source_sql.tar.gz",
+      "bytes": 565179,
+      "sha256": "4df7b1dfbadc7568f195048468df9f6c77bc68c196d55e0a9bbde5fbda03555c",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/gameobject_template_addon.sql"
+    },
+    "pool_creature.sql": {
+      "archive": "world_source_sql.tar.gz",
+      "bytes": 85097,
+      "sha256": "72bdc1c4762e06ee4d5ebca65a4d6fac0f58180d3b0a0a6ed290a32bbd0f3d8d",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/pool_creature.sql"
+    },
+    "pool_gameobject.sql": {
+      "archive": "world_script_source_sql.tar.gz",
+      "bytes": 1921410,
+      "sha256": "f7df6e6ac567598e9fae9fe3e153f34d0a3937862cde2d2a0e56d3b43b66aa0b",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/pool_gameobject.sql"
+    },
+    "pool_pool.sql": {
+      "archive": "world_script_source_sql.tar.gz",
+      "bytes": 548401,
+      "sha256": "f0c17075f723e184e56d8c5742c50250d7ab13483fa3909963e7f1bb08dab1df",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/pool_pool.sql"
+    },
+    "pool_template.sql": {
+      "archive": "world_script_source_sql.tar.gz",
+      "bytes": 565953,
+      "sha256": "29908b6a5846a7bdfea4b1c5ed6fd0d7b1ca1ce0df4b01bdfd882fe309b5a885",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/pool_template.sql"
+    },
+    "quest_template.sql": {
+      "archive": "world_source_sql.tar.gz",
+      "bytes": 7033399,
+      "sha256": "5dc7e6c92ea6875a5fc68cf5d3e33150e86cda5819a11af0c59217b24c63a37f",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/quest_template.sql"
+    },
+    "quest_template_addon.sql": {
+      "archive": "world_source_sql.tar.gz",
+      "bytes": 430713,
+      "sha256": "ca1081203af9dc5ab9b948d94652a66674d116ce387f629595ec38f89c4af5d2",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/quest_template_addon.sql"
+    },
+    "reference_loot_template.sql": {
+      "archive": "world_script_source_sql.tar.gz",
+      "bytes": 1345212,
+      "sha256": "0018f3dc7fa45479e05fcc4e0f28d10e49d7d016121e709b66e8d31315c65b25",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/reference_loot_template.sql"
+    },
+    "smart_scripts.sql": {
+      "archive": "world_script_source_sql.tar.gz",
+      "bytes": 7307820,
+      "sha256": "622b5865f171b0b7a4dd93ecba55afd673c393c579485c17f827b31cb6e47dd2",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/smart_scripts.sql"
+    },
+    "waypoint_data.sql": {
+      "archive": "world_script_source_sql.tar.gz",
+      "bytes": 8669360,
+      "sha256": "5109b88955dfd4f718e581ca88f0f9ec478fc64cdf0904cea07e17157bd68ccb",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/waypoint_data.sql"
+    },
+    "waypoint_scripts.sql": {
+      "archive": "world_script_source_sql.tar.gz",
+      "bytes": 21846,
+      "sha256": "c78f60cf54926c541b28c40469f1f89d05bd9983b83a6796e1b14c89f8f407c3",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/waypoint_scripts.sql"
+    },
+    "waypoints.sql": {
+      "archive": "world_script_source_sql.tar.gz",
+      "bytes": 851282,
+      "sha256": "23ef87c37ae66698a2b1aedd23b30b139b5be3bf6040220e6cd45cdcb28b9e67",
+      "url": "https://raw.githubusercontent.com/azerothcore/azerothcore-wotlk/4e80596cdaa21fa31830522f6f2d7ed8750bfffd/data/sql/base/db_world/waypoints.sql"
+    }
+  }
+}

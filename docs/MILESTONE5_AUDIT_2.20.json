@@ -1,0 +1,48 @@
+{
+  "checkpoint": "02.20",
+  "milestone": 5,
+  "complete": false,
+  "scope": "Script runtime, phasing, vehicles, quest chains and world events",
+  "historicalInventory": {
+    "sourceQuestRows": 9464,
+    "adaptedCatalogRows": 919,
+    "excludedRows": 8545,
+    "verifiedRows": 0,
+    "firstExclusionReasons": {
+      "no baseline creature starter/ender": 3251,
+      "spell/start-item/title requirement": 1665,
+      "item lacks direct baseline drop": 808,
+      "unsupported/nonattackable kill target": 414,
+      "repeat/script/exploration": 782,
+      "prerequisite excluded": 773,
+      "timed/PvP objective": 32,
+      "exclusive/group prerequisite": 348,
+      "empty definition": 55,
+      "skill/spell/reputation/mail condition": 233,
+      "gameobject objective": 36,
+      "unsupported faction/extra objective": 119,
+      "money payment": 29
+    }
+  },
+  "installedAuthoredWorld": {
+    "quests": 13,
+    "scriptTriggers": 0,
+    "scriptTimers": 0,
+    "scriptAreas": 0,
+    "escortRoutes": 0,
+    "gameObjects": 0
+  },
+  "limitations": [
+    "Historical source snapshot is not a retail-playability denominator.",
+    "An adapted catalog row is not verified gameplay.",
+    "Synthetic regression worlds are not installed retail content.",
+    "No whole-milestone percentage inferred."
+  ],
+  "openImplementation": [
+    "Retail vehicle spell/action-bar pipeline, aim/projectiles/resources",
+    "M2 bone seat attachments and original seat animations",
+    "Combat escort AI, navigation, ambush and dialogue actions",
+    "Shared persistent world-object state",
+    "Retail quest/event script conversion and content coverage"
+  ]
+}

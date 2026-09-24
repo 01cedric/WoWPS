@@ -564,11 +564,32 @@ bool vk_ps4_sync_resolve_fence(VkPs4Fence *fence) {
     return true;
 }
 
+bool vk_ps4_sync_validate_semaphore(const VkPs4Semaphore *sem) {
+    if (!sem || sem->type != VK_PS4_OBJ_SEMAPHORE || !sem->device) return false;
+    if (!sem->label || !sem->label_mem.allocated ||
+        sem->label_mem.mapped != (void *)sem->label ||
+        sem->label_mem.size < sizeof(uint32_t) ||
+        (uintptr_t)sem->label < 0x10000u) {
+        return false;
+    }
+    return true;
+}
+
 bool vk_ps4_sync_resolve_semaphore(VkPs4Semaphore *sem) {
     if (!sem) return false;
+    /* A Vulkan handle reaching this function must still name a live semaphore.
+     * Session-reset code in 2.08 could retain a renderFinished handle after the
+     * owning semaphore array had been destroyed. Validate the object and its
+     * direct-memory label before dereferencing it so a stale/corrupted handle
+     * becomes a deterministic sync failure rather than an arbitrary CPU write. */
+    if (!vk_ps4_sync_validate_semaphore(sem)) {
+        vk_ps4_log("sync: rejected stale/corrupt semaphore handle=%p label=%p",
+                   (void *)sem, sem ? (void *)sem->label : NULL);
+        return false;
+    }
     if (sem->pending.slot_index == 0) return sem->signaled;
     if (!vk_ps4_queue_ticket_complete(sem->device, &sem->pending)) return false;
-    if (sem->label) *sem->label = sem->signal_value;
+    *sem->label = sem->signal_value;
     if (sem->is_timeline && sem->pending_timeline_value > sem->timeline_value) {
         sem->timeline_value = sem->pending_timeline_value;
     }
@@ -579,6 +600,10 @@ bool vk_ps4_sync_resolve_semaphore(VkPs4Semaphore *sem) {
 
 static bool vk_ps4_queue_wait_semaphore(VkPs4Semaphore *sem) {
     if (!sem) return true;
+    if (!vk_ps4_sync_validate_semaphore(sem)) {
+        vk_ps4_log_raw("sync: queue wait rejected stale/corrupt semaphore");
+        return false;
+    }
     /* B39: a semaphore signalled by an outstanding pipelined batch is not
      * ready until that batch retires. Resolving first keeps the existing
      * checks below correct rather than duplicating them. */

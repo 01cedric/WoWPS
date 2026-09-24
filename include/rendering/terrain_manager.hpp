@@ -10,6 +10,7 @@
 #include "pipeline/terrain_mesh.hpp"
 #include "pipeline/m2_loader.hpp"
 #include "pipeline/wmo_loader.hpp"
+#include "pipeline/wmo_geometry_residency.hpp"
 #include "pipeline/blp_loader.hpp"
 #include <string>
 #include <unordered_map>
@@ -509,6 +510,14 @@ private:
      */
     void workerLoop();
     bool startWorkers();
+#ifdef WOWEE_PS4
+    // Parsed M2 payloads can own thousands of small vectors. Destroying them on
+    // the render thread after GPU upload caused occasional tens-of-ms allocator
+    // stalls. Hand pure CPU destruction back to an existing terrain worker.
+    void retireParsedM2Model(std::unique_ptr<pipeline::M2Model> model) noexcept;
+    void retireParsedWmoModel(std::unique_ptr<pipeline::WMOModel> model) noexcept;
+    void retireDetachedWmoGeometry(std::unique_ptr<pipeline::DetachedWmoGeometry> geometry) noexcept;
+#endif
 
     void ensureGroundEffectTablesLoaded();
     void generateGroundClutterPlacements(std::shared_ptr<PendingTile>& pending,
@@ -581,6 +590,11 @@ private:
     TerrainPreparationBudget preparationBudget_; // admissions guarded by queueMutex
     std::deque<TileCoord> loadQueue;              // THREAD-SAFE: protected by queueMutex
     std::queue<std::shared_ptr<PendingTile>> readyQueue; // THREAD-SAFE: protected by queueMutex
+#ifdef WOWEE_PS4
+    std::deque<std::unique_ptr<pipeline::M2Model>> retiredCpuM2Models_; // protected by queueMutex
+    std::deque<std::unique_ptr<pipeline::WMOModel>> retiredCpuWmoModels_; // protected by queueMutex
+    std::deque<std::unique_ptr<pipeline::DetachedWmoGeometry>> retiredWmoGeometry_; // protected by queueMutex
+#endif
     // Maximum number of prepared-but-not-finalized tiles in readyQueue.
     // Each prepared tile can hold 100–500 MB of decoded textures in RAM.
     // Workers sleep when this limit is reached, letting the main thread
@@ -639,6 +653,10 @@ private:
     // is actually available each frame instead of a fixed count, so it can't fall behind
     // real-world churn the way the count cap could.
     std::deque<TileCoord> pendingUnloadQueue_;
+    // Membership mirror for O(1) duplicate suppression. streamTiles() runs
+    // repeatedly while moving; rebuilding an unordered_set from the full deque
+    // each pass amplified long-route CPU and allocation cost.
+    std::unordered_set<TileCoord, TileCoord::Hash> pendingUnloadSet_;
 
     // MAIN-THREAD-ONLY: checked and modified in processReadyTiles() and unloadDistantTiles(),
     // both of which run exclusively on the main thread.

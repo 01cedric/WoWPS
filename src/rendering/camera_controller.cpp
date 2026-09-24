@@ -369,6 +369,67 @@ glm::vec3 CameraController::sweepAgainstWalls(const glm::vec3& from, const glm::
     return stepPos;
 }
 
+
+void CameraController::refreshWmoContainment(const glm::vec3& feet, bool force) {
+    const bool prevInside = cachedInsideWMO;
+    const bool prevInterior = cachedInsideInteriorWMO;
+
+    if (!wmoRenderer || externalFollow_) {
+        cachedInsideWMO = false;
+        cachedInsideInteriorWMO = false;
+        insideWMOMissCount_ = 0;
+        insideInteriorMissCount_ = 0;
+    } else {
+        // Door thresholds and stair portals routinely split the body between two
+        // adjacent group bounds. A single probe one yard above the feet therefore
+        // flickered outside for one frame and made terrain/collision policy flip
+        // with it. Sample low torso first, then chest only when needed.
+        const float lowerZ = feet.z + 0.35f;
+        const float torsoOffset = std::clamp(collisionHeight_ * 0.55f, 0.80f, 1.25f);
+        const float torsoZ = feet.z + torsoOffset;
+
+        bool rawInside = wmoRenderer->isInsideWMO(feet.x, feet.y, lowerZ, nullptr);
+        if (!rawInside && std::abs(torsoZ - lowerZ) > 0.05f)
+            rawInside = wmoRenderer->isInsideWMO(feet.x, feet.y, torsoZ, nullptr);
+
+        bool rawInterior = wmoRenderer->isInsideInteriorWMO(feet.x, feet.y, lowerZ);
+        if (!rawInterior && std::abs(torsoZ - lowerZ) > 0.05f)
+            rawInterior = wmoRenderer->isInsideInteriorWMO(feet.x, feet.y, torsoZ);
+        if (rawInterior) rawInside = true;
+
+        auto updateState = [force](bool raw, bool& cached, uint8_t& misses) {
+            if (force) {
+                cached = raw;
+                misses = 0;
+                return;
+            }
+            if (raw) {
+                cached = true;
+                misses = 0;
+                return;
+            }
+            // One missed containment check is allowed. Checks are already
+            // throttled to every other frame, so this is a short portal grace
+            // rather than a sticky indoor state.
+            if (cached && misses == 0) {
+                misses = 1;
+                return;
+            }
+            cached = false;
+            misses = 0;
+        };
+
+        updateState(rawInside, cachedInsideWMO, insideWMOMissCount_);
+        updateState(rawInterior, cachedInsideInteriorWMO, insideInteriorMissCount_);
+    }
+
+    if (cachedInsideWMO != prevInside || cachedInsideInteriorWMO != prevInterior) {
+        hasCachedFloor_ = false;
+        hasCachedCamFloor = false;
+        cachedPivotLift_ = 0.0f;
+    }
+}
+
 // The camera that orbits a character and moves it.
 //
 // Collision, grounding, swimming, flight, the zoom, and the pullback that keeps
@@ -396,11 +457,24 @@ glm::vec3 CameraController::moveFollowedCharacter(float /*deltaTime*/, FrameInpu
     if (!externalFollow_) {
         // Enter swim only when water is deep enough (waist-deep+),
         // not for shallow wading.
+        std::optional<WaterRenderer::WaterQuerySample> waterSample;
         std::optional<float> waterH;
-        if (waterRenderer) {
-            waterH = waterRenderer->getWaterHeightAt(targetPos.x, targetPos.y);
-        }
         constexpr float MAX_SWIM_DEPTH_FROM_SURFACE = 12.0f;
+        constexpr float MAX_ACTIVE_SWIM_SURFACE_ABOVE = 4096.0f;
+        if (waterRenderer) {
+            // Movement needs one coherent liquid plane nearest this vertical
+            // level, not the highest surface at X/Y. Height, type and WMO
+            // ownership must all describe that same plane. Once already
+            // swimming, retain a very wide vertical search so deep dives keep
+            // their authored surface reference.
+            const float maxWaterAbove = swimming ? MAX_ACTIVE_SWIM_SURFACE_ABOVE
+                                                 : MAX_SWIM_DEPTH_FROM_SURFACE;
+            waterSample = waterRenderer->getNearestWaterSampleAt(
+                targetPos.x, targetPos.y, targetPos.z, maxWaterAbove);
+            if (waterSample && cachedInsideInteriorWMO && !waterSample->fromWmo())
+                waterSample.reset();
+            if (waterSample) waterH = waterSample->height;
+        }
         // Hysteresis: starting to swim needs deeper water than continuing to
         // swim does. With one threshold, a character wading at the boundary
         // flipped between swim and walk every frame - each flip restarts the
@@ -420,10 +494,8 @@ glm::vec3 CameraController::moveFollowedCharacter(float /*deltaTime*/, FrameInpu
             grounded = true;
             inWater = false;
         } else if (waterH && targetPos.z < *waterH) {
-            std::optional<uint16_t> waterType;
-            if (waterRenderer) {
-                waterType = waterRenderer->getWaterTypeAt(targetPos.x, targetPos.y);
-            }
+            const std::optional<uint16_t> waterType = waterSample
+                ? std::optional<uint16_t>(waterSample->liquidType) : std::nullopt;
             bool isOcean = false;
             if (waterType && *waterType != 0) {
                 isOcean = (((*waterType - 1) % 4) == 1);
@@ -524,9 +596,39 @@ glm::vec3 CameraController::moveFollowedCharacter(float /*deltaTime*/, FrameInpu
                 }
             }
         }
-        // Keep swimming through water-data gaps at chunk boundaries.
-        if (!inWater && swimming && !waterH) {
-            inWater = true;
+        // Keep swimming through short water-data gaps at ADT/WMO boundaries,
+        // but never indefinitely. The old unconditional rule made a swimmer
+        // remain in swim locomotion on dry land whenever the next cell had no
+        // liquid sample. A real floor at the feet wins immediately; otherwise
+        // bridge only a bounded data gap.
+        if (waterH) {
+            waterSampleGapSeconds_ = 0.0f;
+        } else if (swimming) {
+            waterSampleGapSeconds_ += f.physicsDeltaTime;
+            std::optional<float> drySupport;
+            auto considerDrySupport = [&](const std::optional<float>& h) {
+                if (!h) return;
+                if (*h < targetPos.z - 0.45f || *h > targetPos.z + movement::kMaxStepUp) return;
+                if (!drySupport || std::abs(*h - targetPos.z) <
+                                   std::abs(*drySupport - targetPos.z))
+                    drySupport = h;
+            };
+            if (terrainManager && !terrainManager->isHoleAt(targetPos.x, targetPos.y))
+                considerDrySupport(terrainManager->getHeightAt(targetPos.x, targetPos.y));
+            if (wmoRenderer)
+                considerDrySupport(wmoRenderer->getFloorHeight(
+                    targetPos.x, targetPos.y, targetPos.z + 1.25f, nullptr, targetPos.z));
+            if (m2Renderer && !externalFollow_)
+                considerDrySupport(m2Renderer->getFloorHeight(
+                    targetPos.x, targetPos.y, targetPos.z + 1.25f));
+
+            const bool nearSolidSupport = drySupport.has_value();
+            if (!inWater && movement::bridgeMissingLiquidSample(
+                    true, waterSampleGapSeconds_, nearSolidSupport)) {
+                inWater = true;
+            }
+        } else {
+            waterSampleGapSeconds_ = 0.0f;
         }
 
 
@@ -807,17 +909,7 @@ glm::vec3 CameraController::moveFollowedCharacter(float /*deltaTime*/, FrameInpu
         if (++insideStateCheckCounter_ >= 2 || insideDistSq > 0.1225f) {
             insideStateCheckCounter_ = 0;
             lastInsideStateCheckPos_ = targetPos;
-
-            bool prevInside = cachedInsideWMO;
-            bool prevInsideInterior = cachedInsideInteriorWMO;
-            cachedInsideWMO = wmoRenderer->isInsideWMO(targetPos.x, targetPos.y, targetPos.z + 1.0f, nullptr);
-            cachedInsideInteriorWMO = cachedInsideWMO &&
-                wmoRenderer->isInsideInteriorWMO(targetPos.x, targetPos.y, targetPos.z + 1.0f);
-            if (cachedInsideWMO != prevInside || cachedInsideInteriorWMO != prevInsideInterior) {
-                hasCachedFloor_ = false;
-                hasCachedCamFloor = false;
-                cachedPivotLift_ = 0.0f;
-            }
+            refreshWmoContainment(targetPos, false);
         }
     }
 
@@ -1637,8 +1729,11 @@ void CameraController::groundFollowedCharacter(float deltaTime, FrameInput& f,
                 std::max(0.5f, std::abs(verticalVelocity) * f.physicsDeltaTime * 2.0f));
             bool airFalling = (!grounded && verticalVelocity < -5.0f
                                && dz >= -airSnapRange);
-            bool slopeGrace = (grounded && verticalVelocity > -1.0f &&
-                               dz >= -0.25f && dz <= stepUp * 1.5f);
+            // Walking down a real stair is continuous support, not a tiny fall.
+            // The old -0.25 yard window dropped grounded state on ordinary
+            // authored stair treads and produced a one-frame hop on every step.
+            bool slopeGrace = (grounded && !f.nowJump && verticalVelocity > -1.0f &&
+                               dz >= -movement::kMaxStepDown && dz <= stepUp * 1.5f);
 
             if (dz >= -fallCatch && (nearGround || airFalling || slopeGrace)) {
                 // HOVER: float at fixed height above ground instead of standing on it
@@ -2163,17 +2258,23 @@ void CameraController::updateFreeFlyCamera(float /*deltaTime*/, FrameInput& f) {
     float feetZ = newPos.z - eyeHeight;
 
     // Check for water at feet position
+    std::optional<WaterRenderer::WaterQuerySample> waterSample;
     std::optional<float> waterH;
-    if (waterRenderer) {
-        waterH = waterRenderer->getWaterHeightAt(newPos.x, newPos.y);
-    }
     constexpr float MAX_SWIM_DEPTH_FROM_SURFACE = 12.0f;
+    constexpr float MAX_ACTIVE_SWIM_SURFACE_ABOVE = 4096.0f;
+    if (waterRenderer) {
+        const float maxWaterAbove = swimming ? MAX_ACTIVE_SWIM_SURFACE_ABOVE
+                                             : MAX_SWIM_DEPTH_FROM_SURFACE;
+        waterSample = waterRenderer->getNearestWaterSampleAt(
+            newPos.x, newPos.y, feetZ, maxWaterAbove);
+        if (waterSample && cachedInsideInteriorWMO && !waterSample->fromWmo())
+            waterSample.reset();
+        if (waterSample) waterH = waterSample->height;
+    }
     bool inWater = false;
     if (waterH && feetZ < *waterH) {
-        std::optional<uint16_t> waterType;
-        if (waterRenderer) {
-            waterType = waterRenderer->getWaterTypeAt(newPos.x, newPos.y);
-        }
+        const std::optional<uint16_t> waterType = waterSample
+            ? std::optional<uint16_t>(waterSample->liquidType) : std::nullopt;
         bool isOcean = false;
         if (waterType && *waterType != 0) {
             isOcean = (((*waterType - 1) % 4) == 1);
@@ -2545,11 +2646,78 @@ void CameraController::update(float deltaTime) {
         }
     }
 
+    // A creature's fear or confuse: the character runs the generator's legs and
+    // the sticks do nothing (Unit::SetFeared / SetConfused take client control).
+    bool forcedMove = false;
+    if (forcedMode_ && followTarget && !movementRooted_) {
+        doCancelAutoFollow();
+        autoRunning = false;
+        const glm::vec3 me = *followTarget;
+        if (forcedHasDest_) {
+            const float dx = forcedDest_.x - me.x, dy = forcedDest_.y - me.y;
+            forcedLegTimer_ -= deltaTime;
+            if (dx * dx + dy * dy <= 0.75f * 0.75f || forcedLegTimer_ <= 0.0f) {
+                forcedHasDest_ = false;
+                // FleeingMovementGenerator: traveltime + urand(800, 1500) ms;
+                // ConfusedMovementGenerator: urand(600, 1200) ms between moves.
+                forcedWaitTimer_ = forcedMode_ == 1 ? 0.8f + 0.7f * forcedRand01() : 0.6f + 0.6f * forcedRand01();
+            }
+        }
+        if (!forcedHasDest_) {
+            forcedWaitTimer_ -= deltaTime;
+            if (forcedWaitTimer_ <= 0.0f) {
+                // Distances and angles are the generator's, computed in the
+                // canonical frame the source uses and mapped back to render space.
+                const glm::vec3 meWow = core::coords::renderToCanonical(me);
+                float distance = 0.0f, angle = 0.0f;
+                if (forcedMode_ == 1) {
+                    const float twoPi = 2.0f * core::coords::PI;
+                    float casterDistance = 0.0f, casterAngle = twoPi * forcedRand01();
+                    if (forcedHasSource_) {
+                        const glm::vec3 fromWow = core::coords::renderToCanonical(forcedFrom_);
+                        const float fx = meWow.x - fromWow.x, fy = meWow.y - fromWow.y;
+                        casterDistance = std::sqrt(fx * fx + fy * fy);
+                        if (casterDistance > 0.2f) casterAngle = std::atan2(fy, fx);
+                    }
+                    if (casterDistance < 28.0f) {
+                        distance = (0.4f + 0.9f * forcedRand01()) * (28.0f - casterDistance);
+                        angle = casterAngle + (forcedRand01() - 0.5f) * core::coords::PI / 4.0f;
+                    } else if (casterDistance > 43.0f) {
+                        distance = (0.4f + 0.6f * forcedRand01()) * 15.0f;
+                        angle = -casterAngle + (forcedRand01() - 0.5f) * core::coords::PI / 2.0f;
+                    } else {
+                        distance = (0.6f + 0.6f * forcedRand01()) * 15.0f;
+                        angle = twoPi * forcedRand01();
+                    }
+                    forcedDest_ = core::coords::canonicalToRender(glm::vec3(meWow.x + distance * std::cos(angle), meWow.y + distance * std::sin(angle), meWow.z));
+                } else {
+                    const glm::vec3 originWow = core::coords::renderToCanonical(forcedOrigin_);
+                    const float wx = originWow.x + 4.0f * forcedRand01() - 2.0f, wy = originWow.y + 4.0f * forcedRand01() - 2.0f;
+                    distance = std::sqrt((wx - meWow.x) * (wx - meWow.x) + (wy - meWow.y) * (wy - meWow.y));
+                    forcedDest_ = core::coords::canonicalToRender(glm::vec3(wx, wy, meWow.z));
+                }
+                const float legSpeed = forcedMode_ == 1 ? (runSpeedOverride_ > 0.0f && runSpeedOverride_ < 100.0f ? runSpeedOverride_ : WOW_RUN_SPEED)
+                                                        : (walkSpeedOverride_ > 0.0f && walkSpeedOverride_ < 100.0f ? walkSpeedOverride_ : WOW_WALK_SPEED);
+                forcedLegTimer_ = std::min(8.0f, distance / std::max(0.5f, legSpeed) * 1.5f + 0.5f);
+                forcedHasDest_ = true;
+            }
+        }
+        if (forcedHasDest_) {
+            const float dx = forcedDest_.x - me.x, dy = forcedDest_.y - me.y;
+            if (dx * dx + dy * dy > 0.01f) {
+                const float targetYawDeg = std::atan2(-dx, -dy) * 180.0f / core::coords::PI;
+                facingYaw = targetYawDeg;
+                yaw = targetYawDeg;
+                camera->setRotation(yaw, pitch);
+                forcedMove = true;
+            }
+        }
+    }
     // When the server has rooted the player, suppress all horizontal movement input.
-    const bool movBlocked = movementRooted_;
+    const bool movBlocked = movementRooted_ || forcedMode_ != 0;
     // Auto-follow uses run speed (same as auto-run), not walk speed
     if (autoFollowMove) autoRunning = true;
-    bool nowForward = !movBlocked && (keyW || mouseAutorun || autoRunning);
+    bool nowForward = (!movBlocked && (keyW || mouseAutorun || autoRunning)) || forcedMove;
     bool nowBackward = !movBlocked && keyS;
     bool nowStrafeLeft = false;
     bool nowStrafeRight = false;
@@ -2611,7 +2779,8 @@ void CameraController::update(float deltaTime) {
             speed = (runBackSpeedOverride_ > 0.0f && runBackSpeedOverride_ < 100.0f
                      && !std::isnan(runBackSpeedOverride_))
                         ? runBackSpeedOverride_ : WOW_BACK_SPEED;
-        } else if (ctrlDown) {
+        } else if (ctrlDown || forcedMode_ == 2) {
+            // A confused character walks (ConfusedMovementGenerator SetWalk(true)).
             speed = (walkSpeedOverride_ > 0.0f && walkSpeedOverride_ < 100.0f && !std::isnan(walkSpeedOverride_))
                         ? walkSpeedOverride_ : WOW_WALK_SPEED;
         } else if (runSpeedOverride_ > 0.0f && runSpeedOverride_ < 100.0f && !std::isnan(runSpeedOverride_)) {
@@ -3035,6 +3204,11 @@ void CameraController::reset() {
     verticalVelocity = 0.0f;
     grounded = true;
     swimming = false;
+    waterSampleGapSeconds_ = 0.0f;
+    cachedInsideWMO = false;
+    cachedInsideInteriorWMO = false;
+    insideWMOMissCount_ = 0;
+    insideInteriorMissCount_ = 0;
     sitting = false;
     autoRunning = false;
     noGroundTimer_ = 0.0f;
@@ -3324,23 +3498,61 @@ std::optional<glm::vec3> CameraController::getValidatedRecoveryPosition() const 
 }
 
 void CameraController::teleportTo(const glm::vec3& pos) {
+    if (!std::isfinite(pos.x) || !std::isfinite(pos.y) || !std::isfinite(pos.z)) {
+        LOG_WARNING("[MOVEMENT_GUARD] rejected non-finite camera teleport");
+        return;
+    }
     resetGroundRecovery();
     setScriptedView(false);
     cancelIntroPan();
     if (!camera) return;
 
+    // Authoritative relocation is a movement-state boundary.  Do not carry a
+    // jump, knockback, autorun/follow edge or an old suppression timer into the
+    // destination.  Keeping the camera orientation/distance is intentional; only
+    // transient motion state is reset.
     verticalVelocity = 0.0f;
+    knockbackActive_ = false;
+    knockbackHorizVel_ = glm::vec2(0.0f);
+    jumpBufferTimer = 0.0f;
+    coyoteTimer = 0.0f;
+    airborneSeconds_ = 0.0f;
+    movementSuppressTimer_ = 0.0f;
+    gravitySuspendTimer_ = 0.0f;
     grounded = true;
     swimming = false;
+    waterSampleGapSeconds_ = 0.0f;
     sitting = false;
+    seatedInChair_ = false;
+    autoRunning = false;
+    autoFollowTarget_ = nullptr;
+    clearMovementInputs();
+    manualForwardWasDown_ = false;
+    wasMovingForward = wasMovingBackward = false;
+    wasStrafingLeft = wasStrafingRight = false;
+    wasTurningLeft = wasTurningRight = false;
+    wasJumping = wasFalling = wasSwimming = false;
+    wasAscending_ = wasDescending_ = false;
     lastGroundZ = pos.z;
     noGroundTimer_ = 0.0f;  // Reset grace period so terrain has time to stream
     autoUnstuckFired_ = false;
     continuousFallTime_ = 0.0f;
 
-    // Invalidate active WMO group so it's re-detected at new position
+    // Re-detect WMO state at the destination immediately. Carrying the old
+    // interior flag for even one frame makes a teleport from a dungeon to the
+    // outdoors use the wrong terrain/camera collision policy (and vice versa).
+    insideStateCheckCounter_ = 0;
+    lastInsideStateCheckPos_ = pos;
+    insideWMOMissCount_ = 0;
+    insideInteriorMissCount_ = 0;
+    hasCachedCamFloor = false;
+    cachedPivotLift_ = 0.0f;
     if (wmoRenderer) {
         wmoRenderer->updateActiveGroup(pos.x, pos.y, pos.z + 1.0f);
+        refreshWmoContainment(pos, true);
+    } else {
+        cachedInsideWMO = false;
+        cachedInsideInteriorWMO = false;
     }
 
     if (thirdPerson && followTarget) {
@@ -3431,6 +3643,23 @@ void CameraController::triggerMountJump() {
         grounded = false;
         coyoteTimer = 0.0f;
     }
+}
+
+float CameraController::forcedRand01() {
+    // xorshift32; the legs need variety, not a shared or seeded stream.
+    forcedRandom_ ^= forcedRandom_ << 13; forcedRandom_ ^= forcedRandom_ >> 17; forcedRandom_ ^= forcedRandom_ << 5;
+    return float(forcedRandom_ & 0xffffffu) / float(0x1000000u);
+}
+
+void CameraController::setForcedMovement(uint8_t mode, const glm::vec3& fromRender, bool hasSource) {
+    if (mode != forcedMode_) {
+        forcedMode_ = mode;
+        forcedHasDest_ = false;
+        forcedWaitTimer_ = 0.0f;
+        if (mode && followTarget) forcedOrigin_ = *followTarget;
+    }
+    forcedFrom_ = fromRender;
+    forcedHasSource_ = hasSource;
 }
 
 void CameraController::applyKnockBack(float vcos, float vsin, float hspeed, float vspeed) {

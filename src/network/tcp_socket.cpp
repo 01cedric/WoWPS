@@ -15,6 +15,7 @@ TCPSocket::~TCPSocket() {
 }
 
 bool TCPSocket::connect(const std::string& host, uint16_t port) {
+    disconnect();
     LOG_INFO("Connecting to ", host, ":", port);
 
     // Socket open, non-blocking, and the address resolved.
@@ -22,49 +23,11 @@ bool TCPSocket::connect(const std::string& host, uint16_t port) {
     sockfd = net::openResolvedSocket(host, port, serverAddr);
     if (sockfd == INVALID_SOCK) return false;
 
-    int result = ::connect(sockfd, (struct sockaddr*)&serverAddr, sizeof(serverAddr));
-    if (result < 0) {
-        int err = net::lastError();
-        if (!net::isInProgress(err)) {
-            LOG_ERROR("Failed to connect: ", net::errorString(err));
-            net::closeSocket(sockfd);
-            sockfd = INVALID_SOCK;
-            return false;
-        }
-
-        // Non-blocking connect in progress - wait for it to complete
-        fd_set writefds;
-        FD_ZERO(&writefds);
-        FD_SET(sockfd, &writefds);
-
-        struct timeval tv;
-        tv.tv_sec = 5;
-        tv.tv_usec = 0;
-
-        int selectResult = ::select(static_cast<int>(sockfd) + 1, nullptr, &writefds, nullptr, &tv);
-        if (selectResult <= 0) {
-            LOG_ERROR("Connection timed out to ", host, ":", port);
-            net::closeSocket(sockfd);
-            sockfd = INVALID_SOCK;
-            return false;
-        }
-
-        // Check if the connection actually succeeded
-        int sockErr = 0;
-        socklen_t errLen = sizeof(sockErr);
-        getsockopt(sockfd, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&sockErr), &errLen);
-        if (sockErr != 0) {
-            LOG_ERROR("Connection failed: ", net::errorString(sockErr));
-            net::closeSocket(sockfd);
-            sockfd = INVALID_SOCK;
-            return false;
-        }
+    if (!net::connectTCP(sockfd, serverAddr, 5)) {
+        LOG_ERROR("Unable to connect to auth endpoint ", host, ":", port);
+        disconnect();
+        return false;
     }
-
-    // Disable Nagle's algorithm - send small packets immediately.
-    int one = 1;
-    setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY,
-               reinterpret_cast<const char*>(&one), sizeof(one));
 
     connected = true;
     LOG_INFO("Connected to ", host, ":", port);
@@ -97,12 +60,7 @@ void TCPSocket::send(const Packet& packet) {
               " size=", sendData.size(), " bytes");
 
     // Send complete packet
-    ssize_t sent = net::portableSend(sockfd, sendData.data(), sendData.size());
-    if (sent < 0) {
-        LOG_ERROR("Send failed: ", net::errorString(net::lastError()));
-    } else if (static_cast<size_t>(sent) != sendData.size()) {
-        LOG_WARNING("Partial send: ", sent, " of ", sendData.size(), " bytes");
-    }
+    if (!net::sendAll(sockfd, sendData.data(), sendData.size())) disconnect();
 }
 
 void TCPSocket::update() {
@@ -133,6 +91,7 @@ void TCPSocket::update() {
         }
 
         int err = net::lastError();
+        if (net::isInterrupted(err)) continue;
         if (net::isWouldBlock(err)) {
             break;
         }
@@ -245,10 +204,7 @@ size_t TCPSocket::getExpectedPacketSize(uint8_t opcode) {
             if (receiveBuffer.size() >= 2) {
                 uint8_t status = receiveBuffer[1];
                 if (status == 0x00) {
-                    if (receiveBuffer.size() >= 32) return 32;
-                    if (receiveBuffer.size() >= 28) return 28;
-                    if (receiveBuffer.size() >= 26) return 26;
-                    return 0;
+                    return clientBuild >= 8089 ? 32 : (clientBuild >= 6299 ? 28 : 26);
                 }                     // Consume up to 4 bytes if available, minimum 2
                     return (receiveBuffer.size() >= 4) ? 4 : 2;
                

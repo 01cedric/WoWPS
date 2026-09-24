@@ -19,6 +19,10 @@ namespace rendering {
 struct ShadowParamsSet {
     VkBuffer ubo = VK_NULL_HANDLE;
     VmaAllocation alloc = VK_NULL_HANDLE;
+    // Persistently mapped together with the allocation. Hot shadow paths update
+    // this every frame; retaining the pointer avoids an allocator metadata
+    // lookup for every cascade.
+    void* mapped = nullptr;
     VkDescriptorSetLayout layout = VK_NULL_HANDLE;
     VkDescriptorPool pool = VK_NULL_HANDLE;
     /// Owned by `pool` - freed with it rather than separately.

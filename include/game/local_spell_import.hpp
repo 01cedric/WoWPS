@@ -80,8 +80,11 @@ struct ClientSpellTables {
     const pipeline::DBCFile* icons = nullptr;
     const pipeline::DBCFile* runeCosts = nullptr;
     const pipeline::DBCFile* radii = nullptr;
+    // 2.38: SummonProperties.dbc (id, category, faction, type, slot, flags)
+    // for the creature caster's SPELL_EFFECT_SUMMON; absent, summons are refused.
+    const pipeline::DBCFile* summons = nullptr;
     bool ready = false;
-    std::vector<std::pair<uint32_t, uint32_t>> spellIndex, rangeIndex, castIndex, durationIndex, iconIndex, runeCostIndex, radiusIndex;
+    std::vector<std::pair<uint32_t, uint32_t>> spellIndex, rangeIndex, castIndex, durationIndex, iconIndex, runeCostIndex, radiusIndex, summonIndex;
 
     static void buildIndex(const pipeline::DBCFile* table,
                            std::vector<std::pair<uint32_t, uint32_t>>& index) {
@@ -610,6 +613,372 @@ inline bool decodeClientFormResourceTalent(const ClientSpellTables& t,uint32_t r
     return true;
 }
 
+/// The effect loop of decodeClientSpell for a creature caster (the generated
+/// SmartAI family). It mirrors tools/local_realm/generate_npc_spell_profiles.py
+/// column for column: shapes, kinds and bounds admitted there are admitted
+/// here and nowhere else; anything wider fails closed. Returns the target
+/// shape (LocalSpellDefinition::npcTargetShape) and sets npcPositive.
+template<class Unavailable>
+inline void decodeCreatureEffects(const ClientSpellTables& t,uint32_t row,LocalSpellDefinition& d,Unavailable&& unavailable) {
+    const auto u=[&](uint32_t col){return t.spells->getUInt32(row,col);};
+    const auto i=[&](uint32_t col){return t.spells->getInt32(row,col);};
+    const auto f=[&](uint32_t col){return t.spells->getFloat(row,col);};
+    enum Shape:uint8_t{Enemy=0,Self=1,Aoe=2,AoeTarget=3,Cone=4,AoeAlly=5,AoeDest=6,NoShape=255};
+    const auto shapeOf=[&](uint32_t a,uint32_t b)->uint8_t{
+        if(b==0){switch(a){case 6:case 25:return Enemy;case 1:case 21:case 20:case 33:return Self;case 24:case 54:case 104:return Cone;case 16:return AoeDest;default:break;}}
+        if(a==22&&b==15)return Aoe;if(a==18&&b==16)return Aoe;if(a==53&&b==16)return AoeTarget;if(a==63&&b==16)return AoeDest;
+        if(a==22&&b==30)return AoeAlly;if(a==18&&b==31)return AoeAlly;
+        return NoShape;
+    };
+    // 2.38: the destination of a destination-only effect (a summon, a
+    // persistent area aura), mirroring the generator's spell_dest: the
+    // caster, the summon spot, a direction at the radius, a random point, or
+    // the explicit target's position (LocalNpcDest).
+    const auto destOf=[&](uint32_t a,uint32_t b)->uint8_t{
+        const auto byA=[](uint32_t x)->uint8_t{switch(x){case 18:return kLocalNpcDestCaster;case 32:return kLocalNpcDestSummon;case 47:return kLocalNpcDestFront;
+            case 48:return kLocalNpcDestBack;case 49:return kLocalNpcDestRight;case 50:return kLocalNpcDestLeft;case 41:return kLocalNpcDestFrontRight;
+            case 42:return kLocalNpcDestBackRight;case 43:return kLocalNpcDestBackLeft;case 44:return kLocalNpcDestFrontLeft;case 72:return kLocalNpcDestRandom;
+            case 73:return kLocalNpcDestRadius;case 53:case 63:case 16:case 28:return kLocalNpcDestTarget;default:return 0;}};
+        if(b==0)return byA(a);
+        if(a==22&&byA(b))return byA(b);
+        if(a==18&&b==86)return kLocalNpcDestRadius;
+        if(a==18&&(b==16||b==28))return kLocalNpcDestCaster;
+        if((a==53||a==63||a==16)&&(b==16||b==28))return kLocalNpcDestTarget;
+        return 0;
+    };
+    const auto casterDest=[](uint8_t dest){return dest&&dest!=kLocalNpcDestTarget;};
+    // SpellEffectInfo::CalcValue's creature scaling lists.
+    const auto effectScales=[&](uint32_t type,uint32_t aura){
+        switch(type){case 2:case 3:case 8:case 9:case 10:case 58:case 77:case 121:case 140:case 142:case 143:return true;default:break;}
+        if(type==6)switch(aura){case 3:case 4:case 8:case 15:case 43:case 53:case 64:case 69:case 179:return true;default:break;}
+        return false;
+    };
+    // Spell.dbc proc columns: a proc trigger aura owns them (SpellMgr::
+    // LoadSpellProcs' generated entry); a control aura spends charges on
+    // damage taken; the generator has already refused every other carrier
+    // and every spell_proc row this decoder does not read.
+    const uint32_t procFlags=u(34),procChance=u(35),procCharges=u(36);
+    constexpr uint32_t procTakenFlags=0x8|0x20|0x80|0x200|0x2000|0x20000|0x80000|0x100000;
+    constexpr uint32_t procDoneFlags=0x4|0x10|0x40|0x100|0x1000|0x10000|0x40000|0x400000|0x800000;
+    constexpr uint32_t procLocalFlags=procTakenFlags|procDoneFlags|0x2|0x1|0x1000000;
+    bool procAura=false;
+    for(uint32_t k=0;k<3;++k)if(u(71+k)==6&&(u(95+k)==42||u(95+k)==43))procAura=true;
+    if(procAura) {
+        if(!(procFlags&procLocalFlags)||(procFlags&~procLocalFlags)||procChance>100||procCharges>99){unavailable("Unsupported creature proc definition");return;}
+        for(uint32_t c=0;c<9;++c)if(u(122+c)){unavailable("Unsupported creature proc class mask");return;}
+        d.npcProcFlags=procFlags;d.npcProcChance=uint8_t(procChance);d.npcProcCharges=uint8_t(procCharges);
+    } else if(procFlags||procCharges) {
+        bool control=false;
+        for(uint32_t k=0;k<3;++k)if(u(71+k)==6)switch(u(95+k)){case 12:case 26:case 7:case 5:case 56:control=true;break;default:break;}
+        if(!control||procChance>100||procCharges>99||(procFlags&~procTakenFlags)||!(procFlags&0x100000)){unavailable("Unsupported creature proc definition");return;}
+        d.npcProcBreakChance=uint8_t(procChance);d.npcProcBreakCharges=uint8_t(procCharges);
+    }
+    uint8_t shape=NoShape,cosmeticShape=NoShape;bool anyReal=false;
+    uint8_t modSchool=0;
+    unsigned directAmountEffects=0;
+    d.directEffectSlot=d.periodicEffectSlot=255;
+    bool cosmeticAura=false,utilityOnly=true;
+    uint8_t kindsSeen[3]={0,0,0};unsigned kindCount=0;
+    const auto seen=[&](uint8_t kind){for(unsigned q=0;q<kindCount;++q)if(kindsSeen[q]==kind)return true;if(kindCount<3)kindsSeen[kindCount++]=kind;return false;};
+    uint32_t chainKinds[3]={0,0,0};bool realEffect[3]={false,false,false};
+    bool unitAuras=false;unsigned cosmeticFree=0;
+    for(uint32_t k=0;k<3;++k) {
+        auto type=u(71+k);if(!type)continue;
+        auto ta=u(86+k),tb=u(89+k);
+        // APPLY_AREA_AURA_PARTY: a creature's party is itself (Unit::GetPartyMembers).
+        if(type==35){type=6;ta=1;tb=0;}
+        const auto aura=(type==6||type==27)?u(95+k):0u;
+        const int32_t base=i(80+k),dice=i(74+k),misc=i(110+k);const float perLevel=f(77+k);
+        const uint32_t amplitude=u(98+k),chain=u(104+k),trigger=u(116+k);
+        uint8_t effectShape=shapeOf(ta,tb);
+        // 2.38: a destination-only effect takes its place from the pair; a
+        // cosmetic effect at a destination or with no target imposes no shape.
+        uint8_t dest=0;
+        if(type==28||type==27) {
+            dest=destOf(ta,tb);
+            if(!dest){unavailable("Unsupported creature destination");return;}
+            effectShape=casterDest(dest)?Aoe:AoeDest;
+        } else if((type==3||type==46||type==114)&&effectShape==NoShape&&((ta==0&&tb==0)||destOf(ta,tb))) {
+            ++cosmeticFree;chainKinds[k]=chain;continue;
+        }
+        if(effectShape==NoShape){unavailable("Unsupported creature target shape");return;}
+        if(base<-100000||base>100000||dice<0||dice>100000||!std::isfinite(perLevel)||std::abs(perLevel)>10000){unavailable("Invalid creature effect amount");return;}
+        if(trigger&&!(type==64||(type==6&&(aura==23||aura==42)))){unavailable("Unsupported creature effect trigger");return;}
+        const int32_t amount=base+(dice>=1?1:0);
+        const uint32_t low=uint32_t(std::max(0,base+1)),high=low+(dice>1?uint32_t(dice-1):0);
+        const int32_t amountHigh=amount+(dice>1?dice-1:0);
+        float destRadius=0;
+        if(type==28||type==27) {
+            // The radius is the placement distance of a directional or random
+            // destination, the spread of several summons, the object's size.
+            if(u(92+k)) {
+                const auto radius=ClientSpellTables::lookup(t.radiusIndex,u(92+k));
+                if(!t.radii||radius<0){unavailable("Area radius record missing");return;}
+                const auto rb=t.radii->getFloat(radius,1),rp=t.radii->getFloat(radius,2),rm=t.radii->getFloat(radius,3);
+                if(!std::isfinite(rb)||rb<0||rb>100||rp!=0||!std::isfinite(rm)||rm<rb){unavailable("Unsupported creature area radius");return;}
+                destRadius=rb;
+            }
+        } else if(effectShape==Aoe||effectShape==AoeTarget||effectShape==Cone||effectShape==AoeAlly||effectShape==AoeDest) {
+            const auto radius=ClientSpellTables::lookup(t.radiusIndex,u(92+k));
+            if(!t.radii||radius<0){unavailable("Area radius record missing");return;}
+            const auto rb=t.radii->getFloat(radius,1),rp=t.radii->getFloat(radius,2),rm=t.radii->getFloat(radius,3);
+            if(!std::isfinite(rb)||rb<=0||rb>100||rp!=0||!std::isfinite(rm)||rm<rb){unavailable("Unsupported creature area radius");return;}
+            if(!d.npcAreaRadius)d.npcAreaRadius=rb;
+            if(effectShape==Cone) {
+                float degrees=ta==24?24.f:ta==54?54.f:104.f;
+                if(const auto* g=localNpcSpellGeometry(d.id);g&&g->coneDegrees)degrees=float(std::abs(g->coneDegrees));
+                d.npcConeDegrees=degrees;
+            }
+        }
+        if(chain>1) {
+            if(effectShape!=Enemy){unavailable("Unsupported creature chain shape");return;}
+            const float multiplier=f(216+k);
+            if(!std::isfinite(multiplier)||multiplier<=0||multiplier>10||(d.npcChainTargets&&d.npcChainTargets!=chain)){unavailable("Unsupported creature chain multiplier");return;}
+            d.npcChainTargets=uint8_t(std::min<uint32_t>(chain,255));d.npcChainMultiplier=multiplier;
+            if(const auto* g=localNpcSpellGeometry(d.id);g&&g->jumpDistance)d.npcJumpDistance=float(g->jumpDistance);
+        }
+        chainKinds[k]=chain;
+        enum Kind:uint8_t{KDamage=1,KWeapon,KWeaponPct,KLeech,KHeal,KInterrupt,KKnockback,KCosmetic,KTrigger,KPeriodicTrigger,KPeriodic,KPeriodicLeech,
+            KPeriodicHeal,KSlow,KArmor,KArmorPct,KControl,KDamageTakenFlat,KDamageTakenPct,KHealingPct,KHaste,KDamagePct,KDamageFlat,KAttackPower,
+            KSpeed,KResistance,KCastSpeed,KHitChance,KDisarm,KDodge,KParry,KBlock,KAbsorb,KSchoolImmunity,KDamageImmunity,KMechanicImmunity,
+            KMaxHealth,KMaxHealthPct,KDamageShield,KProcTrigger,KProcDamage,KHealPct,KHealMax,KEnergize,KEnergizePct,KPowerBurn,KPowerDrain,
+            KDispel,KDispelMechanic,KCharge,KThreatPct,KKillCredit,KCreateItem,KExtraAttacks,KSummon,
+            // 2.39
+            KInstakillSelf,KSelfControl,KInvisible};
+        uint8_t kind=0;
+        // Who takes the effect: 1 = the creature side (self/ally shapes), 2 =
+        // the player side (enemy shapes), 3 = either, 4 = a utility on a player,
+        // 5 = nobody (a summon at a destination).
+        uint8_t side=0;
+        switch(type) {
+            case 28:{
+                // Spell::EffectSummonType: the entry (MiscValue), the SummonProperties
+                // row (MiscValueB), the count from BasePoints for the listed
+                // properties, the spell's duration (none: DEAD_DESPAWN).
+                if(d.npcSummonEntry||misc<=0){unavailable("Unsupported creature summon");return;}
+                const auto props=t.summons?ClientSpellTables::lookup(t.summonIndex,u(113+k)):-1;
+                if(props<0){unavailable("Unsupported creature summon properties");return;}
+                const uint32_t category=t.summons->getUInt32(props,1),ptype=t.summons->getUInt32(props,3),pflags=t.summons->getUInt32(props,5);
+                if(category>2||!(ptype==0||ptype==1||ptype==2||ptype==3||ptype==6||ptype==7||ptype==8)||(pflags&0x10u)){unavailable("Unsupported creature summon properties");return;}
+                uint32_t count=1;
+                switch(u(113+k)){case 64:case 61:case 1101:case 66:case 648:case 2301:case 1061:case 1261:case 629:case 181:case 715:case 1562:case 833:case 1161:case 713:
+                    if(dice>1||perLevel!=0){unavailable("Unsupported creature summon count");return;}
+                    count=amount>0?uint32_t(amount):1u;break;default:break;}
+                if(count>10||(!d.durationMs&&!d.indefiniteDuration&&u(40))){unavailable("Unsupported creature summon count");return;}
+                d.npcSummonEntry=uint32_t(misc);d.npcSummonCount=uint8_t(count);d.npcSummonCategory=uint8_t(category);d.npcSummonType=uint8_t(ptype);
+                d.npcSummonOwnerFaction=category!=0||(pflags&0x1000u);d.npcSummonDest=dest;d.npcSummonRadius=destRadius;
+                kind=KSummon;side=5;break;}
+            case 2:kind=KDamage;side=2;break;
+            case 17:case 58:case 121:if(amount<0){unavailable("Unsupported creature weapon effect");return;}kind=KWeapon;side=2;break;
+            case 31:if(perLevel!=0||amount<=0||amount>1000||amountHigh>1000){unavailable("Unsupported creature weapon percentage");return;}kind=KWeaponPct;side=2;break;
+            case 9:{const float m=f(101+k);if(!std::isfinite(m)||m<0||m>10){unavailable("Unsupported creature leech multiplier");return;}kind=KLeech;side=2;break;}
+            case 10:case 75:kind=KHeal;side=1;break;
+            case 136:if(dice>1||amount<=0||amount>100){unavailable("Unsupported creature heal percentage");return;}kind=KHealPct;side=1;break;
+            case 67:kind=KHealMax;side=1;break;
+            case 30:case 137:if(misc!=0||amount<0||(type==137&&(dice>1||amount>100))){unavailable("Unsupported creature energize");return;}kind=type==30?KEnergize:KEnergizePct;side=1;break;
+            case 68:if(!d.durationMs){unavailable("Interrupt without a lockout duration");return;}kind=KInterrupt;side=2;break;
+            case 98:case 144:if(misc<0||misc>10000||amount<0||amount>10000||(misc<=1&&amount<=1)){unavailable("Unsupported creature knockback");return;}kind=KKnockback;side=2;break;
+            case 3:case 46:case 114:kind=KCosmetic;side=3;break;
+            case 62:{const float m=f(101+k);if(misc!=0||amount<0||!std::isfinite(m)||m<0||m>10){unavailable("Unsupported creature power burn");return;}kind=KPowerBurn;side=2;break;}
+            case 8:{const float m=f(101+k);if(misc!=0||amount<0||!std::isfinite(m)||m<0||m>10){unavailable("Unsupported creature power drain");return;}kind=KPowerDrain;side=2;break;}
+            case 38:if(misc<1||misc>4||dice>1||amount<=0||amount>10){unavailable("Unsupported creature dispel");return;}kind=KDispel;side=2;break;
+            case 108:if(misc<=0||misc>31||dice>1||amount<=0||amount>10){unavailable("Unsupported creature mechanic dispel");return;}kind=KDispelMechanic;side=2;break;
+            case 96:kind=KCharge;side=2;break;
+            case 125:if(dice>1||amount<-100||amount>1000){unavailable("Unsupported creature threat modifier");return;}kind=KThreatPct;side=2;break;
+            case 134:if(misc<=0){unavailable("Unsupported creature kill credit");return;}kind=KKillCredit;side=4;break;
+            // Spell::EffectCreateItem: EffectItemType (column 107 + k; 2.39 fix - the
+            // misc value was read before), CalcValue clamped to at least one item.
+            case 24:if(int32_t(u(107+k))<=0||dice>1||amount<0||amount>20){unavailable("Unsupported creature item creation");return;}kind=KCreateItem;side=4;break;
+            // 2.39 Spell::EffectInstaKill on the caster (Unit::Kill(me, me)).
+            case 1:if(effectShape!=Self){unavailable("Unsupported creature instakill shape");return;}kind=KInstakillSelf;side=1;break;
+            // 2.39 Spell::EffectScriptEffect: the ids its switch handles do
+            // something; every other id only starts its spell_scripts rows,
+            // which the generator refuses - nothing happens here.
+            case 77:switch(d.id){case 22539:case 22972:case 22975:case 22976:case 22977:case 22978:case 22979:case 22980:case 22981:case 22982:case 22983:case 22984:case 22985:
+                    case 31666:case 32307:case 41931:case 52173:case 54640:case 57347:case 57349:case 58418:case 58420:case 58428:case 60243:case 61263:
+                        unavailable("Coded script effect");return;
+                    default:kind=KCosmetic;side=3;break;}break;
+            case 19:if(dice>1||amount<=0||amount>10){unavailable("Unsupported creature extra attacks");return;}kind=KExtraAttacks;side=1;break;
+            // 2.39: a trigger on the creature itself casts the triggered spell
+            // on itself (a self buff, or a caster-centred area around it).
+            case 64:kind=KTrigger;side=effectShape==Self?1:2;break;
+            case 27:
+                // Spell::EffectPersistentAA: a dynamic object of the radius for
+                // the duration; its aura kind (below) lands on the enemies inside.
+                if(d.npcGroundAura||destRadius<=0||!d.durationMs||!(tb==0||tb==16||tb==28)){unavailable("Unsupported creature ground aura");return;}
+                d.npcGroundAura=true;d.npcGroundDest=dest;d.npcGroundRadius=destRadius;
+                [[fallthrough]];
+            case 6:switch(aura) {
+                case 3:if(!(amplitude>0&&amplitude<=d.durationMs)){unavailable("Unsupported creature periodic shape");return;}kind=KPeriodic;side=2;break;
+                case 53:{const float m=f(101+k);if(!(amplitude>0&&amplitude<=d.durationMs)||!std::isfinite(m)||m<0||m>10){unavailable("Unsupported creature leech shape");return;}kind=KPeriodicLeech;side=2;break;}
+                case 8:if(!(amplitude>0&&amplitude<=d.durationMs)||amount<=0){unavailable("Unsupported creature periodic heal");return;}kind=KPeriodicHeal;side=1;break;
+                case 33:if(dice>1||amount<=-100||amount>=0){unavailable("Unsupported creature slow amount");return;}kind=KSlow;side=3;break;
+                case 31:if(dice>1||amount<=0||amount>1000){unavailable("Unsupported creature speed amount");return;}kind=KSpeed;side=1;break;
+                case 22:if(misc<=0||misc>127||perLevel>1000||perLevel<-1000||std::abs(amount)>100000||amountHigh>100000||((misc&1)&&misc!=1)){unavailable("Unsupported creature resistance amount");return;}
+                    // A zero amount (the creature Sunder Armor 15502: -1 + 1)
+                    // applies and stacks without changing anything: cosmetic here.
+                    if(amount==0&&amountHigh==0&&perLevel==0){kind=KCosmetic;side=3;break;}
+                    kind=misc==1?KArmor:KResistance;side=3;break;
+                case 101:if(misc!=1||dice>1||amount<=-100||amount>1000||amount==0){unavailable("Unsupported creature armor percentage");return;}kind=KArmorPct;side=3;break;
+                // 2.39: a stun / root the creature applies to itself.
+                case 12:case 26:if(effectShape==Self){kind=KSelfControl;side=1;break;}[[fallthrough]];
+                case 7:case 5:case 27:kind=KControl;side=2;break;
+                // 2.39: an invisible creature (unseen, unaggroed) for the duration.
+                case 18:if(effectShape!=Self){unavailable("Unsupported creature invisibility shape");return;}kind=KInvisible;side=1;break;
+                case 14:if(misc<=0||misc>127||dice>1||amount==0||std::abs(amount)>100000){unavailable("Unsupported creature damage-taken amount");return;}kind=KDamageTakenFlat;side=3;break;
+                case 87:if(misc<=0||misc>127||dice>1||amount<=-100||amount>1000||amount==0){unavailable("Unsupported creature damage-taken percentage");return;}kind=KDamageTakenPct;side=3;break;
+                case 118:if(dice>1||amount<-100||amount>=0){unavailable("Unsupported creature healing percentage");return;}kind=KHealingPct;side=3;break;
+                case 138:case 193:if(dice>1||amount<-100||amount>1000||amount==0){unavailable("Unsupported creature haste amount");return;}kind=KHaste;side=3;break;
+                case 65:if(dice>1||amount<=-100||amount>1000||amount==0){unavailable("Unsupported creature cast speed amount");return;}kind=KCastSpeed;side=3;break;
+                case 54:if(dice>1||amount<-100||amount>100||amount==0){unavailable("Unsupported creature hit chance amount");return;}kind=KHitChance;side=3;break;
+                case 67:kind=KDisarm;side=2;break;
+                case 49:case 47:case 51:if(dice>1||amount<-100||amount>100||amount==0){unavailable("Unsupported creature avoidance amount");return;}kind=aura==49?KDodge:aura==47?KParry:KBlock;side=3;break;
+                case 79:if(misc<=0||misc>127||dice>1||amount<-99||amount>1000||amount==0){unavailable("Unsupported creature damage percentage");return;}kind=KDamagePct;side=3;break;
+                case 13:if(misc<=0||misc>127||dice>1||amount==0||std::abs(amount)>100000){unavailable("Unsupported creature damage bonus");return;}kind=KDamageFlat;side=3;break;
+                case 99:if(dice>1||amount==0||std::abs(amount)>100000){unavailable("Unsupported creature attack power amount");return;}kind=KAttackPower;side=3;break;
+                case 69:if(misc<=0||misc>127||amount<=0||amountHigh>1000000){unavailable("Unsupported creature absorb amount");return;}kind=KAbsorb;side=1;break;
+                case 39:case 40:if(misc<=0||misc>127){unavailable("Unsupported creature immunity school");return;}kind=aura==39?KSchoolImmunity:KDamageImmunity;side=1;break;
+                case 77:if(misc<=0||misc>31){unavailable("Unsupported creature immunity mechanic");return;}kind=KMechanicImmunity;side=1;break;
+                case 34:if(dice>1||amount==0||std::abs(amount)>1000000){unavailable("Unsupported creature health amount");return;}kind=KMaxHealth;side=1;break;
+                case 133:if(dice>1||amount<-99||amount>1000||amount==0){unavailable("Unsupported creature health percentage");return;}kind=KMaxHealthPct;side=1;break;
+                case 15:if(amount<=0||amountHigh>100000||!u(225)){unavailable("Unsupported creature damage shield");return;}kind=KDamageShield;side=1;break;
+                case 42:if(!trigger||trigger==d.id||!procFlags){unavailable("Unsupported creature proc trigger");return;}kind=KProcTrigger;side=1;break;
+                case 43:if(!procFlags||amount<=0||!u(225)){unavailable("Unsupported creature proc damage");return;}kind=KProcDamage;side=1;break;
+                case 23:if(!amplitude){unavailable("Unsupported creature periodic trigger interval");return;}kind=KPeriodicTrigger;side=3;break;
+                case 29:case 61:case 4:case 56:case 84:case 85:case 88:case 124:case 36:case 30:case 41:case 11:kind=KCosmetic;side=3;break;
+                case 137:if(effectShape!=Self&&effectShape!=AoeAlly){unavailable("Unsupported creature stat percentage shape");return;}kind=KCosmetic;side=3;break;
+                default:break;
+            }break;
+            default:break;
+        }
+        if(!kind){unavailable("Unsupported creature effect "+std::to_string(type)+((type==6||type==27)?" / aura "+std::to_string(aura):""));return;}
+        if(kind!=KCosmetic&&seen(kind)){unavailable("Repeated creature effect");return;}
+        if(type==27) {
+            // The ground aura lands on players alone (a periodic trigger would
+            // need the object as caster).
+            if(side==1||kind==KPeriodicTrigger){unavailable("Unsupported creature ground aura kind");return;}
+        } else if(type==6&&kind!=KCosmetic)unitAuras=true;
+        const bool friendlyShape=effectShape==Self||effectShape==AoeAlly;
+        if(side==5){}
+        else if(side==1&&!friendlyShape) {
+            if(!(ta==25&&tb==0)){unavailable("Friendly creature effect on a hostile shape");return;}
+            effectShape=Self;
+        }
+        if((side==2||side==4)&&friendlyShape){unavailable("Hostile creature effect on a friendly shape");return;}
+        const bool needsDuration=kind==KPeriodic||kind==KPeriodicLeech||kind==KPeriodicHeal||kind==KSlow||kind==KSpeed||kind==KArmor||kind==KArmorPct||
+            kind==KResistance||kind==KControl||kind==KDamageTakenFlat||kind==KDamageTakenPct||kind==KHealingPct||kind==KHaste||kind==KCastSpeed||
+            kind==KHitChance||kind==KDisarm||kind==KDodge||kind==KParry||kind==KBlock||kind==KDamagePct||kind==KDamageFlat||kind==KAttackPower||
+            kind==KAbsorb||kind==KSchoolImmunity||kind==KDamageImmunity||kind==KMechanicImmunity||kind==KMaxHealth||kind==KMaxHealthPct||
+            kind==KDamageShield||kind==KProcTrigger||kind==KProcDamage||kind==KPeriodicTrigger||kind==KSelfControl||kind==KInvisible;
+        // 2.39: a periodic trigger the creature keeps until removed (SpellDuration -1) is permanent.
+        const bool permanentTrigger=kind==KPeriodicTrigger&&d.indefiniteDuration&&effectShape==Self;
+        if(needsDuration&&!d.durationMs&&!permanentTrigger){unavailable("Unsupported creature aura duration");return;}
+        if(kind==KCosmetic){if(cosmeticShape!=NoShape&&cosmeticShape!=effectShape)cosmeticShape=NoShape;else cosmeticShape=effectShape;}
+        else {
+            if(shape!=NoShape&&shape!=effectShape){unavailable("Mixed creature target shapes");return;}
+            shape=effectShape;anyReal=true;realEffect[k]=true;
+            if(kind!=KKillCredit&&kind!=KCreateItem)utilityOnly=false;
+        }
+        const bool scalable=effectScales(type,aura);
+        const auto directSlot=[&](){d.directEffectSlot=++directAmountEffects==1?uint8_t(k):255;};
+        const auto range=[&](){return LocalSpellDefinition::NpcAmount{amount,amountHigh,perLevel,scalable,true};};
+        switch(kind) {
+            case KDamage:directSlot();if(u(3)==kLocalMechanicBleed||u(83+k)==kLocalMechanicBleed)d.directIgnoresArmor=true;d.damage+=low;d.damageMax+=high;d.damagePerLevel+=perLevel;break;
+            case KWeapon:
+                d.npcWeaponEffect=true;d.npcWeaponScales=type!=17;d.npcWeaponBonus=uint32_t(amount);
+                d.npcWeaponBonusMax=d.npcWeaponBonus+(dice>1?uint32_t(dice-1):0);d.npcWeaponBonusPerLevel=perLevel;break;
+            case KWeaponPct:d.npcWeaponPercent=uint16_t(amount);d.npcWeaponPercentFirst=!d.npcWeaponEffect;break;
+            case KLeech:directSlot();d.damage+=low;d.damageMax+=high;d.damagePerLevel+=perLevel;d.npcLeech=true;d.npcLeechMultiplier=f(101+k);break;
+            case KHeal:directSlot();d.heal+=low;d.healMax+=high;d.healPerLevel+=perLevel;d.npcHealAmount={int32_t(low),int32_t(high),perLevel,scalable,true};break;
+            case KHealPct:d.npcHealPct={amount,amount,0.f,false,true};break;
+            case KHealMax:d.npcHealMax=true;break;
+            case KEnergize:d.npcEnergize=range();break;
+            case KEnergizePct:d.npcEnergizePct={amount,amount,0.f,false,true};break;
+            case KInterrupt:d.npcInterrupt=true;break;
+            case KKnockback:d.npcKnockbackSpeedXY=float(misc)/10.f;d.npcKnockbackZ={amount,amountHigh,perLevel,false,true};break;
+            case KCosmetic:if(type==6)cosmeticAura=true;break;
+            case KPowerBurn:d.npcPowerBurn=range();d.npcPowerBurnMultiplier=f(101+k);break;
+            case KPowerDrain:d.npcPowerDrain=range();d.npcPowerDrainMultiplier=f(101+k);break;
+            case KDispel:d.npcDispelType=uint8_t(misc);d.npcDispelCount=uint8_t(amount);break;
+            case KDispelMechanic:d.npcDispelMechanic=uint8_t(misc);d.npcDispelMechanicCount=uint8_t(amount);break;
+            case KCharge:d.npcCharge=true;break;
+            case KThreatPct:d.npcThreatPct=int16_t(amount);break;
+            case KKillCredit:d.npcKillCredit=uint32_t(misc);break;
+            case KCreateItem:d.npcCreateItem=u(107+k);d.npcCreateItemCount=uint8_t(std::max(1,amount));break;
+            case KExtraAttacks:d.npcExtraAttacks=uint8_t(amount);break;
+            case KTrigger:d.npcTriggerSpellId=trigger;break;
+            case KPeriodicTrigger:d.npcPeriodicTriggerSpellId=trigger;d.npcPeriodicTriggerIntervalMs=amplitude;break;
+            case KInstakillSelf:d.npcInstakillSelf=true;break;
+            case KSelfControl:if(d.npcSelfControl){unavailable("Mixed creature self controls");return;}d.npcSelfControl=aura==12?1:2;break;
+            case KInvisible:d.npcInvisible=true;break;
+            case KPeriodic:case KPeriodicLeech:
+                if(d.periodicHeal){unavailable("Mixed creature periodic effects");return;}
+                d.periodicEffectSlot=uint8_t(k);
+                if(u(3)==kLocalMechanicBleed||u(83+k)==kLocalMechanicBleed)d.periodicIgnoresArmor=true;
+                d.periodicDamage=low;d.periodicDamageMax=high;d.periodicDamagePerLevel=perLevel;d.periodicIntervalMs=amplitude;
+                if(kind==KPeriodicLeech){d.npcPeriodicLeech=true;d.npcLeechMultiplier=f(101+k);}
+                break;
+            case KPeriodicHeal:
+                if(d.periodicDamage){unavailable("Mixed creature periodic effects");return;}
+                d.periodicEffectSlot=uint8_t(k);d.periodicHeal=low;d.periodicHealMax=high;d.periodicHealPerLevel=perLevel;d.periodicIntervalMs=amplitude;
+                d.npcPeriodicHealAmount={int32_t(low),int32_t(high),perLevel,scalable,true};break;
+            case KSlow:
+                // On the creature itself the slow is its own movement speed.
+                if(friendlyShape)d.npcSpeed={amount,amount,0.f,false,true};else{d.npcSlowPercent=uint8_t(-amount);d.npcSlowPerLevel=perLevel;}
+                break;
+            case KSpeed:d.npcSpeed={amount,amount,0.f,false,true};break;
+            case KArmor:d.npcArmorAmount=amount;d.npcArmorPerLevel=perLevel;d.npcArmorAmountMax=amountHigh;break;
+            case KResistance:d.npcResistance=range();d.npcResistanceSchool=uint8_t(misc);break;
+            case KArmorPct:d.npcArmorPercent=int8_t(std::clamp(amount,-99,127));d.npcArmorPercentPerLevel=perLevel;d.npcArmorPercentWide=int16_t(amount);break;
+            case KControl:
+                if(d.npcPlayerControl){unavailable("Mixed creature controls");return;}
+                d.npcPlayerControl=aura==12?1:aura==26?2:aura==7?3:aura==5?4:5;
+                d.npcBreakOnDamage=(u(spell335::AuraInterruptFlags)&0x2u)!=0;break;
+            case KDamageTakenFlat:case KDamageTakenPct:
+                if(modSchool&&modSchool!=uint8_t(misc)){unavailable("Mixed creature damage-taken schools");return;}
+                modSchool=uint8_t(misc);d.npcDamageTakenSchool=modSchool;
+                (kind==KDamageTakenFlat?d.npcDamageTakenFlat:d.npcDamageTakenPct)={amount,amount,perLevel,false,true};break;
+            case KHealingPct:d.npcHealingPct={amount,amount,perLevel,false,true};break;
+            case KHaste:d.npcHaste={amount,amount,perLevel,false,true};break;
+            case KCastSpeed:d.npcCastSpeed={amount,amount,perLevel,false,true};break;
+            case KHitChance:d.npcHitChance={amount,amount,perLevel,false,true};break;
+            case KDisarm:d.npcDisarm=true;break;
+            case KDodge:d.npcDodge={amount,amount,perLevel,false,true};break;
+            case KParry:d.npcParry={amount,amount,perLevel,false,true};break;
+            case KBlock:d.npcBlock={amount,amount,perLevel,false,true};break;
+            case KDamagePct:d.npcDamagePct={amount,amount,perLevel,false,true};d.npcDamagePctSchool=uint8_t(misc);break;
+            case KDamageFlat:d.npcDamageFlat={amount,amount,perLevel,false,true};d.npcDamageFlatSchool=uint8_t(misc);break;
+            case KAttackPower:d.npcAttackPower={amount,amount,perLevel,false,true};break;
+            case KAbsorb:d.npcAbsorb=range();d.npcAbsorbSchool=uint8_t(misc);break;
+            case KSchoolImmunity:d.npcSchoolImmunity=uint8_t(misc);break;
+            case KDamageImmunity:d.npcDamageImmunity=uint8_t(misc);break;
+            case KMechanicImmunity:d.npcMechanicImmunity|=1u<<uint32_t(misc);break;
+            case KMaxHealth:d.npcMaxHealth={amount,amount,perLevel,false,true};break;
+            case KMaxHealthPct:d.npcMaxHealthPct={amount,amount,perLevel,false,true};break;
+            case KDamageShield:d.npcDamageShield=range();break;
+            case KProcTrigger:d.npcProcSpellId=trigger;break;
+            case KProcDamage:d.npcProcDamage=range();break;
+            case KSummon:break;
+        }
+    }
+    if(shape==NoShape){if(cosmeticShape==NoShape){if(!cosmeticFree){unavailable("No supported creature effect");return;}shape=Self;}else shape=cosmeticShape;}
+    if(d.npcGroundAura&&unitAuras){unavailable("Mixed creature ground and unit auras");return;}
+    if((d.npcSummonEntry||d.npcGroundAura)&&(d.npcNextSwing||d.npcChannel||d.npcChainTargets)){unavailable("Unsupported creature summon shape");return;}
+    if(d.npcChainTargets)for(uint32_t k=0;k<3;++k)if(u(71+k)&&realEffect[k]&&chainKinds[k]!=d.npcChainTargets){unavailable("Unsupported creature chain shape");return;}
+    const bool weapon=d.npcWeaponEffect||d.npcWeaponPercent;
+    if(d.damage&&weapon){unavailable("Mixed creature weapon and school damage");return;}
+    if(d.npcLeech&&weapon){unavailable("Mixed creature leech and weapon damage");return;}
+    if(weapon&&shape!=Enemy&&shape!=Cone&&shape!=Aoe){unavailable("Unsupported creature weapon shape");return;}
+    if(d.npcNextSwing&&(shape==AoeTarget||shape==AoeAlly||shape==AoeDest)){unavailable("Unsupported creature next-swing shape");return;}
+    if(d.npcChannel&&(d.npcChainTargets||!d.durationMs||d.npcNextSwing||shape==AoeTarget||shape==AoeDest)){unavailable("Unsupported creature channel shape");return;}
+    if((shape==AoeTarget||shape==AoeDest)&&weapon){unavailable("Unsupported creature weapon shape");return;}
+    if(u(212)>255){unavailable("Unsupported creature target count");return;}
+    d.npcTargetShape=shape;d.npcPositive=shape==Self||shape==AoeAlly;d.npcCosmetic=!anyReal||cosmeticAura;
+    d.npcUtility=anyReal&&utilityOnly;
+    d.npcMaxTargets=uint8_t(u(212));
+    d.healingSelfOnly=d.npcPositive;d.buffSelfOnly=false;
+}
+
 /// Decode one Spell.dbc row into the local ruleset's shape. Sets
 /// `unsupportedReason` for anything this simulation cannot honestly run and
 /// returns whether the spell came through supported.
@@ -617,7 +986,9 @@ inline bool decodeClientFormResourceTalent(const ClientSpellTables& t,uint32_t r
 /// This is the original starter-spell decoder, moved out whole so the class
 /// abilities selected from SkillLineAbility.dbc go through exactly the same
 /// rules. Build 12340 column layout, matching Data/expansions/wotlk/dbc_layouts.json.
-inline bool decodeClientSpell(const ClientSpellTables& t, uint32_t row, LocalSpellDefinition& d) {
+// creatureCaster: the row is decoded for a creature. SpellInfo::CalcPowerCost
+// never reads ManaCostPerlevel (column 43), so it does not block such a row.
+inline bool decodeClientSpell(const ClientSpellTables& t, uint32_t row, LocalSpellDefinition& d, bool creatureCaster=false) {
     const auto u=[&](uint32_t col){return t.spells->getUInt32(row,col);};
     const auto i=[&](uint32_t col){return t.spells->getInt32(row,col);};
     const auto f=[&](uint32_t col){return t.spells->getFloat(row,col);};
@@ -657,6 +1028,7 @@ inline bool decodeClientSpell(const ClientSpellTables& t, uint32_t row, LocalSpe
         else d.effectAura[k]=uint16_t(u(95+k));
     }
     d.sourceNoThreat=(u(5)&0x400u)!=0;d.sourceChanneled=(u(5)&0x44u)!=0;d.sourceDotStackingRule=(u(7)&0x80u)!=0;
+    d.sourceAbilityOrTrade=(u(4)&(0x10u|0x20u))!=0;
     // P05 shared combat inputs : SpellLevel (column 39), the three
     // attribute bits the melee-class hit roll, the block and the initial threat
     // read (SharedDefines.h:391, :484, :498), and the two custom attributes
@@ -760,10 +1132,13 @@ inline bool decodeClientSpell(const ClientSpellTables& t, uint32_t row, LocalSpe
     const bool snare=decodeClientNpcSnare(t,row,d);
     const bool combo=decodeClientComboProfile(t,row,d);
     const bool summonPet=decodeClientSummonPetProfile(t,row,d);
-    const bool areaAura=decodeClientAreaAuraProfile(t,row,d);
+    // 2.38: a creature caster's persistent area auras and summons are the
+    // creature effect decoder's (decodeCreatureEffects); the reviewed raid
+    // area aura profile speaks for player spells alone.
+    const bool areaAura=creatureCaster?false:decodeClientAreaAuraProfile(t,row,d);
     // Higher Claw ranks carry legacy proc flags, but their exact profile has
     // no aura/trigger effect that could install a proc. No generic bypass.
-    if((u(spell335::ProcFlags)||u(spell335::ProcCharges))&&!reactive&&!earthShield&&!molten&&!combo&&simpleShield!=SimpleShieldKind::Mana)
+    if((u(spell335::ProcFlags)||u(spell335::ProcCharges))&&!reactive&&!earthShield&&!molten&&!combo&&simpleShield!=SimpleShieldKind::Mana&&!creatureCaster)
         unavailable("This proc family or its trigger conditions are not implemented");
     // Spell.dbc column 38 is BaseLevel and column 39 is SpellLevel
     // (DBCStructure.h:1679-1680). previously both this field and d.spellLevel
@@ -775,7 +1150,9 @@ inline bool decodeClientSpell(const ClientSpellTables& t, uint32_t row, LocalSpe
     // (Unit.cpp:3211-3220) and the pet-availability tests (Spell.cpp:6333, :6355;
     // Pet.cpp:1950) read SpellLevel alone.
     d.baseLevel=u(38);d.maxLevel=u(37);d.cooldownMs=u(29);d.cooldownCategory=u(1);d.categoryCooldownMs=u(30);d.globalCooldownMs=u(206);
-    if(d.cooldownCategory>100000||d.spellFamily>1000||(d.categoryCooldownMs&&!d.cooldownCategory))unavailable("Invalid spell cooldown category metadata");
+    // A creature takes no ordinary spell cooldown at the pin (Spell::SendSpellCooldown
+    // returns before adding one), so its category metadata is not checked.
+    if(d.cooldownCategory>100000||d.spellFamily>1000||(!creatureCaster&&d.categoryCooldownMs&&!d.cooldownCategory))unavailable("Invalid spell cooldown category metadata");
     if(d.resourceType==1||d.resourceType==6) d.mana=(d.mana+9)/10; // displayed rage/runic units
     if(u(41)!=0&&u(41)!=1&&u(41)!=3&&u(41)!=5&&u(41)!=6)
         unavailable("This power system is not implemented");
@@ -796,9 +1173,12 @@ inline bool decodeClientSpell(const ClientSpellTables& t, uint32_t row, LocalSpe
         }
     }
     if(u(41)==5&&(d.mana||d.manaPercent)) unavailable("Rune spell has a non-rune resource cost");
-    if(u(43)||u(44)||u(45)) unavailable("Scaling or periodic resource costs are not implemented");
-    if(u(4)&0x404u) unavailable("Next-swing attacks are not implemented");
-    if(u(5)&0x44u) unavailable("Channeled spells are not implemented");
+    if((u(43)&&!creatureCaster)||u(44)||u(45)) unavailable("Scaling or periodic resource costs are not implemented");
+    // A creature's next-swing special replaces its next main-hand swing
+    // (Unit::AttackerStateUpdate casts CURRENT_MELEE_SPELL instead).
+    if(u(4)&0x404u){if(creatureCaster)d.npcNextSwing=true;else unavailable("Next-swing attacks are not implemented");}
+    d.sourceNoAttackDodge=(u(11)&0x00800000u)!=0;d.sourceNoAttackParry=(u(11)&0x01000000u)!=0;d.sourceNoAttackMiss=(u(11)&0x02000000u)!=0;
+    if(u(5)&0x44u){if(creatureCaster)d.npcChannel=true;else unavailable("Channeled spells are not implemented");}
     // A form boost's applicability is HandleShapeshiftBoosts's switch, not this
     // column: 21178 and 7381 carry Stances = 0 and are still cast for forms 5/8
     // and form 19. decodeClientFormBoost has already written the switch's mask.
@@ -820,6 +1200,10 @@ inline bool decodeClientSpell(const ClientSpellTables& t, uint32_t row, LocalSpe
     else if(t.casts->getInt32(castRow,1)<0||t.casts->getInt32(castRow,1)>60000||t.casts->getInt32(castRow,2)!=0)
         unavailable("Variable or invalid cast time is not implemented");
     else d.castTimeMs=uint32_t(t.casts->getInt32(castRow,1));
+    // SpellInfo::CalcCastTime: a creature's USES_RANGED_SLOT spell (not
+    // auto-repeat) takes 500 ms more; a creature's cast-speed and ranged-haste
+    // multipliers are 1.
+    if(creatureCaster&&(u(4)&0x2u)&&!(u(6)&0x20u)&&d.castTimeMs<=59500)d.castTimeMs+=500;
     const auto durationRow=ClientSpellTables::lookup(t.durationIndex,u(40));
     if(u(40)&&durationRow<0) unavailable("Duration record missing");
     else if(durationRow>=0) {
@@ -834,7 +1218,7 @@ inline bool decodeClientSpell(const ClientSpellTables& t, uint32_t row, LocalSpe
     if(snare&&(!d.durationMs||d.durationMs>600000))unavailable("Invalid NPC snare duration");
     const bool chainLightning=d.spellFamily==11 && d.spellFamilyFlags[0]==2 && !d.spellFamilyFlags[1] && !d.spellFamilyFlags[2] && u(71)==2;
     const bool chainHeal=d.spellFamily==11 && d.spellFamilyFlags[0]==256 && !d.spellFamilyFlags[1] && !d.spellFamilyFlags[2] && u(71)==10;
-    if(u(104)>1||u(105)>1||u(106)>1) {
+    if(!creatureCaster&&(u(104)>1||u(105)>1||u(106)>1)) {
         if((chainLightning||chainHeal)&&u(104)==3&&!u(72)&&!u(73)&&!(u(6)&0x1000u)&&
            std::isfinite(f(216))&&f(216)>0&&f(216)<=1) {
             d.chainTargets=3;d.chainMultiplierPermille=uint16_t(std::lround(f(216)*1000));
@@ -865,7 +1249,8 @@ inline bool decodeClientSpell(const ClientSpellTables& t, uint32_t row, LocalSpe
         // that distinction explicit instead of applying a slot mod twice.
         d.directEffectSlot=++directAmountEffects==1?uint8_t(effect):255;
     };
-    for(uint32_t effect=0;effect<3;++effect) {
+    if(creatureCaster){decodeCreatureEffects(t,row,d,unavailable);harm=!d.npcPositive;healing=d.npcPositive;}
+    else for(uint32_t effect=0;effect<3;++effect) {
         const auto type=u(71+effect); if(!type) continue;
         if(molten||ward){buff=true;buffTarget=1;continue;}
         if(summonPet)continue; // Reviewed controlled-summon shape; verified above.
@@ -880,6 +1265,55 @@ inline bool decodeClientSpell(const ClientSpellTables& t, uint32_t row, LocalSpe
         if(type==6 && (u(95+effect)==3 || u(95+effect)==8) && (u(spell335::ProcFlags)||u(spell335::ProcCharges)||u(116+effect)))
             unavailable("Periodic proc, charge or triggered effects are not implemented");
         if(snare&&(effect==0||(effect==2&&d.snareZeroHealingMarker))){harm=true;continue;}
+        // A creature caster's hostile slow or armor reduction (generated SmartAI
+        // family). SpellEffectInfo::CalcValue: base points, +1 for a one-sided
+        // die, RealPointsPerLevel on the caster level; creature level scaling
+        // never applies to these two aura types. Only fixed-size, single-target
+        // shapes with a real duration are admitted.
+        if(creatureCaster&&type==6&&(u(95+effect)==33||((u(95+effect)==22||u(95+effect)==101)&&u(110+effect)==1))) {
+            const int32_t amount=i(80+effect)+(u(74+effect)==1?1:0);
+            const float perLevel=f(77+effect);
+            const bool slowAura=u(95+effect)==33,percentAura=u(95+effect)==101;
+            if(target!=6||secondary||u(74+effect)>1||!std::isfinite(perLevel)||u(116+effect)||
+               !d.durationMs||d.durationMs>600000||u(spell335::ProcFlags)||u(spell335::ProcCharges))
+                unavailable("Unsupported creature aura shape");
+            else if(slowAura&&(perLevel!=0||amount<=-100||amount>=0||d.npcSlowPercent))
+                unavailable("Unsupported creature slow amount");
+            else if(percentAura&&(perLevel!=0||amount<=-100||amount>=0||d.npcArmorPercent))
+                unavailable("Unsupported creature armor percentage");
+            else if(!slowAura&&!percentAura&&(perLevel>0||perLevel<-1000||amount>=0||amount<-100000||d.npcArmorAmount))
+                unavailable("Unsupported creature armor reduction amount");
+            else if(slowAura)d.npcSlowPercent=uint8_t(-amount);
+            else if(percentAura)d.npcArmorPercent=int8_t(amount);
+            else {d.npcArmorAmount=amount;d.npcArmorPerLevel=perLevel;}
+            harm=true;continue;
+        }
+        // A creature's stun or root on a player: one aura, a real duration, not
+        // broken by damage (AURA_INTERRUPT_FLAG_TAKE_DAMAGE stays unmodelled).
+        if(creatureCaster&&type==6&&(u(95+effect)==12||u(95+effect)==26)) {
+            if(target!=6||secondary||u(116+effect)||!d.durationMs||d.durationMs>600000||
+               (u(spell335::AuraInterruptFlags)&0x2u)||d.npcPlayerControl||u(spell335::ProcFlags)||u(spell335::ProcCharges))
+                unavailable("Unsupported creature control shape");
+            else d.npcPlayerControl=u(95+effect)==12?1:2;
+            harm=true;continue;
+        }
+        // A creature's melee weapon special (Spell::EffectWeaponDmg).
+        if(creatureCaster&&(type==17||type==31||type==58||type==121)) {
+            const int32_t base=i(80+effect),dice=i(74+effect);const float perLevel=f(77+effect);
+            if(u(213)!=2||target!=6||secondary||u(116+effect)||dice<0||dice>100000||!std::isfinite(perLevel)||std::abs(perLevel)>10000)
+                unavailable("Unsupported creature weapon effect");
+            else if(type==31) {
+                const int32_t amount=base+(dice==1?1:0);
+                if(dice>1||perLevel!=0||amount<=0||amount>1000||d.npcWeaponPercent)unavailable("Unsupported creature weapon percentage");
+                else {d.npcWeaponPercent=uint16_t(amount);d.npcWeaponPercentFirst=!d.npcWeaponEffect;}
+            } else if(d.npcWeaponEffect||base+(dice>=1?1:0)<0||base>100000)unavailable("Unsupported creature weapon damage bonus");
+            else {
+                // CalcValue: BasePoints plus irand(1, DieSides) (nothing for 0 sides).
+                d.npcWeaponEffect=true;d.npcWeaponScales=type!=17;d.npcWeaponBonus=uint32_t(base+(dice>=1?1:0));
+                d.npcWeaponBonusMax=d.npcWeaponBonus+(dice>1?uint32_t(dice-1):0);d.npcWeaponBonusPerLevel=perLevel;
+            }
+            harm=true;continue;
+        }
         const auto base=i(80+effect), dice=i(74+effect);const auto scale=f(77+effect);
         const float perCombo=f(119+effect);
         if(base < -1 || base > 100000 || dice<0 || dice>100000 || !std::isfinite(scale)||std::abs(scale)>10000 ||
@@ -986,11 +1420,11 @@ inline bool decodeClientSpell(const ClientSpellTables& t, uint32_t row, LocalSpe
             else {d.dispelProfile=1;d.dispelAttempts=uint8_t(low);harm=true;}
         } else unavailable("Unsupported effect "+std::to_string(type)+(type==6?" / aura "+std::to_string(u(95+effect)):""));
     }
-    if(harm&&!d.schoolMask)unavailable("Damaging spell has no school");
+    if(harm&&!d.schoolMask&&(!creatureCaster||d.damage||d.periodicDamage))unavailable("Damaging spell has no school");
     if(buff&&(harm||healing)) unavailable("Mixed stat buffs and other effects are not implemented");
     if(harm&&healing) unavailable("Mixed hostile/friendly spells are not implemented");
     if(!harm&&!healing&&!buff&&!d.formId&&!formBoost&&!formResource&&!summonPet&&!areaAura&&!d.controlProfile) unavailable("No supported direct or periodic damage/healing effect");
-    d.healingSelfOnly=healingTarget==1;d.buffSelfOnly=d.formId!=0||formBoost||formResource||buffTarget==1;
+    if(!creatureCaster){d.healingSelfOnly=healingTarget==1;d.buffSelfOnly=d.formId!=0||formBoost||formResource||buffTarget==1;}
     const auto rangeRow=ClientSpellTables::lookup(t.rangeIndex,u(46));
     if(rangeRow<0) unavailable("Range record missing");
     else {
@@ -1000,7 +1434,7 @@ inline bool decodeClientSpell(const ClientSpellTables& t, uint32_t row, LocalSpe
         const auto rangeFlags=t.ranges->getUInt32(rangeRow,5);
         if(rangeFlags>2)unavailable("Range record carries an unknown range type");
         else d.sourceRangeFlags=uint8_t(rangeFlags);
-        if(!std::isfinite(d.range)||!std::isfinite(d.minRange)||d.minRange<0||d.range<d.minRange||d.range>100)
+        if(!std::isfinite(d.range)||!std::isfinite(d.minRange)||d.minRange<0||d.range<d.minRange||d.range>(creatureCaster?50000.f:100.f))
             unavailable("Invalid or unsupported range");
     }
     if(d.mana>100000||d.manaPercent>100||d.cooldownMs>3600000||d.categoryCooldownMs>3600000||d.globalCooldownMs>60000)
@@ -1122,19 +1556,21 @@ inline bool decodeClientCastModifierTalent(const ClientSpellTables& t,uint32_t r
         // Operations 18 and 26 are the proc chance and PPM modifiers
         // Aura::CalcProcChance consumes. They were rejected here, which made the
         // shared arithmetic that consumes them unreachable against real data.
-        if(u(71+e)!=6 || !((aura==107 && (op==0||op==3||op==5||op==10||op==11||op==18||op==22||op==26)) || (aura==108 && (op==0||op==2||op==3||op==5||op==9||op==14||op==11||op==18||op==22||op==26))) ||
+        if(u(71+e)!=6 || !((aura==107 && (op==0||op==1||op==3||op==5||op==7||op==10||op==11||op==12||op==16||op==18||op==21||op==22||op==23||op==26)) || (aura==108 && (op==0||op==1||op==2||op==3||op==5||op==7||op==9||op==11||op==12||op==14||op==16||op==18||op==21||op==22||op==23||op==26))) ||
            (u(86+e)!=1 && !(e>0&&u(86+e)==0&&u(71)==6&&u(86)==1)) || u(89+e) || u(74+e)>1 || t.spells->getFloat(row,77+e)!=0 ||
            u(83+e) || u(92+e) || u(98+e) || u(104+e) || u(113+e) || u(116+e) ||
            t.spells->getFloat(row,119+e)!=0)return false;
         const int64_t amount=int64_t(i(80+e))+1;
-        const bool increases=op==0||op==3||op==5||op==9||op==22;
+        const bool increases=op==0||op==3||op==5||op==7||op==9||op==12||op==16||op==22||op==23;
         // The reference places no ceiling on a chance/PPM modifier; the largest
         // real values in the whole population are +100 flat and +100 percent,
         // and +75 percent for op 26. Keep this build's bounded-record discipline
         // rather than the reference's absence of one.
         if(op==18||op==26) {
             if(!amount||amount>(aura==108?1000:100000)||amount<(aura==108?-100:-100000))return false;
-        } else if(increases ? amount<=0||amount>(aura==108||op==5?100:100000) :
+        } else if(op==1) {
+            if(!amount || amount>(aura==108?1000:600000) || amount<(aura==108?-100:-600000))return false;
+        } else if(increases ? amount<=0||amount>(aura==108||(op==5||op==7||op==16)?100:100000) :
            amount>=0||amount<(aura==108?-100:op==11?-3600000:-60000))return false;
         auto& mod=modifiers[e];mod.operation=uint8_t(op);mod.percentage=aura==108;mod.active=true;mod.amount=int32_t(amount);
         for(unsigned k=0;k<3;++k)mod.mask[k]=u(spell335::EffectClassMask+e*3+k);
@@ -1611,31 +2047,27 @@ inline void importClientTalents(LocalSpellImport& out,const pipeline::DBCFile* t
                 }
                 const bool relevant=mod.operation==2?(cast.damage||cast.heal||cast.periodicDamage||cast.periodicHeal):
                     mod.operation==0?(cast.damage||cast.heal):
-                    mod.operation==12?cast.wardProfile!=0:
-                    mod.operation==22?(cast.periodicDamage||cast.periodicHeal):
+                    mod.operation==1?cast.durationMs!=0:
+                    mod.operation==3?cast.directEffectSlot==0||cast.periodicEffectSlot==0:
                     mod.operation==5?cast.range>0:
+                    mod.operation==7?(cast.damage||cast.heal||cast.periodicDamage||cast.periodicHeal):
                     mod.operation==8?cast.buffArmor>0:
                     mod.operation==10?cast.castTimeMs!=0:
+                    mod.operation==11?(cast.cooldownMs || (cast.categoryCooldownMs&&!cast.noCategoryCooldownMods)):
+                    // A ward's second effect is the Molten Shields reflect
+                    // (mage.cpp), carried by wardProfile rather than a slot.
+                    mod.operation==12?cast.directEffectSlot==1||cast.periodicEffectSlot==1||(cast.wardProfile&&talent.moltenShieldsChancePct):
                     mod.operation==14?(cast.resourceType==0||cast.resourceType==1||cast.resourceType==3||cast.resourceType==6)&&(cast.mana||cast.manaPercent):
-                    mod.operation==11&&(cast.cooldownMs || (cast.categoryCooldownMs&&!cast.noCategoryCooldownMods));
+                    mod.operation==16?(cast.damage||cast.periodicDamage||cast.controlProfile||cast.snarePercent):
+                    mod.operation==21?cast.globalCooldownMs!=0:
+                    mod.operation==22?(cast.periodicDamage||cast.periodicHeal):
+                    mod.operation==23?cast.directEffectSlot==2||cast.periodicEffectSlot==2:false;
                 if(!relevant)continue;
                 for(unsigned k=0;k<3;++k)if(cast.spellFamilyFlags[k]&mod.mask[k])return true;
             }
             return false;
         });
-        // Effect-index modifier 3 is implemented for reviewed one-effect
-        // proc leaves only; never accept it for an executable ordinary spell
-        // while silently omitting its first effect adjustment.
-        const bool otherFirstEffect=std::any_of(out.spells.begin(),out.spells.end(),[&](const auto& cast){
-            if(cast.passive||!cast.unsupportedReason.empty()||cast.proc.effect!=LocalProcEffect::None||cast.spellFamily!=talent.spellFamily)return false;
-            for(const auto& mod:talent.passiveCastModifiers)if(mod.active&&mod.operation==3)
-                for(unsigned k=0;k<3;++k)if(mod.mask[k]&cast.spellFamilyFlags[k])return true;
-            return false;
-        });
-        if(otherFirstEffect) {
-            talent.unsupportedReason="First-effect modifiers for ordinary spells are not implemented yet";
-            for(auto& row:out.audit)if(row.talent&&row.id==talent.id)row.status=talent.unsupportedReason;
-        } else if(!hasTarget) {
+        if(!hasTarget) {
             talent.unsupportedReason="Affected spells are not implemented for this modifier";
             for(auto& row:out.audit)if(row.talent && row.id==talent.id)row.status=talent.unsupportedReason;
         }
@@ -1664,7 +2096,8 @@ inline LocalSpellImport importClientStarterSpells(
     const pipeline::DBCFile* skillLine = nullptr,
     const pipeline::DBCFile* talents = nullptr,
     const pipeline::DBCFile* runeCosts = nullptr,
-    const pipeline::DBCFile* radii = nullptr) {
+    const pipeline::DBCFile* radii = nullptr,
+    const pipeline::DBCFile* summonProperties = nullptr) {
     struct Starter { uint32_t id; uint8_t cls; };
     constexpr Starter starters[] = {{78,1},{635,2},{21084,2},{75,3},{2973,3},
         {1752,4},{2098,4},{585,5},{2050,5},{45462,6},{45477,6},{45902,6},
@@ -1683,6 +2116,8 @@ inline LocalSpellImport importClientStarterSpells(
         detail::ClientSpellTables::buildIndex(casts,tables.castIndex);
         detail::ClientSpellTables::buildIndex(durations,tables.durationIndex);
         if(valid(radii,4)){tables.radii=radii;detail::ClientSpellTables::buildIndex(radii,tables.radiusIndex);}
+        // SummonProperties.dbc: 6 fields in 12340 (id, category, faction, type, slot, flags).
+        if(valid(summonProperties,6)){tables.summons=summonProperties;detail::ClientSpellTables::buildIndex(summonProperties,tables.summonIndex);}
         if(valid(runeCosts,5)) {tables.runeCosts=runeCosts;detail::ClientSpellTables::buildIndex(runeCosts,tables.runeCostIndex);}
         if(valid(icons,2)) {tables.icons=icons;detail::ClientSpellTables::buildIndex(icons,tables.iconIndex);}
     }

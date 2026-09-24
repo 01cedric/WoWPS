@@ -64,6 +64,7 @@
         }
         if(!localOutcomeNullifiesDamage(outcome))breakNpcControlsOnDamage(*target,spell->id,spell);
         if(damage&&!target->lootOwner)target->lootOwner=owner->guid;
+        npcLowerPlayerDamageReq(*target,damage,false);
         if(!localOutcomeNullifiesDamage(outcome))addThreat(*target,summon->guid,std::max<uint64_t>(1,uint64_t(damage)*1000));
         selectThreatTarget(*target,players);
         const uint32_t effective=std::min(damage,target->health);
@@ -103,7 +104,8 @@
                 // Imp passive 61013 / spell_pet_hit_expertise_scalling
                 // truncates the owner's spell-hit percentage to an aura int.
                 const int inheritedHit=int(localSpellHitRatingPercent(*owner,*content));
-                const int hit=(difference<3?96-difference:94-(difference-2)*11)+inheritedHit;
+                const int talentHit=localTalentCastModifier(*owner,*content,*spell,16,false);
+                const int hit=(difference<3?96-difference:94-(difference-2)*11)+inheritedHit+talentHit;
                 if(meleeRoll()+1<uint32_t(10000-std::clamp(hit*100,100,10000)))outcome=LocalMeleeOutcome::Miss;
             }
             const auto level=std::min(uint32_t(summon->level),spell->maxLevel);
@@ -123,7 +125,10 @@
             // Unit constructor m_baseSpellCritChance=5; SpellDoneCritChance
             // uses that for an owned creature, never the player's intellect or
             // entire player critical chance. No pet critical aura is admitted.
-            if(outcome==LocalMeleeOutcome::Hit&&meleeRoll()<500) {
+            const int petCritFlat=localTalentCastModifier(*owner,*content,*spell,7,false);
+            const int petCritPct=localTalentCastModifier(*owner,*content,*spell,7,true);
+            const int petCrit=std::clamp((5+petCritFlat)*(100+petCritPct)/100,0,100);
+            if(outcome==LocalMeleeOutcome::Hit&&meleeRoll()<uint32_t(petCrit*100)) {
                 outcome=LocalMeleeOutcome::Critical;damage=localMagicCriticalAmount(damage);
             }
             LocalCombatEvent event{0,summon->guid,target->guid,spell->id,summon->mapId,summon->instanceId,0,0,0,LocalCombatEventKind::SpellCast};

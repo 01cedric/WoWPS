@@ -46,6 +46,64 @@ def quest_rewards(q):
     return {'rewardItem':first['itemId'],'rewardCount':first['count'],
             'additionalRewards':fixed[1:],'rewardChoices':choices}
 
+def quest_reputation_rewards(q):
+    out=[]
+    for i in range(1,6):
+        faction=q.get(f'rewardfactionid{i}',0)
+        value=q.get(f'rewardfactionvalue{i}',0)
+        override=q.get(f'rewardfactionoverride{i}',0)
+        if not faction:
+            continue
+        if not 0 < faction <= 0xffffffff or not -9 <= value <= 9:
+            raise ValueError('invalid quest reputation reward')
+        out.append({'factionId':faction,'valueId':value,'overrideValue':override})
+    return out
+
+NEUTRAL_FACTIONS = {7,25,31,32,45,49,73,90,91}
+AGGRESSIVE_FACTIONS = {14,16,18,21,22,26,28,36,38,40,41,44,48,67,168,189}
+
+
+def npc_record(e, t, stats, models, model_info, immunities, resistances, respawn_seconds, hostile, aggressive_faction, quest_giver, loot):
+    """One catalog NPC definition from its creature_template row (the shared
+    formulas of the compiler and of patch_summon_catalog.py)."""
+    level=max(1,min(83,t['minlevel']))
+    st=stats.get((level,t['unit_class']),stats.get((level,1)))
+    if not st:raise ValueError(f'Missing level stats: {e}/{level}')
+    expansion=min(2,max(0,t['exp']))
+    npc={'id':e,'name':clean(t['name']) or 'Unnamed creature','displayId':models[e]['creaturedisplayid'],'level':level,'faction':t['faction'],
+      'unitFlags':t['unit_flags'], 'health':min(1000000000,max(1,round(st[f'basehp{expansion}']*t['healthmodifier']))),
+      'damage':max(1,round((st['damage_base']+st['attackpower']/14)*2*t['damagemodifier'])),
+      'armor':max(0,round(st['basearmor']*t['armormodifier']/20)),'hostile':hostile,
+      'questGiver':quest_giver,'respawnSeconds':respawn_seconds,
+      'aggroRadius':min(20,max(0,t['detection_range'])) if hostile and aggressive_faction else 0,
+      'loot':loot, 'xp':max(10,round((level*5+45)*t['experiencemodifier'])),
+      'money':max(0,round((t['mingold']+t['maxgold'])/2)),
+      'upstreamAI':t['ainame'],'upstreamScript':t['scriptname']}
+    if t['creatureimmunitiesid']:
+        immunity=immunities.get(t['creatureimmunitiesid'])
+        if immunity is None:raise ValueError(f"creature {e} names a missing creature_immunities set {t['creatureimmunitiesid']}")
+        if not 0<=immunity['schoolmask']<=127 or not 0<=immunity['mechanicsmask']<2**64:raise ValueError(f'invalid immunity set {immunity}')
+        if immunity['schoolmask']:npc['immuneSchoolMask']=immunity['schoolmask']
+        if immunity['mechanicsmask']:npc['immuneMechanicsMask']=immunity['mechanicsmask']
+    if e in resistances and any(resistances[e]):npc['resistances']=list(resistances[e])
+    # P05 combat reach and bounding radius, exactly as Creature::SetObjectScale
+    # derives UNIT_FIELD_COMBATREACH and UNIT_FIELD_BOUNDINGRADIUS
+    # (Creature.cpp:3536-3550): creature_model_info for the chosen display id,
+    # DEFAULT_WORLD_OBJECT_SIZE 0.389 when the row is missing or its
+    # CombatReach is not positive (ObjectDefines.h:44), the whole multiplied
+    # by that model row's DisplayScale (GetNativeObjectScale, Creature.cpp:3528).
+    # The model chosen is the same first-by-idx row `displayId` already uses.
+    info=model_info.get(models[e]['creaturedisplayid'])
+    scale=models[e]['displayscale']
+    if not 0<scale<=100:raise ValueError(f'creature {e} has an unusable DisplayScale {scale}')
+    reach=(info['combatreach'] if info and info['combatreach']>0 else DEFAULT_WORLD_OBJECT_SIZE)*scale
+    radius=(info['boundingradius'] if info and info['boundingradius']>0 else 0.0)*scale
+    if not 0<reach<=1000 or not 0<=radius<=1000:raise ValueError(f'creature {e} has an unusable reach/radius {reach}/{radius}')
+    npc['combatReach']=round(reach,4)
+    if radius:npc['boundingRadius']=round(radius,4)
+    return npc
+
+
 def compile_catalog(sql_dir, output, baseline=None):
     output.mkdir(parents=True, exist_ok=True)
     rows, hashes = {}, {}
@@ -87,8 +145,8 @@ def compile_catalog(sql_dir, output, baseline=None):
         if r['id'] in entries: starters.setdefault(r['quest'],r['id'])
     for r in rows['creature_questender']:
         if r['id'] in entries: enders.setdefault(r['quest'],r['id'])
-    neutral = {7,25,31,32,45,49,73,90,91}
-    aggressive = {14,16,18,21,22,26,28,36,38,40,41,44,48,67,168,189}
+    neutral = NEUTRAL_FACTIONS
+    aggressive = AGGRESSIVE_FACTIONS
     attackable = {e for e in entries if templates[e]['faction'] in neutral | aggressive and not templates[e]['npcflag']}
     direct = collections.defaultdict(list)
     for r in rows['creature_loot_template']:
@@ -105,8 +163,8 @@ def compile_catalog(sql_dir, output, baseline=None):
         elif q['rewardspell'] or q['startitem'] or q['rewardtitle']: why = 'spell/start-item/title requirement'
         elif a.get('specialflags',0) & ~4: why = 'repeat/script/exploration'
         elif a.get('exclusivegroup',0) or a.get('prevquestid',0)<0: why = 'exclusive/group prerequisite'
-        elif any(a.get(k,0) for k in ('sourcespellid','requiredskillid','requiredminrepfaction','requiredmaxrepfaction','rewardmailtemplateid')): why = 'skill/spell/reputation/mail condition'
-        elif any(q.get(k,0) for k in ('requiredfactionid1','requiredfactionid2','requireditemid5','requireditemid6')): why = 'unsupported faction/extra objective'
+        elif any(a.get(k,0) for k in ('sourcespellid','requiredskillid','rewardmailtemplateid')): why = 'skill/spell/mail condition'
+        elif any(q.get(k,0) for k in ('requireditemid5','requireditemid6')): why = 'unsupported extra objective'
         elif q['rewardmoney'] < 0: why = 'money payment'
         for i in range(1,5):
             entry,count=q[f'requirednpcorgo{i}'],q[f'requirednpcorgocount{i}']
@@ -119,8 +177,10 @@ def compile_catalog(sql_dir, output, baseline=None):
                 if item not in available_items: why=why or 'item lacks direct baseline drop'
                 else: objectives.append({'type':'collect','entry':item,'count':count})
         if len(objectives)>4: why=why or 'more than four objectives'
-        try: rewards=quest_rewards(q)
-        except ValueError: why=why or 'invalid reward item/count';rewards={}
+        try:
+            rewards=quest_rewards(q); reputation_rewards=quest_reputation_rewards(q)
+        except ValueError:
+            why=why or 'invalid reward item/count or reputation';rewards={};reputation_rewards=[]
         if not why and not objectives:
             if not q['logdescription'] and not q['questdescription']: why='empty definition'
             else: objectives=[{'type':'talk','entry':enders[qid],'count':1}]
@@ -131,7 +191,12 @@ def compile_catalog(sql_dir, output, baseline=None):
           'giverEntry':starters[qid],'turnInEntry':enders[qid],'minLevel':max(1,min(80,q['minlevel'])),
           'allowableRaces':max(0,q['allowableraces']), 'allowableClasses':max(0,a.get('allowableclasses',0)),
           'prerequisite':max(0,a.get('prevquestid',0)),'xp':max(50,q['questlevel']*80),
-          'money':max(0,q['rewardmoney']),**rewards,'objectives':objectives}
+          'requiredMinRepFaction':max(0,a.get('requiredminrepfaction',0)),
+          'requiredMinRepValue':a.get('requiredminrepvalue',0),
+          'requiredMaxRepFaction':max(0,a.get('requiredmaxrepfaction',0)),
+          'requiredMaxRepValue':a.get('requiredmaxrepvalue',0),
+          'reputationRequirements':[{'factionId':q[f'requiredfactionid{i}'],'value':q[f'requiredfactionvalue{i}']} for i in (1,2) if q[f'requiredfactionid{i}']],
+          'money':max(0,q['rewardmoney']),**rewards,'reputationRewards':reputation_rewards,'objectives':objectives}
     def remove_prerequisites():
         while True:
             removed=[qid for qid,q in quests.items() if q['prerequisite'] and q['prerequisite'] not in quests]
@@ -166,7 +231,9 @@ def compile_catalog(sql_dir, output, baseline=None):
           'inventoryType':i['inventorytype'],'slot':slot,'stack':max(1,min(1000,i['stackable'] or 1)),
           'maxHealth':max(0,stamina*10),'attack':max(0,round((i['dmg_min1']+i['dmg_max1'])/2)) if slot==1 else 0,
           'armor':max(0,round(i['armor']/10)) if slot in (2,3,4) else 0,'heal':{117:30,118:70}.get(i['entry'],0),
-          'mana':40 if i['entry']==159 else 0,'value':max(0,i['sellprice'])}
+          'mana':40 if i['entry']==159 else 0,'value':max(0,i['sellprice']),
+          'requiredReputationFaction':max(0,i['requiredreputationfaction']),
+          'requiredReputationRank':max(0,min(7,i['requiredreputationrank'])) if i['requiredreputationfaction'] else 0}
     for e in npc_loot: npc_loot[e]=[s for s in npc_loot[e] if s['itemId'] in items]
     questgivers={q[k] for q in quests.values() for k in ['giverEntry','turnInEntry']}
     # P04 creature immunity sets (SpellMgr::LoadCreatureImmunities reads all
@@ -185,41 +252,8 @@ def compile_catalog(sql_dir, output, baseline=None):
     for s in spawns:respawn[s['id1']]=min(respawn.get(s['id1'],300),max(15,s['spawntimesecs']))
     npcs={}
     for e in sorted(entries):
-        t=templates[e];level=max(1,min(83,t['minlevel']))
-        st=stats.get((level,t['unit_class']),stats.get((level,1)))
-        if not st:raise ValueError(f'Missing level stats: {e}/{level}')
-        expansion=min(2,max(0,t['exp']))
-        npcs[e]={'id':e,'name':clean(t['name']) or 'Unnamed creature','displayId':models[e]['creaturedisplayid'],'level':level,'faction':t['faction'],
-          'unitFlags':t['unit_flags'], 'health':min(1000000000,max(1,round(st[f'basehp{expansion}']*t['healthmodifier']))),
-          'damage':max(1,round((st['damage_base']+st['attackpower']/14)*2*t['damagemodifier'])),
-          'armor':max(0,round(st['basearmor']*t['armormodifier']/20)),'hostile':e in attackable,
-          'questGiver':e in questgivers,'respawnSeconds':min(300,respawn[e]),
-          'aggroRadius':min(20,max(0,t['detection_range'])) if e in attackable and t['faction'] in aggressive else 0,
-          'loot':npc_loot[e], 'xp':max(10,round((level*5+45)*t['experiencemodifier'])),
-          'money':max(0,round((t['mingold']+t['maxgold'])/2)),
-          'upstreamAI':t['ainame'],'upstreamScript':t['scriptname']}
-        if t['creatureimmunitiesid']:
-            immunity=immunities.get(t['creatureimmunitiesid'])
-            if immunity is None:raise ValueError(f"creature {e} names a missing creature_immunities set {t['creatureimmunitiesid']}")
-            if not 0<=immunity['schoolmask']<=127 or not 0<=immunity['mechanicsmask']<2**64:raise ValueError(f'invalid immunity set {immunity}')
-            if immunity['schoolmask']:npcs[e]['immuneSchoolMask']=immunity['schoolmask']
-            if immunity['mechanicsmask']:npcs[e]['immuneMechanicsMask']=immunity['mechanicsmask']
-        if e in resistances and any(resistances[e]):npcs[e]['resistances']=list(resistances[e])
-        # P05 combat reach and bounding radius, exactly as Creature::SetObjectScale
-        # derives UNIT_FIELD_COMBATREACH and UNIT_FIELD_BOUNDINGRADIUS
-        # (Creature.cpp:3536-3550): creature_model_info for the chosen display id,
-        # DEFAULT_WORLD_OBJECT_SIZE 0.389 when the row is missing or its
-        # CombatReach is not positive (ObjectDefines.h:44), the whole multiplied
-        # by that model row's DisplayScale (GetNativeObjectScale, Creature.cpp:3528).
-        # The model chosen is the same first-by-idx row `displayId` already uses.
-        info=model_info.get(models[e]['creaturedisplayid'])
-        scale=models[e]['displayscale']
-        if not 0<scale<=100:raise ValueError(f'creature {e} has an unusable DisplayScale {scale}')
-        reach=(info['combatreach'] if info and info['combatreach']>0 else DEFAULT_WORLD_OBJECT_SIZE)*scale
-        radius=(info['boundingradius'] if info and info['boundingradius']>0 else 0.0)*scale
-        if not 0<reach<=1000 or not 0<=radius<=1000:raise ValueError(f'creature {e} has an unusable reach/radius {reach}/{radius}')
-        npcs[e]['combatReach']=round(reach,4)
-        if radius:npcs[e]['boundingRadius']=round(radius,4)
+        npcs[e]=npc_record(e,templates[e],stats,models,model_info,immunities,resistances,min(300,respawn[e]),
+                           hostile=e in attackable,aggressive_faction=templates[e]['faction'] in aggressive,quest_giver=e in questgivers,loot=npc_loot[e])
     # Preserve the shipped starter's previously validated adaptation verbatim.
     if baseline:
         starter=json.loads(baseline.read_text())

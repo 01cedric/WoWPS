@@ -4812,7 +4812,9 @@ void InventoryHandler::extractContainerFields(uint64_t containerGuid, const Flat
 ItemDef InventoryHandler::buildItemDef(uint32_t entry, uint32_t stackCount,
                                        uint32_t curDur, uint32_t maxDur, uint64_t guid,
                                        uint32_t flags, int32_t randomPropertyId,
-                                       uint32_t suffixFactor) {
+                                       uint32_t suffixFactor, uint32_t permanentEnchantId,
+                                       uint32_t temporaryEnchantId,
+                                       std::array<uint32_t, 3> socketEnchantIds) {
     ItemDef def;
     def.itemId = entry;
     def.guid = guid;
@@ -4820,6 +4822,10 @@ ItemDef InventoryHandler::buildItemDef(uint32_t entry, uint32_t stackCount,
     def.curDurability = curDur;
     def.maxDurability = maxDur;
     def.maxStack = 1;
+    def.instanceFlags = flags;
+    def.permanentEnchantId = permanentEnchantId;
+    def.temporaryEnchantId = temporaryEnchantId;
+    def.socketEnchantIds = socketEnchantIds;
     // ITEM_FLAG_SOULBOUND (0x1): a BoE item that has already bound must not re-prompt.
     def.soulbound = (flags & 0x1u) != 0;
     def.randomPropertyId = randomPropertyId;
@@ -4900,7 +4906,7 @@ void InventoryHandler::rebuildOnlineInventory() {
         if (guid == 0) continue;
         auto itemIt = owner_.onlineItemsRef().find(guid);
         if (itemIt == owner_.onlineItemsRef().end()) continue;
-        owner_.inventoryRef().setEquipSlot(static_cast<EquipSlot>(i), buildItemDef(itemIt->second.entry, itemIt->second.stackCount, itemIt->second.curDurability, itemIt->second.maxDurability, guid, itemIt->second.flags, itemIt->second.randomPropertyId, itemIt->second.suffixFactor));
+        owner_.inventoryRef().setEquipSlot(static_cast<EquipSlot>(i), buildItemDef(itemIt->second.entry, itemIt->second.stackCount, itemIt->second.curDurability, itemIt->second.maxDurability, guid, itemIt->second.flags, itemIt->second.randomPropertyId, itemIt->second.suffixFactor, itemIt->second.permanentEnchantId, itemIt->second.temporaryEnchantId, itemIt->second.socketEnchantIds));
     }
 
     // Backpack slots
@@ -4909,7 +4915,7 @@ void InventoryHandler::rebuildOnlineInventory() {
         if (guid == 0) continue;
         auto itemIt = owner_.onlineItemsRef().find(guid);
         if (itemIt == owner_.onlineItemsRef().end()) continue;
-        owner_.inventoryRef().setBackpackSlot(i, buildItemDef(itemIt->second.entry, itemIt->second.stackCount, itemIt->second.curDurability, itemIt->second.maxDurability, guid, itemIt->second.flags, itemIt->second.randomPropertyId, itemIt->second.suffixFactor));
+        owner_.inventoryRef().setBackpackSlot(i, buildItemDef(itemIt->second.entry, itemIt->second.stackCount, itemIt->second.curDurability, itemIt->second.maxDurability, guid, itemIt->second.flags, itemIt->second.randomPropertyId, itemIt->second.suffixFactor, itemIt->second.permanentEnchantId, itemIt->second.temporaryEnchantId, itemIt->second.socketEnchantIds));
     }
 
     // Keyring slots
@@ -4918,7 +4924,7 @@ void InventoryHandler::rebuildOnlineInventory() {
         if (guid == 0) continue;
         auto itemIt = owner_.onlineItemsRef().find(guid);
         if (itemIt == owner_.onlineItemsRef().end()) continue;
-        owner_.inventoryRef().setKeyringSlot(i, buildItemDef(itemIt->second.entry, itemIt->second.stackCount, itemIt->second.curDurability, itemIt->second.maxDurability, guid, itemIt->second.flags, itemIt->second.randomPropertyId, itemIt->second.suffixFactor));
+        owner_.inventoryRef().setKeyringSlot(i, buildItemDef(itemIt->second.entry, itemIt->second.stackCount, itemIt->second.curDurability, itemIt->second.maxDurability, guid, itemIt->second.flags, itemIt->second.randomPropertyId, itemIt->second.suffixFactor, itemIt->second.permanentEnchantId, itemIt->second.temporaryEnchantId, itemIt->second.socketEnchantIds));
     }
 
     // Bag contents (BAG1-BAG4 are equip slots 19-22)
@@ -4971,7 +4977,7 @@ void InventoryHandler::rebuildOnlineInventory() {
 
             auto itemIt = owner_.onlineItemsRef().find(itemGuid);
             if (itemIt == owner_.onlineItemsRef().end()) continue;
-            ItemDef def = buildItemDef(itemIt->second.entry, itemIt->second.stackCount, itemIt->second.curDurability, itemIt->second.maxDurability, itemGuid, itemIt->second.flags, itemIt->second.randomPropertyId, itemIt->second.suffixFactor);
+            ItemDef def = buildItemDef(itemIt->second.entry, itemIt->second.stackCount, itemIt->second.curDurability, itemIt->second.maxDurability, itemGuid, itemIt->second.flags, itemIt->second.randomPropertyId, itemIt->second.suffixFactor, itemIt->second.permanentEnchantId, itemIt->second.temporaryEnchantId, itemIt->second.socketEnchantIds);
             // Bags inside bags need containerSlots for the UI slot-count display.
             auto bagInfoIt = owner_.itemInfoCacheRef().find(itemIt->second.entry);
             if (bagInfoIt != owner_.itemInfoCacheRef().end())

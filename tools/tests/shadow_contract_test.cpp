@@ -1,5 +1,7 @@
 #include "rendering/frustum.hpp"
 #include "rendering/shadow_fit.hpp"
+#include "rendering/shadow_receiver_hull.hpp"
+#include "../../extern/vk_mem_alloc.h"
 #include "rendering/sun_direction.hpp"
 #include "rendering/vk_frame_data.hpp"
 #include <glm/gtc/matrix_transform.hpp>
@@ -58,13 +60,27 @@ struct TestChunk {
     int32_t megaBaseVertex = 0;
     uint32_t megaFirstIndex = 0, indexCount = 0;
 };
+struct TestVkCtx {
+    uint32_t frame = 0;
+    uint32_t getCurrentFrame() const { return frame; }
+    VmaAllocator getAllocator() const { return nullptr; }
+};
 struct TerrainRenderer {
     VkPipeline shadowPipeline_ = handle<VkPipeline>(1);
     VkPipelineLayout shadowPipelineLayout_ = handle<VkPipelineLayout>(1);
     struct { VkDescriptorSet set = handle<VkDescriptorSet>(1); } shadowParams_;
     VkBuffer megaVB_ = handle<VkBuffer>(3), megaIB_ = handle<VkBuffer>(4);
+    TestVkCtx context; TestVkCtx* vkCtx = &context;
+    static constexpr uint32_t MAX_INDIRECT_DRAWS = 8192;
+    static constexpr uint32_t SHADOW_INDIRECT_SLICES = 4;
+    std::vector<VkDrawIndexedIndirectCommand> indirectStorage =
+        std::vector<VkDrawIndexedIndirectCommand>(MAX_INDIRECT_DRAWS * SHADOW_INDIRECT_SLICES);
+    VkBuffer indirectBuffer_ = reinterpret_cast<VkBuffer>(indirectStorage.data());
+    VmaAllocation indirectAlloc_ = reinterpret_cast<VmaAllocation>(1);
+    void* indirectMapped_ = indirectStorage.data();
     std::vector<TestChunk> chunks;
-    void renderShadow(VkCommandBuffer, const glm::mat4&, const glm::vec3&, float);
+    void renderShadow(VkCommandBuffer, const glm::mat4&, const glm::vec3&, float, uint32_t,
+                      const ShadowReceiverHull* = nullptr);
 };
 static std::vector<uint32_t> submitted;
 extern "C" {
@@ -77,8 +93,19 @@ void vkCmdBindIndexBuffer(VkCommandBuffer, VkBuffer, VkDeviceSize, VkIndexType) 
 void vkCmdDrawIndexed(VkCommandBuffer, uint32_t count, uint32_t, uint32_t, int32_t, uint32_t) {
     submitted.push_back(count);
 }
+void vkCmdDrawIndexedIndirect(VkCommandBuffer, VkBuffer buffer, VkDeviceSize offset,
+                              uint32_t drawCount, uint32_t stride) {
+    const auto* bytes = reinterpret_cast<const unsigned char*>(buffer) + offset;
+    for (uint32_t i = 0; i < drawCount; ++i) {
+        const auto* draw = reinterpret_cast<const VkDrawIndexedIndirectCommand*>(bytes + i * stride);
+        submitted.push_back(draw->indexCount);
+    }
 }
+VkResult vmaFlushAllocation(VmaAllocator, VmaAllocation, VkDeviceSize, VkDeviceSize) { return VK_SUCCESS; }
+}
+#define LOG_INFO(...) do {} while (0)
 #include "shadow_production.inc"
+#undef LOG_INFO
 
 // Execute the backend viewport conversion, capturing its GNM scale/offset.
 struct GnmSetViewportInfo {
@@ -163,11 +190,11 @@ int main() {
         add(7, center, false);
         assert(420.f > renderer.shadowHalfExtent_ * 1.35f + 8.f);
         submitted.clear();
-        terrain.renderShadow(nullptr, matrix, center, renderer.shadowHalfExtent_ * 1.35f);
+        terrain.renderShadow(nullptr, matrix, center, renderer.shadowHalfExtent_ * 1.35f, 0);
         assert((submitted == std::vector<uint32_t>{1, 2, 6}));
         terrain.megaVB_ = VK_NULL_HANDLE; // Same geometry on fallback buffer path.
         submitted.clear();
-        terrain.renderShadow(nullptr, matrix, center, renderer.shadowHalfExtent_ * 1.35f);
+        terrain.renderShadow(nullptr, matrix, center, renderer.shadowHalfExtent_ * 1.35f, 0);
         assert((submitted == std::vector<uint32_t>{1, 2, 6}));
     }
     std::puts("PASS production shadow projection/terrain/PS4 viewport: low sun, moon, overhead, normal light; world offsets; 0..1 depth; raster/sample XY agree; caster/receiver ordering; upstream retained, side/near/far rejected; UBO std140 offsets. CPU submission evidence only.");

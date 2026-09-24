@@ -44,6 +44,17 @@ public:
     bool item(uint32_t id, LocalItemDefinition& result, std::string& error) const;
     bool quest(uint32_t id, LocalQuestDefinition& result, std::string& error) const;
     bool questsForNpc(uint32_t id, std::vector<LocalQuestDefinition>& result, std::string& error) const;
+    // 2.39: the spawn's default movement (false when it idles or the catalog
+    // carries no motion table) and a waypoint_data path (at most 1024 nodes).
+    bool spawnMotion(uint32_t guid, LocalSpawnMotion& result) const;
+    bool waypointPath(uint32_t pathId, std::vector<LocalWaypointNode>& result, std::string& error) const;
+    bool hasMotion() const;
+    // 2.40: the gossip packs (patch_gossip_catalog.py): a creature entry's
+    // menu id and npcflag, a menu with its texts and options, an npc_text.
+    bool gossipOwner(uint32_t entry, LocalGossipOwner& result) const;
+    bool gossipMenu(uint32_t menuId, LocalGossipMenu& result, std::string& error) const;
+    bool gossipText(uint32_t textId, LocalGossipText& result, std::string& error) const;
+    bool hasGossip() const;
     uint32_t fingerprint() const;
     const std::vector<LocalCatalogStart>& starts() const;
     const std::vector<LocalCatalogMap>& maps() const;

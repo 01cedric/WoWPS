@@ -226,6 +226,13 @@ private:
 
     pipeline::AssetManager* assets_ = nullptr;
     rendering::VkContext* vkCtx_ = nullptr;
+    // Missing-art discovery is a full walk of the visible draw order. Keep the
+    // at-most-three results in reusable storage and, after an empty walk, skip
+    // one frame before looking again. On the PS4 FrameXML tree this removes
+    // half of the steady-state full-tree probes while limiting newly requested
+    // uncached art to a single-frame delay.
+    std::vector<std::pair<std::string, bool>> uploadWantedScratch_;
+    uint8_t uploadDiscoveryCooldown_ = 0;
     std::unordered_map<std::string, VkDescriptorSet> textures_;
     /// The cached set for a path, or null when nothing is cached for it -
     /// which is different from a cached kMissing, and both callers care.

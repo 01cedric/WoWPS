@@ -62,7 +62,7 @@ inline LocalDiminishingGroup localDiminishingGroupForSpell(const LocalSpellDefin
     // a spell with no hostile effect is treated as positive. Measured against
     // the player's own data it excludes none of the eighteen spells that reach
     // a group, and it is recorded as a divergence rather than as a port.
-    if(!d.damage&&!d.periodicDamage&&!d.snarePercent&&!d.controlProfile)return G::None;
+    if(!d.damage&&!d.periodicDamage&&!d.snarePercent&&!d.controlProfile&&!d.npcPlayerControl&&!d.npcWeaponEffect&&!d.npcWeaponPercent)return G::None;
     // SpellMgr.cpp:112-116: an aura-11 taunt short-circuits every other rule.
     // Nothing sets this today - aura 11 unlocks zero client spells and is not
     // admitted (the source audit §6.5) - so the branch is
@@ -222,7 +222,8 @@ inline float localDiminishingMultiplier(LocalDiminishingGroup g,uint8_t level,bo
 /// GetDiminishing resets hitCount in place when the window has closed. The
 /// window is gated on stack == 0 and measured from removal, not from the cast,
 /// so a control held for a minute never decays while it is applied.
-inline uint8_t localDiminishingRead(LocalRealmNpc& n,LocalDiminishingGroup g,uint64_t nowMs) {
+template<class Unit>
+inline uint8_t localDiminishingRead(Unit& n,LocalDiminishingGroup g,uint64_t nowMs) {
     for(auto& r:n.diminishing) {
         if(r.group!=uint8_t(g))continue;
         if(!r.hitCount||!r.hitTimeMs)return kLocalDiminishingLevel1;
@@ -236,7 +237,8 @@ inline uint8_t localDiminishingRead(LocalRealmNpc& n,LocalDiminishingGroup g,uin
 
 /// Unit.cpp:11319. A NEW record seeds at LEVEL_2, not LEVEL_1 - correct because
 /// the caller has already read the level for this cast before incrementing.
-inline void localDiminishingIncrement(LocalRealmNpc& n,LocalDiminishingGroup g,uint64_t nowMs) {
+template<class Unit>
+inline void localDiminishingIncrement(Unit& n,LocalDiminishingGroup g,uint64_t nowMs) {
     for(auto& r:n.diminishing) {
         if(r.group!=uint8_t(g))continue;
         if(r.hitCount<localDiminishingMaxLevel(g))++r.hitCount;
@@ -249,7 +251,8 @@ inline void localDiminishingIncrement(LocalRealmNpc& n,LocalDiminishingGroup g,u
 /// Unit.cpp:11412. Apply raises the stack; unapply lowers it and stamps the
 /// removal time at zero. Every path that removes a control must call this or the
 /// stack sticks and the record never decays.
-inline void localDiminishingApply(LocalRealmNpc& n,LocalDiminishingGroup g,bool apply,uint64_t nowMs) {
+template<class Unit>
+inline void localDiminishingApply(Unit& n,LocalDiminishingGroup g,bool apply,uint64_t nowMs) {
     for(auto& r:n.diminishing) {
         if(r.group!=uint8_t(g))continue;
         if(apply){if(r.stack<255)++r.stack;}

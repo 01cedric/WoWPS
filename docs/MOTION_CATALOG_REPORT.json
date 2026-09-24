@@ -1,0 +1,27 @@
+{
+ "spawnsWithMotion": 68088,
+ "idle": 44837,
+ "waypoint": 5626,
+ "random": 62462,
+ "waypointWithoutPath": 21,
+ "pathsCarried": 5722,
+ "pathsScripted": 162,
+ "pathsDropped": [
+  833750,
+  833770,
+  1386800,
+  1386810,
+  1388660,
+  1388670
+ ],
+ "nodes": 120048,
+ "nodesWithDelay": 2684,
+ "nodesWithAction": 591,
+ "nodesWithVelocity": 0,
+ "moveTypes": {
+  "0": 110905,
+  "1": 6996,
+  "2": 2147
+ },
+ "fingerprint": 3967446109
+}

@@ -28,19 +28,51 @@ inline bool validLocalInventoryLayout(const LocalRealmPlayer& p) {
     for(const auto& s:p.inventory){if(s.bagSlot>=24 || seen[s.bagSlot])return false;seen[s.bagSlot]=true;}
     return true;
 }
+inline bool validLocalItemInstance(const LocalItemStack& s) {
+    if(bool(s.itemId)!=bool(s.count))return false;
+    if(!s.itemId)return s.instance==LocalItemInstanceState{};
+    const auto& i=s.instance;
+    if(i.maxDurability && i.curDurability>i.maxDurability)return false;
+    if(!i.maxDurability && i.curDurability)return false;
+    return true;
+}
+inline bool sameLocalItemInstance(const LocalItemStack& a,const LocalItemStack& b) {
+    return a.itemId==b.itemId && a.instance==b.instance;
+}
+inline void clearLocalItemKeepSlot(LocalItemStack& s) {
+    const auto slot=s.bagSlot;s={};s.bagSlot=slot;
+}
+inline bool addLocalInventoryStack(LocalRealmPlayer& player,LocalItemStack incoming,const LocalWorldContent& content) {
+    if(!validLocalItemInstance(incoming) || !incoming.itemId || !incoming.count)return false;
+    const auto* def=content.item(incoming.itemId);if(!def)return false;
+    const uint16_t limit=std::max<uint16_t>(1,def->stack);if(incoming.count>limit)return false;
+    auto candidate=player;normalizeLocalInventory(candidate);
+    uint16_t left=incoming.count;
+    for(auto& stack:candidate.inventory){
+        if(!sameLocalItemInstance(stack,incoming) || stack.count>=limit)continue;
+        const uint16_t n=std::min<uint16_t>(left,uint16_t(limit-stack.count));stack.count+=n;left-=n;if(!left)break;
+    }
+    while(left){
+        if(candidate.inventory.size()>=LocalGameplay::MaxInventory)return false;
+        LocalItemStack copy=incoming;copy.count=std::min<uint16_t>(left,limit);copy.bagSlot=255;candidate.inventory.push_back(copy);left-=copy.count;
+    }
+    normalizeLocalInventory(candidate);player=std::move(candidate);return true;
+}
 // Move a selected quantity between two concrete cells. Caller owns candidates
 // and applies gameplay/service/equipment permissions before committing them.
 inline bool moveLocalInventoryStack(LocalItemStack& source,LocalItemStack& destination,
         uint16_t amount,const LocalWorldContent& content) {
-    const auto* a=content.item(source.itemId);if(!a || !amount || amount>source.count || source.count>a->stack)return false;
-    if(!destination.itemId){if(destination.count)return false;destination.itemId=source.itemId;destination.count=amount;source.count-=amount;}
-    else if(destination.itemId==source.itemId){
+    const auto* a=content.item(source.itemId);if(!a || !amount || amount>source.count || source.count>a->stack || !validLocalItemInstance(source) || !validLocalItemInstance(destination))return false;
+    if(!destination.itemId){
+        if(destination.count)return false;const auto destinationSlot=destination.bagSlot;destination=source;destination.bagSlot=destinationSlot;destination.count=amount;source.count-=amount;
+    } else if(sameLocalItemInstance(destination,source)){
         if(!destination.count || destination.count>a->stack || amount>a->stack-destination.count)return false;
         destination.count+=amount;source.count-=amount;
-    }else{
+    } else {
         const auto* b=content.item(destination.itemId);if(amount!=source.count || !b || !destination.count || destination.count>b->stack)return false;
-        std::swap(source.itemId,destination.itemId);std::swap(source.count,destination.count);
+        const auto sourceSlot=source.bagSlot,destinationSlot=destination.bagSlot;std::swap(source,destination);source.bagSlot=sourceSlot;destination.bagSlot=destinationSlot;
+        return true;
     }
-    if(!source.count)source.itemId=0;return true;
+    if(!source.count)clearLocalItemKeepSlot(source);return true;
 }
 }

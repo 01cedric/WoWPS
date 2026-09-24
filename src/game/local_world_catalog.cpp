@@ -23,6 +23,12 @@ uint32_t number(const Json& j,const char* key,uint32_t fallback=0,uint32_t maxim
     if(!v.is_number_integer() || v.get<int64_t>()<0 || v.get<uint64_t>()>maximum)throw std::runtime_error(std::string("Catalog number: ")+key);
     return v.get<uint32_t>();
 }
+int32_t signedNumber(const Json& j,const char* key,int32_t fallback=0,int32_t minimum=-42000,int32_t maximum=42999) {
+    if(!j.contains(key))return fallback;
+    const auto& v=j.at(key);if(!v.is_number_integer())throw std::runtime_error(std::string("Catalog signed number: ")+key);
+    const auto value=v.get<int64_t>();if(value<minimum||value>maximum)throw std::runtime_error(std::string("Catalog signed number range: ")+key);
+    return int32_t(value);
+}
 // A 64-bit unsigned field: creature_immunities.MechanicsMask is a bigint.
 uint64_t wide(const Json& j,const char* key,uint64_t fallback=0) {
     if(!j.contains(key))return fallback;
@@ -120,6 +126,17 @@ struct Records : File {
         if(offset<16+uint64_t(count)*16||!size||size>LocalWorldCatalog::MaxRecordBytes)throw std::runtime_error("Catalog record bounds: "+path);
         std::string text(size,'\0');read(offset,text.data(),size);result=Json::parse(text);return true;
     }
+    /// 2.39: a raw record (the patrol paths), bounded by `maxBytes`.
+    bool getBytes(uint32_t id,std::vector<unsigned char>& result,size_t maxBytes) const {
+        uint32_t lo=0,hi=count;std::array<unsigned char,16> row{};
+        while(lo<hi){const uint32_t mid=lo+(hi-lo)/2;read(16+uint64_t(mid)*16,row.data(),16);
+            if(u32(row.data())<id)lo=mid+1;else hi=mid;}
+        if(lo>=count)return false;
+        read(16+uint64_t(lo)*16,row.data(),16);if(u32(row.data())!=id)return false;
+        const uint64_t offset=u64(row.data()+4);const uint32_t size=u32(row.data()+12);
+        if(offset<16+uint64_t(count)*16||!size||size>maxBytes)throw std::runtime_error("Catalog record bounds: "+path);
+        result.resize(size);read(offset,result.data(),size);return true;
+    }
 };
 LocalItemStack stack(const Json& j) {
     LocalItemStack s;s.itemId=number(j,"itemId",0,UINT32_MAX);s.count=uint16_t(number(j,"count",1,65535));
@@ -130,6 +147,11 @@ LocalItemStack stack(const Json& j) {
 struct LocalWorldCatalog::Impl {
     Records cells,npcs,items,quests,contacts;
     File spawns;
+    // 2.39: optional motion table (16-byte rows by spawn guid) and the
+    // patrol paths (raw 24-byte nodes per path id).
+    File motion;Records paths;bool hasMotion=false;uint32_t motionCount=0;
+    // 2.40: optional gossip packs (12-byte owner rows by entry, the menus, the texts).
+    File gossipOwners;Records gossipMenus,gossipTexts;bool hasGossip=false;uint32_t gossipOwnerCount=0;
     uint32_t fingerprint=0;
     bool loaded=false;
     std::vector<LocalCatalogStart> starts;
@@ -166,8 +188,35 @@ bool LocalWorldCatalog::load(const std::string& directory,std::string& error) {
         if(next->spawns.bytes%28)throw std::runtime_error("Catalog spawn alignment");
         next->npcs.open(directory+"/npcs.pack",16);next->items.open(directory+"/items.pack",16);
         next->quests.open(directory+"/quests.pack",16);next->contacts.open(directory+"/contacts.pack",16);
+        std::vector<const File*> files{static_cast<File*>(&next->cells),&next->spawns,static_cast<File*>(&next->npcs),static_cast<File*>(&next->items),static_cast<File*>(&next->quests),static_cast<File*>(&next->contacts)};
+        // 2.39: the motion table and the patrol paths travel together; a
+        // catalog compiled without them (before patch_motion_catalog.py) has
+        // creatures that stand still.
+        if(j.at("files").contains("motion.pack")&&j.at("files").contains("paths.pack")) {
+            next->motion.cachePages=32;next->paths.cachePages=32;
+            next->motion.open(directory+"/motion.pack");
+            std::array<unsigned char,16> header{};next->motion.read(0,header.data(),header.size());
+            if(std::memcmp(header.data(),"WPMOT01\0",8)||u32(header.data()+12)!=16)throw std::runtime_error("Catalog motion header");
+            next->motionCount=u32(header.data()+8);
+            if(next->motionCount>1000000||16+uint64_t(next->motionCount)*16!=next->motion.bytes)throw std::runtime_error("Catalog motion bounds");
+            next->paths.open(directory+"/paths.pack",16);
+            next->hasMotion=true;
+            files.push_back(&next->motion);files.push_back(static_cast<File*>(&next->paths));
+        }
+        // 2.40: the gossip packs travel together (patch_gossip_catalog.py).
+        if(j.at("files").contains("gossip.pack")&&j.at("files").contains("gossip_texts.pack")&&j.at("files").contains("gossip_owners.pack")) {
+            next->gossipOwners.cachePages=16;next->gossipMenus.cachePages=32;next->gossipTexts.cachePages=32;
+            next->gossipOwners.open(directory+"/gossip_owners.pack");
+            std::array<unsigned char,16> header{};next->gossipOwners.read(0,header.data(),header.size());
+            if(std::memcmp(header.data(),"WPGOW01\0",8)||u32(header.data()+12)!=12)throw std::runtime_error("Catalog gossip owners header");
+            next->gossipOwnerCount=u32(header.data()+8);
+            if(next->gossipOwnerCount>1000000||16+uint64_t(next->gossipOwnerCount)*12!=next->gossipOwners.bytes)throw std::runtime_error("Catalog gossip owners bounds");
+            next->gossipMenus.open(directory+"/gossip.pack",16);next->gossipTexts.open(directory+"/gossip_texts.pack",16);
+            next->hasGossip=true;
+            files.push_back(&next->gossipOwners);files.push_back(static_cast<File*>(&next->gossipMenus));files.push_back(static_cast<File*>(&next->gossipTexts));
+        }
         // Size metadata catches partial package copies without reading the entire world.
-        for(const File* f:{static_cast<File*>(&next->cells),&next->spawns,static_cast<File*>(&next->npcs),static_cast<File*>(&next->items),static_cast<File*>(&next->quests),static_cast<File*>(&next->contacts)}) {
+        for(const File* f:files) {
             const auto name=f->path.substr(f->path.find_last_of('/')+1);
             if(!j.at("files").contains(name)||j.at("files").at(name).at("bytes").get<uint64_t>()!=f->bytes)throw std::runtime_error("Catalog file size differs from manifest: "+name);
         }
@@ -219,12 +268,110 @@ bool LocalWorldCatalog::queryImpl(uint32_t mapId,float x,float y,float z,bool us
         result.resize(nearest.size());for(size_t i=result.size();i>0;--i){result[i-1]=nearest.top().spawn;nearest.pop();}return true;
     }catch(const std::exception& e){result.clear();error=e.what();return false;}
 }
+bool LocalWorldCatalog::hasMotion() const { return impl_->loaded&&impl_->hasMotion; }
+bool LocalWorldCatalog::spawnMotion(uint32_t guid,LocalSpawnMotion& result) const {
+    result={};
+    if(!impl_->loaded||!impl_->hasMotion||!guid)return false;
+    try {
+        uint32_t lo=0,hi=impl_->motionCount;std::array<unsigned char,16> row{};
+        while(lo<hi){const uint32_t mid=lo+(hi-lo)/2;impl_->motion.read(16+uint64_t(mid)*16,row.data(),16);
+            if(u32(row.data())<guid)lo=mid+1;else hi=mid;}
+        if(lo>=impl_->motionCount)return false;
+        impl_->motion.read(16+uint64_t(lo)*16,row.data(),16);if(u32(row.data())!=guid)return false;
+        result.movementType=row[4];result.currentWaypoint=uint16_t(row[6]|row[7]<<8);result.wanderDistance=f32(row.data()+8);result.pathId=u32(row.data()+12);
+        if(result.movementType<1||result.movementType>2||!std::isfinite(result.wanderDistance)||result.wanderDistance<0||result.wanderDistance>1000||
+           (result.movementType==2&&!result.pathId)||(result.movementType==1&&result.wanderDistance<=0)){result={};return false;}
+        return true;
+    }catch(const std::exception&){result={};return false;}
+}
+bool LocalWorldCatalog::waypointPath(uint32_t pathId,std::vector<LocalWaypointNode>& result,std::string& error) const {
+    error.clear();result.clear();
+    try {
+        if(!impl_->loaded)throw std::runtime_error("World catalog not loaded");
+        if(!impl_->hasMotion||!pathId)return false;
+        std::vector<unsigned char> blob;
+        if(!impl_->paths.getBytes(pathId,blob,24*1024))return false;
+        if(blob.size()%24||blob.empty())throw std::runtime_error("Catalog path record");
+        result.reserve(blob.size()/24);
+        for(size_t at=0;at<blob.size();at+=24) {
+            const auto* p=blob.data()+at;LocalWaypointNode node;
+            node.x=f32(p);node.y=f32(p+4);node.z=f32(p+8);const float o=f32(p+12);
+            node.delayMs=u32(p+16);node.moveType=p[20];node.smooth=p[21]!=0;node.id=uint16_t(p[22]|p[23]<<8);
+            if(!std::isfinite(node.x)||!std::isfinite(node.y)||!std::isfinite(node.z)||!std::isfinite(o)||std::abs(node.x)>200000||std::abs(node.y)>200000||std::abs(node.z)>200000||
+               node.delayMs>3600000||node.moveType>3)throw std::runtime_error("Invalid catalog waypoint");
+            node.hasOrientation=o>-999.f;node.orientation=node.hasOrientation?o:0.f;
+            result.push_back(node);
+        }
+        return true;
+    }catch(const std::exception& e){result.clear();error=e.what();return false;}
+}
+bool LocalWorldCatalog::hasGossip() const { return impl_->loaded&&impl_->hasGossip; }
+bool LocalWorldCatalog::gossipOwner(uint32_t entry,LocalGossipOwner& result) const {
+    result={};
+    if(!impl_->loaded||!impl_->hasGossip||!entry)return false;
+    try {
+        uint32_t lo=0,hi=impl_->gossipOwnerCount;std::array<unsigned char,12> row{};
+        while(lo<hi){const uint32_t mid=lo+(hi-lo)/2;impl_->gossipOwners.read(16+uint64_t(mid)*12,row.data(),12);
+            if(u32(row.data())<entry)lo=mid+1;else hi=mid;}
+        if(lo>=impl_->gossipOwnerCount)return false;
+        impl_->gossipOwners.read(16+uint64_t(lo)*12,row.data(),12);if(u32(row.data())!=entry)return false;
+        result.entry=entry;result.menuId=u32(row.data()+4);result.npcFlags=u32(row.data()+8);return true;
+    }catch(const std::exception&){result={};return false;}
+}
+namespace {
+/// A bounds-checked cursor over a gossip pack record.
+struct GossipCursor {
+    const std::vector<unsigned char>& b;size_t at=0;
+    uint8_t u8(){if(at+1>b.size())throw std::runtime_error("Catalog gossip record");return b[at++];}
+    uint16_t u16(){if(at+2>b.size())throw std::runtime_error("Catalog gossip record");const uint16_t v=uint16_t(b[at]|b[at+1]<<8);at+=2;return v;}
+    uint32_t u32(){if(at+4>b.size())throw std::runtime_error("Catalog gossip record");const uint32_t v=wowee::game::u32(b.data()+at);at+=4;return v;}
+    float f32(){if(at+4>b.size())throw std::runtime_error("Catalog gossip record");const float v=wowee::game::f32(b.data()+at);at+=4;return v;}
+    std::string text(){const auto n=u16();if(at+n>b.size()||n>4096)throw std::runtime_error("Catalog gossip text");std::string s(reinterpret_cast<const char*>(b.data()+at),n);at+=n;
+        if(s.find('\0')!=std::string::npos)throw std::runtime_error("Catalog gossip text");return s;}
+    std::vector<LocalGossipCondition> conditions(){const auto n=u8();std::vector<LocalGossipCondition> out;out.reserve(n);
+        for(unsigned i=0;i<n;++i){LocalGossipCondition c;c.type=u8();c.elseGroup=u8();c.negative=u8()!=0;c.value1=u32();c.value2=u32();c.value3=u32();out.push_back(c);}return out;}
+};
+}
+bool LocalWorldCatalog::gossipMenu(uint32_t menuId,LocalGossipMenu& result,std::string& error) const {
+    error.clear();result={};
+    try {
+        if(!impl_->loaded)throw std::runtime_error("World catalog not loaded");
+        if(!impl_->hasGossip)return false;
+        std::vector<unsigned char> blob;
+        if(!impl_->gossipMenus.getBytes(menuId,blob,256*1024))return false;
+        GossipCursor c{blob};result.id=menuId;
+        const auto texts=c.u16();if(texts>64)throw std::runtime_error("Catalog gossip menu");
+        for(unsigned i=0;i<texts;++i){LocalGossipMenuText t;t.textId=c.u32();t.conditions=c.conditions();result.texts.push_back(std::move(t));}
+        const auto options=c.u16();if(options>64)throw std::runtime_error("Catalog gossip menu");
+        for(unsigned i=0;i<options;++i){LocalGossipOption o;o.id=c.u16();o.icon=c.u8();o.type=c.u8();o.npcFlag=c.u32();o.actionMenuId=c.u32();o.boxMoney=c.u32();o.boxCoded=c.u8()!=0;
+            o.text=c.text();o.boxText=c.text();o.conditions=c.conditions();result.options.push_back(std::move(o));}
+        if(c.at!=blob.size())throw std::runtime_error("Catalog gossip menu");
+        return true;
+    }catch(const std::exception& e){result={};error=e.what();return false;}
+}
+bool LocalWorldCatalog::gossipText(uint32_t textId,LocalGossipText& result,std::string& error) const {
+    error.clear();result={};
+    try {
+        if(!impl_->loaded)throw std::runtime_error("World catalog not loaded");
+        if(!impl_->hasGossip)return false;
+        std::vector<unsigned char> blob;
+        if(!impl_->gossipTexts.getBytes(textId,blob,256*1024))return false;
+        GossipCursor c{blob};result.id=textId;
+        const auto variants=c.u8();if(!variants||variants>8)throw std::runtime_error("Catalog gossip text");
+        for(unsigned i=0;i<variants;++i){LocalGossipTextVariant v;v.probability=c.f32();v.language=c.u8();v.maleText=c.text();v.femaleText=c.text();
+            for(auto& e:v.emotes)e=c.u16();
+            if(!std::isfinite(v.probability)||v.probability<0)throw std::runtime_error("Catalog gossip text");
+            result.variants.push_back(std::move(v));}
+        if(c.at!=blob.size())throw std::runtime_error("Catalog gossip text");
+        return true;
+    }catch(const std::exception& e){result={};error=e.what();return false;}
+}
 bool LocalWorldCatalog::npc(uint32_t id,LocalNpcDefinition& result,std::string& error) const {
     error.clear();try {
         if(!impl_->loaded)throw std::runtime_error("World catalog not loaded");
         Json j;if(!impl_->npcs.get(id,j))return false;LocalNpcDefinition n;
         n.id=number(j,"id",0,UINT32_MAX);if(n.id!=id)throw std::runtime_error("Catalog NPC ID mismatch");n.name=label(j,"name",96);n.displayId=number(j,"displayId",0,UINT32_MAX);n.level=uint8_t(number(j,"level",1,83));
-        n.health=number(j,"health",40);n.damage=number(j,"damage",4);n.armor=number(j,"armor");n.xp=number(j,"xp");n.money=number(j,"money");n.faction=number(j,"faction",0,UINT32_MAX);n.unitFlags=number(j,"unitFlags",0,UINT32_MAX);
+        n.health=number(j,"health",40);n.damage=number(j,"damage",4);n.armor=number(j,"armor");n.xp=number(j,"xp");n.money=number(j,"money");n.faction=number(j,"faction",0,UINT32_MAX);n.unitFlags=number(j,"unitFlags",0,UINT32_MAX);n.requiredReputationFaction=number(j,"requiredReputationFaction",0,UINT32_MAX);n.requiredReputationRank=uint8_t(number(j,"requiredReputationRank",0,7));
         if(j.contains("gossipText"))n.gossipText=label(j,"gossipText",4096,true);
         if(j.contains("subname"))n.subname=label(j,"subname",128,true);
         n.hostile=j.value("hostile",false);n.questGiver=j.value("questGiver",false);n.respawnSeconds=real(j,"respawnSeconds",30,86400);n.aggroRadius=real(j,"aggroRadius",0,100);
@@ -270,6 +417,7 @@ bool LocalWorldCatalog::item(uint32_t id,LocalItemDefinition& result,std::string
         if(!impl_->loaded)throw std::runtime_error("World catalog not loaded");
         Json j;if(!impl_->items.get(id,j))return false;LocalItemDefinition n;n.id=number(j,"id",0,UINT32_MAX);if(n.id!=id)throw std::runtime_error("Catalog item ID mismatch");
         n.name=label(j,"name",96);n.displayId=number(j,"displayId",0,UINT32_MAX);n.stack=uint16_t(number(j,"stack",1,1000));n.slot=uint8_t(number(j,"slot",0,4));n.inventoryType=uint8_t(number(j,"inventoryType",0,255));
+        n.requiredReputationFaction=number(j,"requiredReputationFaction",0,UINT32_MAX);n.requiredReputationRank=uint8_t(number(j,"requiredReputationRank",0,7));
         n.maxHealth=number(j,"maxHealth");n.attack=number(j,"attack");n.armor=number(j,"armor");n.heal=number(j,"heal");n.mana=number(j,"mana");n.value=number(j,"value");if(!n.stack)throw std::runtime_error("Zero catalog stack");result=std::move(n);return true;
     }catch(const std::exception& e){error=e.what();return false;}
 }
@@ -278,9 +426,13 @@ bool LocalWorldCatalog::quest(uint32_t id,LocalQuestDefinition& result,std::stri
         if(!impl_->loaded)throw std::runtime_error("World catalog not loaded");
         Json j;if(!impl_->quests.get(id,j))return false;LocalQuestDefinition q;q.id=number(j,"id",0,UINT32_MAX);if(q.id!=id)throw std::runtime_error("Catalog quest ID mismatch");
         q.title=label(j,"title",96);q.description=label(j,"description",1024,true);q.giverEntry=number(j,"giverEntry",0,UINT32_MAX);q.turnInEntry=number(j,"turnInEntry",0,UINT32_MAX);q.prerequisite=number(j,"prerequisite",0,UINT32_MAX);q.minLevel=uint8_t(number(j,"minLevel",1,80));
-        q.allowableRaces=number(j,"allowableRaces",0,UINT32_MAX);q.allowableClasses=number(j,"allowableClasses",0,UINT32_MAX);q.xp=number(j,"xp");q.money=number(j,"money");q.rewardItem=number(j,"rewardItem",0,UINT32_MAX);q.rewardCount=uint16_t(number(j,"rewardCount",0,65535));
+        q.allowableRaces=number(j,"allowableRaces",0,UINT32_MAX);q.allowableClasses=number(j,"allowableClasses",0,UINT32_MAX);q.requiredSkill=number(j,"requiredSkill",0,UINT32_MAX);
+        q.requiredMinRepFaction=number(j,"requiredMinRepFaction",0,UINT32_MAX);q.requiredMaxRepFaction=number(j,"requiredMaxRepFaction",0,UINT32_MAX);q.requiredMinRepValue=signedNumber(j,"requiredMinRepValue");q.requiredMaxRepValue=signedNumber(j,"requiredMaxRepValue");
+        if(j.contains("reputationRequirements")){size_t ri=0;for(const auto& r:array(j,"reputationRequirements",2)){q.requiredReputationFactions[ri]=number(r,"factionId",1,UINT32_MAX);q.requiredReputationValues[ri]=signedNumber(r,"value",0,-42000,42999);++ri;}}
+        q.xp=number(j,"xp");q.money=number(j,"money");q.rewardItem=number(j,"rewardItem",0,UINT32_MAX);q.rewardCount=uint16_t(number(j,"rewardCount",0,65535));
         if(j.contains("additionalRewards"))for(const auto& r:array(j,"additionalRewards",3))q.additionalRewards.push_back(stack(r));
         if(j.contains("rewardChoices"))for(const auto& r:array(j,"rewardChoices",6))q.rewardChoices.push_back(stack(r));
+        if(j.contains("reputationRewards"))for(const auto& r:array(j,"reputationRewards",5)){LocalQuestReputationReward rr;rr.factionId=number(r,"factionId",0,UINT32_MAX);rr.valueId=signedNumber(r,"valueId",0,-9,9);rr.overrideValue=signedNumber(r,"overrideValue",0,-4200000,4200000);q.reputationRewards.push_back(rr);}
         if(!validLocalQuestRewards(q))throw std::runtime_error("Invalid catalog quest reward bundle");
         for(const auto& o:array(j,"objectives",4)){LocalQuestObjective d;const auto t=label(o,"type",16);if(t=="kill")d.type=LocalQuestObjective::Type::Kill;else if(t=="collect")d.type=LocalQuestObjective::Type::Collect;else if(t=="talk")d.type=LocalQuestObjective::Type::Talk;else throw std::runtime_error("Unsupported catalog objective");d.entry=number(o,"entry",0,UINT32_MAX);d.count=uint16_t(number(o,"count",1,65535));if(!d.entry||!d.count)throw std::runtime_error("Zero catalog objective");q.objectives.push_back(d);}
         if(!q.giverEntry||!q.turnInEntry||!q.minLevel||q.objectives.empty())throw std::runtime_error("Incomplete catalog quest");

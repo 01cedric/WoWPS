@@ -100,20 +100,7 @@ void SRP::feed(const std::vector<uint8_t>& B_bytes,
     // linger in process memory longer than necessary.
     clearCredentials();
 
-    // Log key values for debugging auth issues
-    auto hexStr = [](const std::vector<uint8_t>& v, size_t maxBytes = 8) -> std::string {
-        std::ostringstream ss;
-        for (size_t i = 0; i < std::min(v.size(), maxBytes); ++i)
-            ss << std::hex << std::setfill('0') << std::setw(2) << static_cast<int>(v[i]);
-        if (v.size() > maxBytes) ss << "...";
-        return ss.str();
-    };
-    auto A_wire = A.toArray(true, 32);
-    auto s_dbg = s.toArray(true);
-    auto B_dbg = B.toArray(true);
-    LOG_INFO("SRP ready: A=", hexStr(A_wire), " M1=", hexStr(M1),
-             " s_nat=", s_dbg.size(), " A_nat=", A.toArray(true).size(),
-             " B_nat=", B_dbg.size());
+    LOG_DEBUG("SRP proof ready");
 }
 
 std::vector<uint8_t> SRP::computeAuthHash(const std::string& username,
@@ -163,9 +150,9 @@ void SRP::computeSessionKey() {
     LOG_DEBUG("Computing session key");
 
     // u = H(A | B) - scrambling parameter
-    // Use natural BigNum sizes to match TrinityCore's UpdateBigNumbers behavior
-    std::vector<uint8_t> A_bytes_u = A.toArray(true);
-    std::vector<uint8_t> B_bytes_u = B.toArray(true);
+    // Wrath hashes fixed-width wire values, including zero padding.
+    std::vector<uint8_t> A_bytes_u = A.toArray(true, wrathMode_ ? 32 : 0);
+    std::vector<uint8_t> B_bytes_u = B.toArray(true, wrathMode_ ? 32 : 0);
 
     std::vector<uint8_t> AB;
     AB.insert(AB.end(), A_bytes_u.begin(), A_bytes_u.end());
@@ -200,7 +187,13 @@ void SRP::computeSessionKey() {
     std::vector<uint8_t> S_bytes = S.toArray(true, 32);  // 32 bytes for WoW
 
     std::vector<uint8_t> S1, S2;
-    for (size_t i = 0; i < 16; ++i) {
+    size_t firstPair = 0;
+    if (wrathMode_) {
+        size_t first = 0;
+        while (first < S_bytes.size() && S_bytes[first] == 0) ++first;
+        firstPair = (first + 1) / 2;
+    }
+    for (size_t i = firstPair; i < 16; ++i) {
         S1.push_back(S_bytes[i * 2]);       // Even indices
         S2.push_back(S_bytes[i * 2 + 1]);   // Odd indices
     }
@@ -227,8 +220,7 @@ void SRP::computeProofs(const std::string& username) {
     std::string upperUser = username;
     std::transform(upperUser.begin(), upperUser.end(), upperUser.begin(), ::toupper);
 
-    // Compute H(N) and H(g) using natural BigNum sizes
-    // This matches TrinityCore/AzerothCore's UpdateBigNumbers behavior
+    // N is the 32-byte modulus; g is the single-byte generator.
     std::vector<uint8_t> N_bytes = N.toArray(true);
     std::vector<uint8_t> g_bytes = g.toArray(true);
 
@@ -244,10 +236,10 @@ void SRP::computeProofs(const std::string& username) {
     // Compute H(username)
     std::vector<uint8_t> user_hash = Crypto::sha1(upperUser);
 
-    // Get A, B, and salt as byte arrays - natural sizes for hash inputs
-    std::vector<uint8_t> A_bytes = A.toArray(true);
-    std::vector<uint8_t> B_bytes = B.toArray(true);
-    std::vector<uint8_t> s_bytes = s.toArray(true);
+    // Retain the padding of Wrath's 32-byte ephemeral keys and salt.
+    std::vector<uint8_t> A_bytes = A.toArray(true, wrathMode_ ? 32 : 0);
+    std::vector<uint8_t> B_bytes = B.toArray(true, wrathMode_ ? 32 : 0);
+    std::vector<uint8_t> s_bytes = s.toArray(true, wrathMode_ ? 32 : 0);
 
     // M1 = H( H(N)^H(g) | H(I) | s | A | B | K )
     std::vector<uint8_t> M1_input;

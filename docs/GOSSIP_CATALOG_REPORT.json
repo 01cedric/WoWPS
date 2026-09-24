@@ -1,0 +1,18 @@
+{
+ "owners": 3044,
+ "ownersWithMenu": 3040,
+ "ownersWithGossipFlag": 3043,
+ "menusReached": 3857,
+ "options": 3251,
+ "optionTypeDropped": 251,
+ "menus": 3820,
+ "menuTexts": 4433,
+ "optionConditionDropped": 88,
+ "menusEmpty": 37,
+ "textConditionDropped": 55,
+ "texts": 3973,
+ "textVariants": 4608,
+ "textsEmpty": 19,
+ "scriptTexts": 20,
+ "fingerprint": 4204092272
+}

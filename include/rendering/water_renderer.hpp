@@ -161,7 +161,19 @@ public:
     std::optional<glm::vec2> wateredGridPosition(const WaterSurface& surface,
                                                  float glX, float glY) const;
 
+    struct WaterQuerySample {
+        float height = 0.0f;
+        uint16_t liquidType = 0;
+        uint32_t wmoId = 0;
+        [[nodiscard]] bool fromWmo() const { return wmoId != 0; }
+    };
+
     std::optional<float> getWaterHeightAt(float glX, float glY) const;
+    /// Return one coherent liquid sample near this vertical level. Height,
+    /// liquid type and ADT/WMO ownership all come from the same surface so a
+    /// multi-storey interior cannot combine attributes from different planes.
+    std::optional<WaterQuerySample> getNearestWaterSampleAt(
+        float glX, float glY, float queryZ, float maxAbove = 15.0f) const;
     /// Like getWaterHeightAt but only returns water surfaces whose height is
     /// close to the query Z (within maxAbove units above). Avoids false
     /// underwater detection from elevated WMO water far above the camera.

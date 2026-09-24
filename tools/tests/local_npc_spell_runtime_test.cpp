@@ -1,10 +1,13 @@
 #include "local_npc_spell_fixture.hpp"
 int main() {
-    for(const auto& profile:kLocalNpcSpellProfiles) {
+    // The three originally reviewed direct-damage entries; the generated
+    // family's other rows are covered by local_npc_spell_family_test.
+    for(uint32_t entry:{4008u,4323u,5858u}) {
+        const auto& profile=*localNpcSpellProfile(entry);
         NpcSpellFixture f(profile.entry);unsigned elapsed=0;
         while(!f.game.npcs()[0].npcCastingSpellId&&elapsed<5000){f.tick();elapsed+=250;}
-        assert(f.game.npcs()[0].npcCastingSpellId==profile.spellId);
-        assert(elapsed>=profile.initialMinMs&&elapsed<=profile.initialMaxMs+250);
+        assert(f.game.npcs()[0].npcCastingSpellId==profile.spellId());
+        assert(elapsed>=profile.p1&&elapsed<=profile.p2+250);
         assert(f.spells().empty());const auto x=f.game.npcs()[0].x;
         f.tick();assert(f.game.npcs()[0].x==x);assert(f.spells().empty());
         while(f.game.npcs()[0].npcCastingSpellId&&elapsed<10000){f.tick();elapsed+=250;}
@@ -42,7 +45,7 @@ int main() {
         NpcSpellFixture f;auto n=f.game.npcs()[0];n.npcSpellTimerInitialized=true;n.npcSpellTimerMs=1;
         f.game.setRemoteNpcs({n});f.p.x=40;f.tick();const auto* profile=localNpcSpellProfile(n.entry);
         assert(f.spells().empty()&&!f.game.npcs()[0].npcCastingSpellId);
-        assert(f.game.npcs()[0].npcSpellTimerMs>=profile->repeatMinMs&&f.game.npcs()[0].npcSpellTimerMs<=profile->repeatMaxMs);
+        assert(f.game.npcs()[0].npcSpellTimerMs>=profile->p3&&f.game.npcs()[0].npcSpellTimerMs<=profile->p4);
     }
     {
         // A fully absorbed incoming NPC magic hit reaches the target's proc

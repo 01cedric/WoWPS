@@ -1563,6 +1563,20 @@ void GameHandler::beginPlayerTransportWorldTransfer(
                 " local=(", localOffset.x, ",", localOffset.y, ",", localOffset.z, ")");
 }
 
+void GameHandler::clearPendingPlayerTransportWorldTransfer() {
+    if (pendingPlayerTransportTransfer_) {
+        LOG_INFO("Transport world transfer cleared: guid=0x", std::hex,
+                 pendingPlayerTransportGuid_, std::dec,
+                 " entry=", pendingPlayerTransportEntry_,
+                 " destinationMap=", pendingPlayerTransportMapId_);
+    }
+    pendingPlayerTransportTransfer_ = false;
+    pendingPlayerTransportGuid_ = 0;
+    pendingPlayerTransportEntry_ = 0;
+    pendingPlayerTransportMapId_ = 0xFFFFFFFFu;
+    pendingPlayerTransportOffset_ = glm::vec3(0.0f);
+}
+
 bool GameHandler::completePlayerTransportWorldTransfer(
     uint64_t transportGuid, glm::vec3& worldPosition) {
     if (!pendingPlayerTransportTransfer_ || !transportManager_ ||
@@ -1592,10 +1606,7 @@ bool GameHandler::completePlayerTransportWorldTransfer(
                 pendingPlayerTransportOffset_.z, ") world=(",
                 worldPosition.x, ",", worldPosition.y, ",", worldPosition.z, ")");
 
-    pendingPlayerTransportTransfer_ = false;
-    pendingPlayerTransportGuid_ = 0;
-    pendingPlayerTransportEntry_ = 0;
-    pendingPlayerTransportMapId_ = 0xFFFFFFFFu;
+    clearPendingPlayerTransportWorldTransfer();
     return true;
 }
 
@@ -1753,9 +1764,11 @@ void GameHandler::updateM2TransportBoarding(const glm::vec3& playerCanonical, fl
             if (tr) {
                 const bool isDeeprunTram =
                     TransportManager::isDeeprunTramTransport(*tr);
-                const glm::vec3 offset = tr->isM2
-                    ? playerCanonical - tr->position
-                    : glm::vec3(tr->invTransform * glm::vec4(playerRenderPos, 1.0f));
+                // Passenger offsets are always stored in transport/model-local
+                // space.  This is essential for M2 trams/lifts as well: a world
+                // delta follows translation but not the car's yaw on a curve.
+                const glm::vec3 offset = glm::vec3(
+                    tr->invTransform * glm::vec4(playerRenderPos, 1.0f));
                 setPlayerOnTransport(bestGuid, offset);
                 if (isDeeprunTram) {
                     const bool attached = getPlayerTransportGuid() == bestGuid;
@@ -2845,6 +2858,9 @@ uint32_t GameHandler::getRepListIdByFactionId(uint32_t factionId) const {
 
 void GameHandler::setWatchedFactionId(uint32_t factionId) {
     watchedFactionId_ = factionId;
+    // Local reputation is authoritative inside LocalRealm; there is no world
+    // socket to notify and watchedFactionId_ is sufficient for the UI.
+    if (localExploration_) return;
     if (!isInWorld()) return;
     // CMSG_SET_WATCHED_FACTION: int32 repListId (-1 = unwatch)
     int32_t repListId = -1;
@@ -3988,6 +4004,9 @@ const GossipMessageData& GameHandler::getCurrentGossip() const {
     return currentGossip;
 }
 int32_t GameHandler::getFactionStanding(uint32_t factionId) const {
+    if (const auto* realm = localServiceRealm())
+        if (const auto* player = realm->localPlayer())
+            return localReputationStanding(*player, factionId);
     auto it = factionStandings_.find(factionId);
     if (it != factionStandings_.end()) return it->second;
     // Nothing in the by-faction map means nothing has *changed* since login:
@@ -4005,6 +4024,24 @@ int32_t GameHandler::getFactionStanding(uint32_t factionId) const {
 }
 
 const std::vector<GameHandler::ReputationEntry>& GameHandler::getReputationList() const {
+    if (const auto* realm = localServiceRealm()) {
+        reputationList_.clear();
+        if (const auto* player = realm->localPlayer()) {
+            for (const auto& rep : player->reputations) {
+                ReputationEntry e;
+                e.factionId = rep.factionId;
+                const auto index = getRepListIdByFactionId(rep.factionId);
+                e.reputationIndex = index == 0xFFFFFFFFu ? rep.factionId : index;
+                e.name = getFactionNamePublic(rep.factionId);
+                e.flags = FACTION_FLAG_VISIBLE;
+                reputationList_.push_back(std::move(e));
+            }
+        }
+        // Reputation may change at every quest hand-in; force the hierarchical
+        // rows to be rebuilt rather than caching stale standing bars.
+        reputationRowsDirty_ = true;
+        return reputationList_;
+    }
     // Nothing to resolve until the server has sent the standings, and building
     // an empty list once would keep it empty for the session.
     if (reputationListBuilt_ || initialFactions_.empty()) return reputationList_;

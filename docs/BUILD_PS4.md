@@ -1,4 +1,4 @@
-# Build WoWPS 2.00 for PS4
+# Build WoWPS 2.10 for PS4
 
 ## Requirements
 
@@ -22,7 +22,7 @@ cmake --build build-ps4 --parallel 3
 ./tools/ps4/package.sh "$PWD/build-ps4"
 ```
 
-The package is produced under `build-ps4/pkg/` with content ID `IV0000-WOWE00001_00-WOWEEPS4CLIENT00`. `BUILD_VERSION` supplies `02.00` to both the generated client identity and SFO package version. CMake's project version is `2.0.0`. Do not change save/network versions to match the display version.
+The package is produced under `build-ps4/pkg/` with content ID `IV0000-WOWE00001_00-WOWEEPS4CLIENT00`. `BUILD_VERSION` supplies `02.10` to both the generated client identity and SFO package version. CMake's project version is `2.10.0`. Do not change save/network versions to match the display version.
 
 The packaging script creates the fself executable, stages runtime data/shaders/addons, generates `param.sfo` and builds the homebrew PKG. It includes the existing compatibility handling for packaging hosts with OpenSSL 3. No original client MPQs/DBCs should be staged.
 

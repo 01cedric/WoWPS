@@ -193,7 +193,31 @@ void EntitySpawner::update() {
 
 void EntitySpawner::reclaimUnusedPresentationAssets() {
     const auto now = std::chrono::steady_clock::now();
+#ifdef WOWEE_PS4
+    // 2.06 hardware reached the Defer rung while old display models were only
+    // reconsidered every five seconds. At that point the allocator was
+    // refusing even a 256 KiB skin block, so waiting several more seconds
+    // guarantees visible defer/resume oscillation. Reclaim more often only
+    // while the already-existing composite admission says memory is tight;
+    // Full keeps the old low-overhead cadence.
+    auto reclaimInterval = std::chrono::milliseconds(5000);
+    switch (compositeAdmission_) {
+        case platform::ps4::CompositeAdmission::Full:
+            break;
+        case platform::ps4::CompositeAdmission::Half:
+            reclaimInterval = std::chrono::milliseconds(2000);
+            break;
+        case platform::ps4::CompositeAdmission::Plain:
+            reclaimInterval = std::chrono::milliseconds(750);
+            break;
+        case platform::ps4::CompositeAdmission::Defer:
+            reclaimInterval = std::chrono::milliseconds(250);
+            break;
+    }
+    if (now - lastPresentationReclaimAt_ < reclaimInterval) return;
+#else
     if (now - lastPresentationReclaimAt_ < std::chrono::seconds(5)) return;
+#endif
     lastPresentationReclaimAt_ = now;
     auto* charRenderer = renderer_ ? renderer_->getCharacterRenderer() : nullptr;
     if (!charRenderer) return;
@@ -439,6 +463,7 @@ void EntitySpawner::shutdown() {
     remotePlayerMounts_.clear();
     pendingRemotePlayerMounts_.clear();
     gameObjectInstances_.clear();
+    localDoorPresentation_.clear();
     // Decoded skins waiting for spawns that will never come now. This was
     // missing, and it is megabytes: the reserve is only ever released by the
     // display's first spawn, so at shutdown every entry that had not been
@@ -484,6 +509,7 @@ void EntitySpawner::resetAllState() {
     remotePlayerMounts_.clear();
     pendingRemotePlayerMounts_.clear();
     gameObjectInstances_.clear();
+    localDoorPresentation_.clear();
 
     // Clear animation state maps
     creatureWasMoving_.clear();

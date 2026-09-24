@@ -93,6 +93,11 @@ struct CharacterRenderer {
     std::unordered_map<std::string, TextureCacheEntry> textureCache;
     std::unordered_map<VkTexture*, int> texturePropsByPtr_, normalMapByTexPtr_;
     std::unordered_map<std::string, VkTexture*> compositeCache_;
+    // Production 2.07 reuses sorted scratch vectors instead of rebuilding
+    // unordered_sets on every residency pass. Keep the deterministic fixture
+    // structurally aligned with CharacterRenderer.
+    std::vector<uint32_t> reclaimUsedModelsScratch_;
+    std::vector<VkTexture*> reclaimReferencedTexturesScratch_;
     size_t textureCacheBytes_ = 0;
     void destroyModelGPU(M2ModelGPU&, bool);
     void reclaimUnusedResources(const std::unordered_set<uint32_t>& = {});

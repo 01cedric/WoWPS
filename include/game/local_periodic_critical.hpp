@@ -54,7 +54,7 @@ inline uint16_t localPeriodicCritChanceBasisPoints(const LocalRealmPlayer* caste
             if(d&&localPeriodicCritGrantAffects(*d,periodic)){granted=true;break;}
         }
     if(!granted)return 0;
-    const float chance=localSpellCritChance(*caster,content,periodic.schoolMask);
+    const float chance=localSpellCritChance(*caster,content,periodic);
     if(!std::isfinite(chance)||chance<=0)return 0;
     return uint16_t(std::clamp(int(chance*100.f),0,10000));
 }

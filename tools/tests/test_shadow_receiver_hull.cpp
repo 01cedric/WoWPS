@@ -32,7 +32,20 @@ int main() {
             transform[2] = glm::vec4(unit(rng),unit(rng),3.0f,0.0f);
             const glm::vec3 localPoint=extent*glm::vec3(unit(rng),unit(rng),unit(rng));
             transform[3] = glm::vec4(caster-glm::mat3(transform)*localPoint,1.0f);
-            assert(hull.intersectsTransformedBounds(-extent,extent,transform));
+            const bool slowHit = hull.intersectsTransformedBounds(-extent,extent,transform);
+            const auto prepared = hull.transformedBoundsTester(transform);
+            assert(slowHit);
+            assert(prepared.intersects(-extent, extent) == slowHit);
+            // The prepared tester must be decision-identical for arbitrary local
+            // sub-bounds too, not merely for the full model box used above.
+            for (int k = 0; k < 4; ++k) {
+                glm::vec3 a(extent.x * unit(rng), extent.y * unit(rng), extent.z * unit(rng));
+                glm::vec3 b(extent.x * unit(rng), extent.y * unit(rng), extent.z * unit(rng));
+                const glm::vec3 lo = glm::min(a, b);
+                const glm::vec3 hi = glm::max(a, b);
+                assert(prepared.intersects(lo, hi) ==
+                       hull.intersectsTransformedBounds(lo, hi, transform));
+            }
             ++samples;
         }
         for(int j=0;j<100;++j)culled+=!hull.intersects(glm::vec3(unit(rng),unit(rng),unit(rng))*100000.f,0);
@@ -57,5 +70,19 @@ int main() {
     assert(filtered.intersectsBounds(glm::vec3(10),glm::vec3(-10)));
     ShadowReceiverHull invalid;assert(invalid.intersects(glm::vec3(1e10f),0));
     assert(culled>0);
+
+    // Reflection receivers attach a second hull. The optimized tester
+    // deliberately falls back to the authoritative combined-hull path there;
+    // verify that future changes cannot accidentally skip the second volume.
+    ShadowReceiverHull combined, extra;
+    combined.build(box, glm::mat4(1.0f));
+    const glm::mat4 shiftedHull = glm::translate(glm::mat4(1.0f), glm::vec3(8.0f, 0.0f, 0.0f));
+    extra.build(box, shiftedHull);
+    combined.includeAdditional(&extra);
+    const glm::mat4 objectTransform = glm::translate(glm::mat4(1.0f), glm::vec3(4.0f, 0.0f, 0.0f));
+    const auto combinedPrepared = combined.transformedBoundsTester(objectTransform);
+    assert(combinedPrepared.intersects(glm::vec3(-1.0f), glm::vec3(1.0f)) ==
+           combined.intersectsTransformedBounds(glm::vec3(-1.0f), glm::vec3(1.0f), objectTransform));
+
     std::cout << "PASS receiver and upstream coverage samples="<<samples<<" distant exclusions="<<culled<<"\n";
 }

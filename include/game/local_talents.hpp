@@ -120,15 +120,34 @@ inline int32_t localTalentCastModifier(const LocalRealmPlayer& p,const LocalWorl
             // Op 16 (SPELLMOD_RESIST_MISS_CHANCE, Object.cpp:3585-3586) raises the
             // caster's hit chance, so its beneficial direction is positive like
             // the others listed here. 0 accepted producers (audit D12).
-            ((operation==0||operation==3||operation==12||operation==23||operation==5||operation==8||operation==16||operation==22)?mod.amount>0:mod.amount<0)) {
+            ((operation==1)?mod.amount!=0:
+             (operation==0||operation==3||operation==5||operation==7||operation==8||operation==12||operation==16||operation==22||operation==23)?mod.amount>0:mod.amount<0)) {
             bool match=false;
             for(unsigned k=0;k<3;++k)match=match || (mod.mask[k]&cast.spellFamilyFlags[k]);
             if(match)amount+=mod.amount;
         }
     }
-    if(operation==0||operation==3||operation==12||operation==23||operation==8||operation==22)return int32_t(std::clamp(amount,int64_t(0),percentage?int64_t(1000):int64_t(1000000)));
-    if(operation==5)return int32_t(std::clamp(amount,int64_t(0),int64_t(100)));
+    if(operation==0||operation==3||operation==8||operation==12||operation==22||operation==23)
+        return int32_t(std::clamp(amount,int64_t(0),percentage?int64_t(1000):int64_t(1000000)));
+    if(operation==5||operation==7||operation==16)
+        return int32_t(std::clamp(amount,int64_t(0),percentage?int64_t(1000):int64_t(100)));
+    if(operation==1)
+        return int32_t(std::clamp(amount,percentage?int64_t(-100):int64_t(-600000),percentage?int64_t(1000):int64_t(600000)));
     return int32_t(std::clamp(amount,percentage?int64_t(-100):operation==11?int64_t(-3600000):int64_t(-60000),int64_t(0)));
+}
+inline uint32_t localSpellDuration(const LocalRealmPlayer& p,const LocalWorldContent& c,const LocalSpellDefinition& cast) {
+    if(!cast.durationMs)return 0;
+    const auto flat=localTalentCastModifier(p,c,cast,1,false);
+    const auto pct=localTalentCastModifier(p,c,cast,1,true);
+    const int64_t adjusted=std::max(int64_t(0),int64_t(cast.durationMs)+flat);
+    return uint32_t(std::min(int64_t(600000),adjusted*(100+pct)/100));
+}
+inline uint32_t localSpellGlobalCooldown(const LocalRealmPlayer& p,const LocalWorldContent& c,const LocalSpellDefinition& cast) {
+    if(!cast.globalCooldownMs)return 0;
+    const auto flat=localTalentCastModifier(p,c,cast,21,false);
+    const auto pct=localTalentCastModifier(p,c,cast,21,true);
+    const int64_t adjusted=std::max(int64_t(0),int64_t(cast.globalCooldownMs)+flat);
+    return uint32_t(std::min(int64_t(60000),adjusted*(100+pct)/100));
 }
 inline uint32_t localSpellCastTime(const LocalRealmPlayer& p,const LocalWorldContent& c,const LocalSpellDefinition& cast) {
     return uint32_t(std::max(int64_t(0),int64_t(cast.castTimeMs)+localTalentCastModifier(p,c,cast,10)));

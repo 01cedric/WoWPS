@@ -74,6 +74,10 @@ public:
      */
     void initEncryption(const std::vector<uint8_t>& sessionKey, uint32_t build = 12340);
 
+    // Send the last plaintext packet and enable header encryption under one
+    // I/O lock, before the receive thread can parse an immediate server reply.
+    bool sendAuthSession(const Packet& packet, const std::vector<uint8_t>& sessionKey, uint32_t build = 12340);
+
     void tracePacketsFor(std::chrono::milliseconds duration, const std::string& reason);
 
     /**
@@ -82,6 +86,8 @@ public:
     [[nodiscard]] bool isEncryptionEnabled() const { return encryptionEnabled; }
 
 private:
+    void sendPacketLocked(const Packet& packet);
+    void initEncryptionLocked(const std::vector<uint8_t>& sessionKey, uint32_t build);
     /**
      * Try to parse complete packets from receive buffer
      */

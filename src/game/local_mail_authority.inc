@@ -9,16 +9,17 @@
         if(!r.done() || !record || !mailReach(record->player,service) || (peer.lastMailQuery>=0 && now-peer.lastMailQuery<0.5))return;
         peer.lastMailQuery=now;peer.lastSeen=now;
         std::vector<LocalMail> rows;for(const auto& m:mailbox.messages)if(m.recipient==peer.guid)rows.push_back(m);
-        const auto parts=std::max(size_t(1),(rows.size()+1)/2);if(!++mailTick)++mailTick;
+        const auto parts=std::max(size_t(1),rows.size());if(!++mailTick)++mailTick;
         for(size_t part=0;part<parts;++part){
-            const auto begin=part*2,end=std::min(begin+2,rows.size());
+            const auto begin=part,end=std::min(begin+1,rows.size());
             Writer w;w.u32(mailTick);w.u64(peer.guid);w.u8(uint8_t(part));w.u8(uint8_t(parts));w.u8(uint8_t(end-begin));
             for(auto i=begin;i<end;++i)writeMail(w,rows[i]);send(Message::MailState,peer.session,w,peer.address);
         }
     }
     void receiveMailState(Reader& r) {
         const auto tick=r.u32();const auto owner=r.u64();const auto part=r.u8(),parts=r.u8(),count=r.u8();
-        if(!tick || owner!=self.guid || !newer(tick,mailSequence) || !parts || parts>32 || part>=parts || count>2 || (part+1<parts && count!=2) || (parts>1 && !count))return;
+        if(!tick || owner!=self.guid || !newer(tick,mailSequence) || !parts || parts>LocalMailbox::MaxInbox ||
+           part>=parts || count>1 || (parts>1 && count!=1))return;
         std::vector<LocalMail> rows;for(unsigned i=0;i<count;++i){auto m=readMail(r);if(!r.valid || m.recipient!=owner)return;rows.push_back(std::move(m));}if(!r.done())return;
         if(tick!=collectingMail){if(collectingMail && !newer(tick,collectingMail))return;collectingMail=tick;mailParts=parts;mailReceived.fill(false);}
         if(parts!=mailParts || (mailReceived[part] && mailChunks[part]!=rows))return;
@@ -101,7 +102,7 @@
             if(!findSaved(it->recipient) || !candidate.room(it->recipient)){++it;continue;}
             LocalMail mail;mail.recipient=it->recipient;mail.system=true;mail.senderName="Auction House";
             mail.subject="Auction delivery";mail.body="Your auction item, proceeds or refund. Collect at a mailbox.";
-            mail.money=it->money;if(it->itemId)mail.items[0]={it->itemId,it->count};
+            mail.money=it->money;if(it->itemId){mail.items[0]={it->itemId,it->count};mail.items[0].instance=it->instance;}
             if(!candidate.append(std::move(mail))){++it;continue;}
             it=remaining.erase(it);changed=true;
         }

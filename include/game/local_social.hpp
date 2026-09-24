@@ -29,7 +29,10 @@ struct LocalTrade {
 inline uint64_t localTradeFingerprint(const LocalRealmPlayer& p) {
     uint64_t h=1469598103934665603ULL;
     auto add=[&](uint64_t n){h^=n;h*=1099511628211ULL;};
-    add(p.money);add(p.inventory.size());const auto slots=localInventoryLayout(p);size_t index=0;for(const auto& item:p.inventory){add(item.itemId);add(item.count);add(slots[index++]);}
+    add(p.money);add(p.inventory.size());const auto slots=localInventoryLayout(p);size_t index=0;for(const auto& item:p.inventory){
+        add(item.itemId);add(item.count);add(slots[index++]);const auto& i=item.instance;add(i.instanceFlags);add(i.permanentEnchantId);add(i.temporaryEnchantId);
+        for(auto socket:i.socketEnchantIds)add(socket);add(i.curDurability);add(i.maxDurability);add(uint32_t(i.randomPropertyId));add(i.suffixFactor);add(i.soulbound?1:0);
+    }
     for(auto id:p.equipment)add(id);return h;
 }
 inline bool localTradeAvailable(const LocalRealmPlayer& p) {
@@ -44,12 +47,14 @@ inline bool localTradeReach(const LocalRealmPlayer& a,const LocalRealmPlayer& b)
 inline bool localTradeItemValid(const LocalRealmPlayer& player,const LocalTradeItem& item,const LocalWorldContent& content) {
     if(!item.item)return !item.count && !item.sourceCount;
     const auto* meta=localAuctionMetadata(item.item);const auto* def=content.item(item.item);
-    // Item instances do not yet track past binding. Only known unbound items
-    // are safe to transfer; equipment, quests and unknown metadata stay put.
+    // Transfer eligibility is an instance fact. Bind-on-equip items remain
+    // tradeable until this concrete copy is actually soulbound; BoP/quest items
+    // are still rejected by the catalog's tradeable() rule.
     const auto index=localInventoryIndex(player,item.bag);
-    if(!def || !meta || meta->bonding!=0 || !meta->tradeable() || !item.count || index>=player.inventory.size())return false;
+    if(!def || !meta || !meta->tradeable() || !item.count || index>=player.inventory.size())return false;
     const auto& stack=player.inventory[index];
-    if(stack.itemId!=item.item || stack.count!=item.sourceCount || item.count>stack.count)return false;
+    if(!validLocalItemInstance(stack) || stack.instance.soulbound || (stack.instance.instanceFlags&1u) ||
+       stack.itemId!=item.item || stack.count!=item.sourceCount || item.count>stack.count)return false;
     return std::find(player.equipment.begin(),player.equipment.end(),item.item)==player.equipment.end();
 }
 inline bool prepareLocalTrade(const LocalTrade& trade,const LocalRealmPlayer& a,const LocalRealmPlayer& b,
@@ -58,12 +63,14 @@ inline bool prepareLocalTrade(const LocalTrade& trade,const LocalRealmPlayer& a,
     if(trade.state!=2 || trade.players!=std::array<uint64_t,2>{a.guid,b.guid} || !localTradeReach(a,b))return reject("Trade partner is unavailable or too far away");
     if(localTradeFingerprint(a)!=trade.fingerprints[0] || localTradeFingerprint(b)!=trade.fingerprints[1])return reject("Inventory changed; review the trade again");
     const std::array<const LocalRealmPlayer*,2> originals{&a,&b};
+    std::array<std::vector<LocalItemStack>,2> outgoing;
     for(unsigned side=0;side<2;++side) {
         if(trade.money[side]>originals[side]->money)return reject("Not enough money for this offer");
         std::array<bool,LocalGameplay::MaxInventory> seen{};
         for(const auto& item:trade.items[side])if(item.item){
             if(item.bag>=seen.size() || !localTradeItemValid(*originals[side],item,content) || seen[item.bag])return reject("An offered stack is stale, bound or equipped");
-            seen[item.bag]=true;
+            seen[item.bag]=true;const auto index=localInventoryIndex(*originals[side],item.bag);
+            auto snapshot=originals[side]->inventory[index];snapshot.count=item.count;snapshot.bagSlot=255;outgoing[side].push_back(std::move(snapshot));
         }
     }
     outA=a;outB=b;const std::array<LocalRealmPlayer*,2> candidates{&outA,&outB};
@@ -75,11 +82,8 @@ inline bool prepareLocalTrade(const LocalTrade& trade,const LocalRealmPlayer& a,
         for(const auto& item:trade.items[side])if(item.item)p.inventory[localInventoryIndex(p,item.bag)].count-=item.count;
         std::erase_if(p.inventory,[](const auto& item){return !item.count;});
     }
-    for(unsigned side=0;side<2;++side)for(const auto& item:trade.items[1-side])if(item.item) {
-        auto& bag=candidates[side]->inventory;const auto limit=std::max(uint16_t(1),content.item(item.item)->stack);unsigned left=item.count;
-        for(auto& stack:bag)if(stack.itemId==item.item && stack.count<limit){const auto n=std::min(left,unsigned(limit-stack.count));stack.count+=n;left-=n;}
-        while(left){if(bag.size()>=LocalGameplay::MaxInventory)return reject("Not enough backpack space for the complete trade");const auto n=std::min(left,unsigned(limit));bag.push_back({item.item,uint16_t(n)});left-=n;}
-    }
+    for(unsigned side=0;side<2;++side)for(const auto& snapshot:outgoing[1-side])
+        if(!addLocalInventoryStack(*candidates[side],snapshot,content))return reject("Not enough backpack space for the complete trade");
     normalizeLocalInventory(outA);normalizeLocalInventory(outB);return true;
 }
 }

@@ -128,7 +128,8 @@ public:
     [[nodiscard]] bool initializeShadow(VkRenderPass shadowRenderPass);
     void renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMatrix,
                       const glm::vec3& shadowCenter = glm::vec3(0), float shadowRadius = 1e9f,
-                      uint32_t shadowPassIndex = 0, const ShadowReceiverHull* receiverHull = nullptr);
+                      uint32_t shadowPassIndex = 0, float minCasterDiameter = 0.0f,
+                      const ShadowReceiverHull* receiverHull = nullptr);
 
     void setInstancePosition(uint32_t instanceId, const glm::vec3& position);
     void setInstanceRotation(uint32_t instanceId, const glm::vec3& rotation);
@@ -553,6 +554,13 @@ private:
 
     std::unordered_map<uint32_t, M2ModelGPU> models;
     std::unordered_map<uint32_t, CharacterInstance> instances;
+
+    // Reclaim is deliberately frequent under PS4 pressure. Reuse contiguous
+    // scratch instead of constructing two node-based unordered_sets on every
+    // pass; after the high-water mark this path performs no bookkeeping
+    // allocations while trying to *recover* from allocation pressure.
+    std::vector<uint32_t> reclaimUsedModelsScratch_;
+    std::vector<VkTexture*> reclaimReferencedTexturesScratch_;
 
     uint32_t nextInstanceId = 1;
 

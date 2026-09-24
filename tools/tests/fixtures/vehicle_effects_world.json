@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "name": "Synthetic vehicle cast and area-effect regression fixture, not retail content",
+  "start": {"mapId": 0, "x": 0, "y": 0, "z": 0},
+  "items": [],
+  "spells": [
+    {"id": 9201, "name": "Test fire cast", "damage": 100},
+    {"id": 9202, "name": "Test physical blast", "damage": 100},
+    {"id": 9203, "name": "Test free arcane", "damage": 50},
+    {"id": 9204, "name": "Test frost shell", "damage": 80},
+    {"id": 9205, "name": "Test timed repair", "heal": 60},
+    {"id": 9206, "name": "Test mobile cast", "damage": 20}
+  ],
+  "npcs": [
+    {"id": 50, "name": "Test vehicle", "health": 1000, "armor": 0, "hostile": false, "respawnSeconds": 2},
+    {"id": 51, "name": "Primary target", "health": 1000, "armor": 500, "hostile": true, "aggroRadius": 0, "damage": 1},
+    {"id": 52, "name": "Nearby target", "health": 1000, "armor": 500, "hostile": true, "aggroRadius": 0, "damage": 1},
+    {"id": 53, "name": "Distant target", "health": 1000, "armor": 500, "hostile": true, "aggroRadius": 0, "damage": 1},
+    {"id": 54, "name": "Scripted area victim", "health": 1, "armor": 0, "hostile": true, "aggroRadius": 0, "damage": 1},
+    {"id": 55, "name": "Area kill witness", "health": 100, "armor": 0, "hostile": false, "aggroRadius": 0, "damage": 1},
+    {"id": 56, "name": "Impact-centered target", "health": 1000, "armor": 0, "hostile": true, "aggroRadius": 0, "damage": 1}
+  ],
+  "spawns": [
+    {"id": 1, "entry": 50, "vehicleId": 720, "vehicleSeatCount": 2, "vehicleControllerSeat": 0, "requiredPhaseMask": 1},
+    {"id": 2, "entry": 51, "x": 10, "requiredPhaseMask": 1},
+    {"id": 3, "entry": 52, "x": 12.5, "requiredPhaseMask": 1},
+    {"id": 4, "entry": 53, "x": 20, "requiredPhaseMask": 1},
+    {"id": 5, "entry": 54, "x": 12, "requiredPhaseMask": 1},
+    {"id": 6, "entry": 56, "x": 8.9, "y": 4.9, "requiredPhaseMask": 1}
+  ],
+  "scriptActions": [
+    {"id": 1, "action": "dialogue", "actorId": 4294967295, "text": "Vehicle area kill committed."},
+    {"id": 2, "action": "spawn", "actorId": 7201, "npcEntry": 55, "mapId": 0,
+      "x": 25, "y": 0, "z": 0, "lifetimeMs": 5000}
+  ],
+  "scriptTriggers": [
+    {"trigger": "npcKill", "sourceId": 54, "actionIds": [1, 2]}
+  ],
+  "vehicleKits": [{"id": 720, "maxPower": 100, "regenPerSecond": 0, "minPitch": -1, "maxPitch": 1, "muzzleHeight": 0, "abilities": [
+    {"slot": 1, "spellId": 9201, "seatMask": 3, "powerType": 1, "powerCost": 30, "cooldownMs": 2000, "castTimeMs": 1000, "interruptOnMove": true, "damage": 100, "schoolMask": 4, "areaRadius": 5, "range": 30},
+    {"slot": 2, "spellId": 9202, "seatMask": 3, "powerType": 1, "powerCost": 10, "cooldownMs": 1000, "damage": 100, "schoolMask": 1, "areaRadius": 5, "range": 30},
+    {"slot": 3, "spellId": 9203, "seatMask": 3, "powerType": 0, "powerCost": 0, "cooldownMs": 1000, "damage": 50, "schoolMask": 64, "range": 30},
+    {"slot": 4, "spellId": 9204, "seatMask": 3, "powerType": 1, "powerCost": 15, "cooldownMs": 1500, "castTimeMs": 500, "damage": 80, "schoolMask": 16, "areaRadius": 5, "range": 30, "projectileSpeed": 20, "projectileGravity": 0, "projectileRadius": 0.1, "projectileLifetimeMs": 2000},
+    {"slot": 5, "spellId": 9205, "seatMask": 3, "powerType": 1, "powerCost": 20, "cooldownMs": 1500, "castTimeMs": 500, "repair": 60},
+    {"slot": 6, "spellId": 9206, "seatMask": 3, "powerType": 1, "powerCost": 5, "cooldownMs": 500, "castTimeMs": 500, "interruptOnMove": false, "damage": 20, "schoolMask": 8, "range": 30}
+  ]}]
+}

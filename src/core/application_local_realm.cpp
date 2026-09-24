@@ -383,6 +383,8 @@ void Application::stopLocalRealm() {
     localRealmDialogueNpc_ = 0;
     localRealmDialogueQuest_ = 0;
     localRealmNotice_ = {};
+    localScriptDialogueNotice_ = {};
+    localCreatureChatRevision_ = 0;
     if (renderer && renderer->getCameraController()) renderer->getCameraController()->setMovementRooted(false);
     if (renderer && renderer->getAnimationController()) {
         renderer->getAnimationController()->setDead(false);
@@ -525,8 +527,10 @@ void Application::updateLocalRealm(float deltaTime) {
         const auto skills=assetManager->loadDBC("SkillLine.dbc");
         const auto talents=assetManager->loadDBC("Talent.dbc");
         const auto tabs=assetManager->loadDBC("TalentTab.dbc");
+        // 2.38: the creature caster's summons read SummonProperties.dbc.
+        const auto summonPropertiesDb=assetManager->loadDBC("SummonProperties.dbc");
         auto importedSpells=game::importClientStarterSpells(spellDb.get(),rangeDb.get(),castDb.get(),durationDb.get(),iconDb.get(),
-            abilities.get(),skills.get(),talents.get(),runeCostDb.get(),radiusDb.get());
+            abilities.get(),skills.get(),talents.get(),runeCostDb.get(),radiusDb.get(),summonPropertiesDb.get());
         game::detail::importClientTalents(importedSpells,talents.get(),tabs.get(),spellDb.get(),rangeDb.get(),castDb.get(),durationDb.get(),iconDb.get(),runeCostDb.get(),radiusDb.get());
         for(const auto& row:importedSpells.audit)
             LOG_INFO("[CLASS_AUDIT] spell=",row.id," classMask=",row.classes," talent=",row.talent," result=",row.status);
@@ -581,6 +585,65 @@ void Application::updateLocalRealm(float deltaTime) {
             return;
         }
         LOG_INFO("[LOCAL_WORLD] client faction templates=", factions.size());
+
+        // Holiday.dbc owns the stage lengths for original calendar events.
+        // Absolute 3.3.5a dates are historical, so the authority combines
+        // these lengths with the recurring WotLK holiday rules and the host's
+        // current local console calendar. Missing rows fail closed.
+        std::vector<game::LocalHolidayDefinition> holidays;
+        if(const auto dbc=assetManager->loadDBC("Holidays.dbc");dbc&&dbc->isLoaded()&&dbc->getFieldCount()>=11) {
+            holidays.reserve(dbc->getRecordCount());
+            for(uint32_t row=0;row<dbc->getRecordCount();++row) {
+                game::LocalHolidayDefinition holiday;holiday.id=dbc->getUInt32(row,0);
+                for(uint32_t i=0;i<game::kLocalMaxHolidayDurations;++i)holiday.durationHours[i]=dbc->getUInt32(row,1+i);
+                if(game::validLocalHolidayDefinition(holiday))holidays.push_back(holiday);
+            }
+        }
+        if(!localRealm_->setHolidayCalendar(std::move(holidays))) {
+            localRealmStatus(localRealm_->error(),true);return;
+        }
+        LOG_INFO("[LOCAL_WORLD_EVENT] client Holidays.dbc calendar installed");
+        std::vector<game::LocalFactionReputationBase> factionReputationBases;
+        if (const auto dbc = assetManager->loadDBC("Faction.dbc"); dbc && dbc->isLoaded() && dbc->getFieldCount() >= 18) {
+            factionReputationBases.reserve(std::min<uint32_t>(dbc->getRecordCount(), game::kLocalMaxReputations));
+            for (uint32_t row = 0; row < dbc->getRecordCount(); ++row) {
+                const uint32_t factionId = dbc->getUInt32(row, 0);
+                const uint32_t reputationListId = dbc->getUInt32(row, 1);
+                if (!factionId || reputationListId == 0xffffffffu || reputationListId >= game::kLocalMaxReputations) continue;
+                game::LocalFactionReputationBase value; value.factionId = factionId;
+                for (uint32_t i=0;i<4;++i) {
+                    value.raceMasks[i] = dbc->getUInt32(row, 2+i);
+                    value.classMasks[i] = dbc->getUInt32(row, 6+i);
+                    value.base[i] = static_cast<int32_t>(dbc->getUInt32(row, 10+i));
+                }
+                factionReputationBases.push_back(value);
+            }
+        }
+        if (!localRealm_->setFactionReputationBases(factionReputationBases)) {
+            localRealmStatus(localRealm_->error(), true);
+            return;
+        }
+        LOG_INFO("[LOCAL_REPUTATION] client faction base rows=", factionReputationBases.size());
+        std::array<int32_t,10> questRepGains{}, questRepLosses{};
+        bool questRepRows = false;
+        if (const auto dbc = assetManager->loadDBC("QuestFactionReward.dbc");
+            dbc && dbc->isLoaded() && dbc->getFieldCount() >= 11) {
+            bool gains=false, losses=false;
+            for (uint32_t row=0; row<dbc->getRecordCount(); ++row) {
+                const int32_t id=static_cast<int32_t>(dbc->getUInt32(row,0));
+                auto* target=id==1?&questRepGains:id==2?&questRepLosses:nullptr;
+                if(!target)continue;
+                for(uint32_t c=0;c<10;++c)(*target)[c]=static_cast<int32_t>(dbc->getUInt32(row,c+1));
+                if(id==1)gains=true;else losses=true;
+            }
+            questRepRows=gains&&losses;
+        }
+        if (questRepRows) {
+            localRealm_->setQuestFactionRewards(questRepGains, questRepLosses);
+            LOG_INFO("[LOCAL_REPUTATION] QuestFactionReward.dbc rows installed");
+        } else {
+            LOG_WARNING("[LOCAL_REPUTATION] QuestFactionReward.dbc unavailable; only explicit reputation overrides can reward reputation");
+        }
         const auto graveyards = game::buildPinnedLocalGraveyards();
         if (!localRealm_->setGraveyards(graveyards)) {
             localRealmStatus(localRealm_->error(), true);
@@ -802,7 +865,14 @@ void Application::updateLocalRealm(float deltaTime) {
     if (wasWaiting) LOG_INFO("[LOCAL_WORLD_WAIT] destination ready map=", player->mapId,
                             " revision=", player->positionRevision);
     localRealm_->setWorldLoading(false);
-    if (!player->dead || player->ghost) {
+    if(player->vehicleGuid && !player->vehicleControl) {
+        // Passengers follow authority snapshots; walking prediction must not
+        // move them away from their seat between 10 Hz network updates.
+        const auto position=coords::canonicalToRender(coords::serverToCanonical(glm::vec3(player->x,player->y,player->z)));
+        renderer->getCharacterPosition()=position;
+        if(auto* camera=renderer->getCameraController()) {camera->teleportTo(position);camera->suspendGravityFor(.2f);}
+    }
+    if ((!player->dead || player->ghost) && (!player->vehicleGuid || player->vehicleControl)) {
         const auto server = coords::canonicalToServer(coords::renderToCanonical(renderer->getCharacterPosition()));
         // Collision, liquid and interior-group state come from the local
         // geometry owner, alongside the existing position report. The realm
@@ -826,12 +896,13 @@ void Application::updateLocalRealm(float deltaTime) {
                 hull->serverYaw-game::TransportManager::transportModelBowOffset(hull->displayId));
         }
     }
+    if(const auto* seated=localRealm_->localPlayer())updateLocalChairSeat(*seated);
     // Physical deck tests own boarding; the authority retains that attachment at seams.
     if (!gameHandler->hasPendingPlayerTransportWorldTransfer()) {
         const uint64_t aboard = gameHandler->getPlayerTransportGuid();
         const auto* current = localRealm_->localPlayer();
         const auto* hull = gameHandler->getTransportManager()->getTransport(aboard);
-        if (current && !current->transportEntry && hull && hull->locallyScheduled)
+        if (current && !current->vehicleGuid && !current->transportEntry && hull && hull->locallyScheduled)
             localRealm_->boardTransport(hull->entry);
         else if (current && current->transportEntry && !aboard)
             localRealm_->leaveTransport();
@@ -1257,6 +1328,31 @@ uint32_t transportDisplayForEntry(const game::LocalTravelNetwork& travel, uint32
 }
 } // namespace
 
+void Application::useLocalRealmObject(uint32_t objectId) {
+    if(!localRealm_)return;
+    const auto* object=localRealm_->content().gameObject(objectId);
+    if(!object || object->kind!=game::LocalGameObjectKind::Chair){localRealm_->useGameObject(objectId);return;}
+    game::LocalChairSeat seat;
+    if(!renderer || !gameHandler || !localRealm_->chairSeat(objectId,seat))return;
+    // GameObject::Use(CHAIR): teleport onto the slot with the chair's facing,
+    // then UNIT_STAND_STATE_SIT_*_CHAIR. The next position report carries it.
+    const auto position=coords::canonicalToRender(coords::serverToCanonical(glm::vec3(seat.x,seat.y,seat.z)));
+    if(auto* camera=renderer->getCameraController()){camera->teleportTo(position);camera->suspendGravityFor(.2f);}
+    renderer->getCharacterPosition()=position;
+    renderer->setCharacterYaw(coords::canonicalToCharacterYawDeg(coords::serverToCanonicalYaw(seat.orientation)));
+    gameHandler->applyLocalStandState(seat.standState);
+    localChairMap_=seat.mapId;localChairX_=seat.x;localChairY_=seat.y;localChairStandState_=seat.standState;localChairSeatActive_=true;
+    LOG_INFO("[LOCAL_CHAIR] seated object=",seat.objectId," slot=",int(seat.slot)," state=",int(seat.standState));
+}
+void Application::updateLocalChairSeat(const game::LocalRealmPlayer& self) {
+    if(!localChairSeatActive_ || !gameHandler)return;
+    // Any movement, map change, death or vehicle entry stands the character up.
+    if(self.mapId!=localChairMap_ || self.dead || self.vehicleGuid ||
+       std::hypot(self.x-localChairX_,self.y-localChairY_)>0.3f || gameHandler->getStandState()!=localChairStandState_) {
+        if(gameHandler->getStandState()==localChairStandState_)gameHandler->applyLocalStandState(0);
+        localChairSeatActive_=false;
+    }
+}
 void Application::syncLocalRealmTransports(const game::LocalRealmPlayer& self) {
     if (!localRealm_ || !gameHandler || !entitySpawner_) return;
     auto* transportManager = gameHandler->getTransportManager();
@@ -1264,6 +1360,44 @@ void Application::syncLocalRealmTransports(const game::LocalRealmPlayer& self) {
 
     auto& present = localRealmPresentScratch_;
     present.clear();
+    // Door revisions are only comparable inside one loaded realm and world
+    // scope. Keep the token stable while distance streaming despawns models,
+    // but change it across a realm/map/instance boundary so a reused authored
+    // GUID cannot inherit the previous world's buffered pose.
+    uint64_t presentationContext = 1469598103934665603ULL;
+    const auto mixPresentationContext = [&](uint64_t value) {
+        presentationContext = (presentationContext ^ value) * 1099511628211ULL;
+    };
+    mixPresentationContext(uint64_t(reinterpret_cast<uintptr_t>(localRealm_.get())));
+    mixPresentationContext(localRealm_->content().fingerprint);
+    mixPresentationContext(self.mapId);
+    mixPresentationContext(self.instanceId);
+    entitySpawner_->setGameObjectPresentationContext(presentationContext);
+    for(const auto& object:localRealm_->content().gameObjects) {
+        if(!game::localGameObjectVisible(object,self) || std::hypot(object.x-self.x,object.y-self.y)>120.f || std::abs(object.z-self.z)>120.f)continue;
+        if(game::localGameObjectStateful(object.kind)) {
+            const auto* state=localRealm_->gameObjectState(object.id);
+            if(!state)continue;
+            if(object.kind==game::LocalGameObjectKind::Door) {
+                // Doors remain visible in both authority states. The spawner
+                // buffers this revision across asynchronous/distance spawns
+                // and applies the authored OPEN/CLOSE M2 end pose when one is
+                // available; WMO and sequence-less models use its documented
+                // stable visible fallback.
+                entitySpawner_->setLocalDoorPresentation(
+                    game::localGameObjectGuid(object.id),state->status==1,state->revision);
+            } else if(state->status!=0) {
+                // Depleted or pool-dormant chests/resources leave the presentation set.
+                continue;
+            }
+        }
+        const auto guid=game::localGameObjectGuid(object.id);present.insert(guid);
+        if(!entitySpawner_->isGameObjectSpawned(guid)) {
+            const auto pos=coords::serverToCanonical(glm::vec3(object.x,object.y,object.z));
+            entitySpawner_->queueGameObjectSpawn(guid,object.entry,object.displayId,pos.x,pos.y,pos.z,
+                coords::serverToCanonicalYaw(object.orientation),object.scale);
+        }
+    }
     if(!self.instanceId && assetManager){
         const uint32_t mailboxDisplay = entitySpawner_->localMailboxDisplayId();
         if(mailboxDisplay)for(const auto& m:game::localMailboxSites(localRealm_->content(),self)){

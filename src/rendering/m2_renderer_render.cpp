@@ -430,7 +430,7 @@ void M2Renderer::update(float deltaTime, const glm::vec3& cameraPos, const glm::
     // Advance animTime for ALL instances (needed for texture UV animation on static doodads).
     // This is a tight loop touching only one float per instance - no hash lookups.
     for (auto& instance : instances) {
-        instance.animTime += dtMs;
+        rendering::m2AdvanceAnimationBase(instance.animTime, dtMs, instance.animSpeed);
         instance.globalSequenceTime += dtMs;
     }
 
@@ -497,7 +497,8 @@ void M2Renderer::update(float deltaTime, const glm::vec3& cameraPos, const glm::
             if (glm::dot(toCam, toCam) > clutterAnimCutoffSq) continue;
         }
 
-        instance.animTime += dtMs * (instance.animSpeed - 1.0f);
+        const bool animationClockRuns = rendering::m2AnimationClockRuns(instance.animSpeed);
+        rendering::m2ApplyAnimationSpeed(instance.animTime, dtMs, instance.animSpeed);
 
         // For animation looping/variation, we need the actual model data.
         if (!instance.cachedModel) continue;
@@ -516,7 +517,7 @@ void M2Renderer::update(float deltaTime, const glm::vec3& cameraPos, const glm::
         if (instance.animDuration <= 0.0f && instance.cachedHasParticleEmitters) {
             instance.animDuration = rendering::M2_DEFAULT_PARTICLE_ANIM_MS;
         }
-        if (instance.animDuration > 0.0f && instance.animTime >= instance.animDuration) {
+        if (animationClockRuns && instance.animDuration > 0.0f && instance.animTime >= instance.animDuration) {
             if (instance.playingVariation) {
                 instance.playingVariation = false;
                 instance.currentSequenceIndex = instance.idleSequenceIndex;
@@ -535,7 +536,7 @@ void M2Renderer::update(float deltaTime, const glm::vec3& cameraPos, const glm::
         }
 
         // Idle variation timer
-        if (!instance.playingVariation && model.idleVariationIndices.size() > 1) {
+        if (animationClockRuns && !instance.playingVariation && model.idleVariationIndices.size() > 1) {
             instance.variationTimer -= dtMs;
             if (instance.variationTimer <= 0.0f) {
                 int pick = static_cast<int>(randRange(static_cast<uint32_t>(model.idleVariationIndices.size())));
@@ -1184,6 +1185,12 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
         maxRenderDistanceSq * 4.0f,
         rendering::M2_GAME_OBJECT_MIN_RENDER_DISTANCE *
         rendering::M2_GAME_OBJECT_MIN_RENDER_DISTANCE);
+#ifdef WOWEE_PS4
+    // Equivalent surface-distance ceiling in linear units. It lets distant
+    // placements fail using dot products before paying for sqrt/length.
+    const float maxPossibleDistance = std::max(
+        smoothedRenderDist_ * 2.0f, rendering::M2_GAME_OBJECT_MIN_RENDER_DISTANCE);
+#endif
 
     const uint32_t totalInstances = static_cast<uint32_t>(instances.size());
     firstFrameStage("M2 first frame: visibility begin");
@@ -1221,7 +1228,15 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
                 // bounds used for frustum tests and the fade below.
 #ifdef WOWEE_PS4
                 glm::vec3 toCam = instance.cachedCullCenter - camPos;
-                const float centerDistance = glm::length(toCam);
+                const float centerDistSq = glm::dot(toCam, toCam);
+                // For a non-negative sphere radius this is exactly the same as
+                // testing max(0, sqrt(centerDistSq)-radius) against the maximum
+                // allowed surface distance, but avoids sqrt for clear rejects.
+                if (instance.cachedVisualRadius >= 0.0f) {
+                    const float broadDistance = maxPossibleDistance + instance.cachedVisualRadius;
+                    if (centerDistSq > broadDistance * broadDistance) continue;
+                }
+                const float centerDistance = std::sqrt(centerDistSq);
                 const float surfaceDistance = std::max(0.0f, centerDistance - instance.cachedVisualRadius);
                 distSq = surfaceDistance * surfaceDistance;
 #else
@@ -1262,10 +1277,16 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
         lastVisibilityTestCount_ = totalInstances;
         classifyRange(sortedVisible_, transparentVisible_, 0, totalInstances);
     } else {
+        // Every individual distance limit is capped by maxPossibleDistSq.
+        // Cluster spheres enclose padded instance spheres (and hence their
+        // visual spheres), so rejecting a distant cluster cannot hide a model
+        // whose surface passes the existing per-instance distance test.
+        const float clusterMaxDistance = std::sqrt(maxPossibleDistSq);
         visibilityClusters_.prepare(instances, [&](const glm::vec3& center, float radius) {
             // Sphere semantics also match Frustum's deliberately unnormalized
             // degenerate far plane (AABB culling would reject extra instances).
-            return frustum.intersectsSphere(center, radius);
+            return m2ClusterWithinDistance(center, radius, camPos, clusterMaxDistance) &&
+                   frustum.intersectsSphere(center, radius);
         });
         uint32_t block = 0;
         for (const auto& cluster : visibilityClusters_.clusters()) {
@@ -1463,10 +1484,7 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
     uint64_t requiredSlots = sortedVisible_.size();
     for (const auto& entry : sortedVisible_) {
         const auto* model = instances[entry.index].cachedModel;
-        if (!model) continue;
-        for (const auto& batch : model->batches)
-            if (batch.hasNonIdentityTextureTransform || model->isLavaModel)
-                ++requiredSlots;
+        if (model) requiredSlots += model->animatedInstanceSlotUpperBound;
     }
     for (const auto& entry : transparentVisible_) {
         const auto* model = instances[entry.index].cachedModel;
@@ -1554,7 +1572,6 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
             }
 
             bool modelNeedsAnimation = model.hasAnimation && !model.disableAnimation;
-            const bool foliageLikeModel = model.isFoliageLike;
             // Same rule as pass 2 - see the note there for why a portal is not
             // one of these.
             const bool particleDominantEffect = model.isSpellEffect && !model.isInstancePortal &&
@@ -1846,34 +1863,11 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
                         }
                     }
 
-                    // Pipeline selection (per-model/batch, not per-instance)
-                    const bool foliageCutout = foliageLikeModel && !model.isSpellEffect && batch.blendMode <= 3;
-                    // The fire burning in the hearth is an effect overlay on a
-                    // black background, the same shape as a spell visual; drawn
-                    // opaque it fills the forge opening with a black rectangle
-                    // instead of flame. That is true of the flame cards only -
-                    // treating the whole model this way turned the masonry and
-                    // ironwork additive, which is to say translucent.
-                    const bool fireEffectModel = batch.forgeFireCard;
-                    // A batch the artist marked additive is already doing
-                    // what the cutout and the colour key are approximations
-                    // of: black adds nothing, so it disappears on its own.
-                    // Forcing it opaque and then keying the black out leaves
-                    // the bright middle of a glow card as a solid disc, which
-                    // is what Orgrimmar's bonfires were.
-                    const bool forceCutout =
-                        !model.isSpellEffect && !fireEffectModel &&
-                        !m2BlendIsAdditive(batch.blendMode) &&
-                        (model.isGroundDetail || foliageCutout ||
-                         m2BatchNeedsAlphaTest(batch.blendMode, batch.hasAlpha) ||
-                         batch.colorKeyBlack);
-
-                    uint8_t effectiveBlendMode = batch.blendMode;
-                    if (model.isSpellEffect || fireEffectModel) {
-                        if (effectiveBlendMode <= 1) effectiveBlendMode = 3;
-                        else if (effectiveBlendMode == 4 || effectiveBlendMode == 5) effectiveBlendMode = 3;
-                    }
-                    if (forceCutout) effectiveBlendMode = 1;
+                    // Pipeline/material policy is immutable for this batch and was
+                    // resolved when the model was uploaded. Do not redo it for
+                    // every visible LOD group.
+                    const bool forceCutout = batch.forceCutout;
+                    const uint8_t effectiveBlendMode = batch.effectiveBlendMode;
 
                     VkPipeline desiredPipeline;
                     if (forceCutout) {
@@ -1894,23 +1888,9 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
                         currentPipeline = desiredPipeline;
                     }
 
-                    // Update material UBO
-                    if (batch.materialUBOMapped) {
-                        auto* mat = static_cast<M2MaterialUBO*>(batch.materialUBOMapped);
-                        // interiorDarken is a camera-based flag - it darkens ALL M2s (incl.
-                        // outdoor trees) when the camera is inside a WMO.  Disable it; indoor
-                        // M2s already look correct from the darker ambient/lighting.
-                        mat->interiorDarken = 0.0f;
-                        if (batch.colorKeyBlack)
-                            mat->colorKeyThreshold = (effectiveBlendMode == 4 || effectiveBlendMode == 5) ? 0.7f : 0.08f;
-                        const int alphaMode = forceCutout
-                            ? (model.isGroundDetail ? 3 : (foliageCutout ? 2 : 1))
-                            : (m2BatchNeedsAlphaTest(batch.blendMode, batch.hasAlpha) ? 1 : 0);
-                        mat->alphaTest = m2EncodeAlphaTest(alphaMode,
-                            vkCtx_->getMsaaSamples() == VK_SAMPLE_COUNT_1_BIT);
-                        mat->unlit = model.isGroundDetail && forceCutout
-                            ? 0 : ((batch.materialFlags & 0x01) ? 1 : 0);
-                    }
+                    // Static material UBO fields were written at model upload.
+                    // Only genuinely dynamic material data (lamp flicker below
+                    // in the transparent pass) ever touches mapped UBO memory.
 
                     // Bind material descriptor set (set 1)
                     if (!batch.materialSet) continue;
@@ -2117,13 +2097,9 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
             }
 
             // Pipeline selection
-            uint8_t effectiveBlendMode = batch.blendMode;
-            if (model.isSpellEffect || batch.forgeFireCard) {
-                // Matches the opaque pass: a forge's flame cards are additive,
-                // the forge itself is not.
-                if (effectiveBlendMode <= 1) effectiveBlendMode = 3;
-                else if (effectiveBlendMode == 4 || effectiveBlendMode == 5) effectiveBlendMode = 3;
-            }
+            // Same immutable state used by the opaque pass. Transparent draw
+            // order remains per-instance; only the repeated policy branches go.
+            const uint8_t effectiveBlendMode = batch.effectiveBlendMode;
 
             VkPipeline desiredPipeline;
             switch (effectiveBlendMode) {
@@ -2135,15 +2111,10 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
                 currentPipeline = desiredPipeline;
             }
 
+            // Static material fields stay untouched here. A fire's authored
+            // tint is the sole per-frame material value this path still changes.
             if (batch.materialUBOMapped) {
                 auto* mat = static_cast<M2MaterialUBO*>(batch.materialUBOMapped);
-                mat->interiorDarken = 0.0f;
-                mat->alphaTest = m2EncodeAlphaTest(
-                    m2BatchNeedsAlphaTest(batch.blendMode, batch.hasAlpha) ? 1 : 0,
-                    vkCtx_->getMsaaSamples() == VK_SAMPLE_COUNT_1_BIT);
-                mat->unlit = (batch.materialFlags & 0x01) ? 1 : 0;
-                if (batch.colorKeyBlack)
-                    mat->colorKeyThreshold = (effectiveBlendMode == 4 || effectiveBlendMode == 5) ? 0.7f : 0.08f;
 
                 // A fire's own glow breathes. The same clock and parameters as
                 // the lamp sprites and the local light they cast, so a brazier
@@ -2257,9 +2228,7 @@ bool M2Renderer::initializeShadow(VkRenderPass shadowRenderPass) {
     // overwriting one UBO between draws changes *all* already recorded draws.
     ShadowParamsUBO rigid{};
     rigid.foliageMotionDamp = 1.0f;
-    VmaAllocationInfo rigidInfo{};
-    vmaGetAllocationInfo(vkCtx_->getAllocator(), shadowParams_.alloc, &rigidInfo);
-    std::memcpy(rigidInfo.pMappedData, &rigid, sizeof(rigid));
+    if (shadowParams_.mapped) std::memcpy(shadowParams_.mapped, &rigid, sizeof(rigid));
     for (auto& foliage : shadowFoliageParams_) {
         if (!createShadowParamsSet(device, vkCtx_->getAllocator(), sizeof(ShadowParamsUBO),
                                    whiteTexture_->getImageView(), whiteTexture_->getSampler(),
@@ -2441,9 +2410,8 @@ void M2Renderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMa
     foliage.foliageSway = 1;
     foliage.windTime = globalTime;
     foliage.foliageMotionDamp = 1.0f;
-    VmaAllocationInfo foliageInfo{};
-    vmaGetAllocationInfo(vkCtx_->getAllocator(), foliageSet.alloc, &foliageInfo);
-    std::memcpy(foliageInfo.pMappedData, &foliage, sizeof(foliage));
+    if (!foliageSet.mapped) return;
+    std::memcpy(foliageSet.mapped, &foliage, sizeof(foliage));
 
     // Thousands of stable doodads need the same model grouping each frame.
     // Rebuild it only for membership changes; still test this frame's light
@@ -2535,6 +2503,8 @@ void M2Renderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMa
     const float lavaAnimSeconds = std::chrono::duration<float>(
         std::chrono::steady_clock::now() - kLavaAnimStart).count();
     constexpr auto pushStages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    glm::vec4 lightRows[3];
+    m2ShadowAffineRows(lightSpaceMatrix, lightRows);
     if (useInstancing) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowInstancedPipeline_);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowInstancedLayout_,
@@ -2574,19 +2544,19 @@ void M2Renderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMa
                 // lava clock. Equal exact inputs reuse an identical transform;
                 // the existing six-component run grouping remains unchanged.
                 M2ShadowUvClockCache uvCache;
+                M2ShadowInstancedPush push{};
+                for (unsigned row = 0; row < 3; ++row) push.lightRows[row] = lightRows[row];
+                push.texCoordSet = material.textureUnit;
+                push.maskMode = batch.maskMode;
                 forEachM2ShadowUvRun(begin, end, perInstanceUv,
                     [&](size_t index) {
                         return uvCache.sample(*shadowCasters_[index], [&] {
                             return sampleM2ShadowUv(model, batch, *shadowCasters_[index], lavaAnimSeconds);
                         });
                     }, [&](size_t index, size_t step, const M2UvTransform& uv) {
-                    M2ShadowInstancedPush push{};
-                    m2ShadowAffineRows(lightSpaceMatrix, push.lightRows);
                     push.instanceDataOffset = slice.matrixOffset + static_cast<uint32_t>(index);
                     push.uvLinear = uv.linear;
                     push.uvOffset = uv.offset;
-                    push.texCoordSet = material.textureUnit;
-                    push.maskMode = batch.maskMode;
                     vkCmdPushConstants(cmd, shadowInstancedLayout_, pushStages, 0, sizeof(push), &push);
                     for (const auto& range : batch.ranges) {
                         vkCmdDrawIndexed(cmd, range.indexCount, static_cast<uint32_t>(step), range.firstIndex, 0, 0);
@@ -2618,6 +2588,8 @@ void M2Renderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMa
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline_);
     VkDescriptorSet currentSet = VK_NULL_HANDLE, currentMaterial = VK_NULL_HANDLE;
     uint32_t currentModelId = UINT32_MAX;
+    M2ShadowPush push{};
+    for (unsigned row = 0; row < 3; ++row) push.lightRows[row] = lightRows[row];
     for (const auto* caster : shadowCasters_) {
         const auto& instance = *caster;
         const auto& model = *instance.cachedModel;
@@ -2635,6 +2607,10 @@ void M2Renderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMa
         }
         if (profileShadow)
             for (const auto& b : model.batches) if (b.submeshLevel == 0 && b.indexCount) ++originalDraws;
+        // Model placement is invariant across all of this caster's material
+        // batches. Converting the same matrix into affine rows per batch was
+        // avoidable CPU work in the non-instanced compatibility path.
+        m2ShadowAffineRows(instance.modelMatrix, push.modelRows);
         for (const auto& batch : model.shadowBatches) {
             const auto& material = model.batches[batch.materialBatch];
             if (material.materialSet != currentMaterial) {
@@ -2642,9 +2618,6 @@ void M2Renderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMa
                     1, 1, &material.materialSet, 0, nullptr);
                 currentMaterial = material.materialSet;
             }
-            M2ShadowPush push{};
-            m2ShadowAffineRows(lightSpaceMatrix, push.lightRows);
-            m2ShadowAffineRows(instance.modelMatrix, push.modelRows);
             const auto uv = sampleM2ShadowUv(model, batch, instance, lavaAnimSeconds);
             push.uvLinear = uv.linear;
             push.uvOffset = uv.offset;

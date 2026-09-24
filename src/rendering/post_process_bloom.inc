@@ -11,7 +11,10 @@ void PostProcessPipeline::setBloomEnabled(bool enabled) {
     bloom_.failed = false;
 }
 void PostProcessPipeline::setBloomIntensity(float intensity) {
-    bloom_.intensity = clampBloomIntensity(intensity);
+    const float clamped = clampBloomIntensity(intensity);
+    if (bloom_.intensity == clamped) return;
+    bloom_.intensity = clamped;
+    for (bool& dirty : bloom_.compositeUniformDirty) dirty = true;
 }
 
 bool PostProcessPipeline::initBloomResources() {
@@ -94,6 +97,11 @@ bool PostProcessPipeline::initBloomResources() {
             if(!b.uniforms[f][p].info.pMappedData) return false;
             VkDescriptorImageInfo image{b.sampler,p==0 ? fxaa_.sceneColor.imageView : b.images[f][p-1].imageView,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+            BloomUniforms initial{};
+            initial.parameters=p==0 ? glm::vec4(1.0f/b.extent.width,0.0f,1.0f,0.0f) :
+                p==1 ? glm::vec4(0.0f,1.0f/b.extent.height,0.0f,0.0f) : glm::vec4(0.0f,0.0f,0.0f,b.intensity);
+            std::memcpy(b.uniforms[f][p].info.pMappedData,&initial,sizeof(initial));
+            vmaFlushAllocation(allocator,b.uniforms[f][p].allocation,0,sizeof(initial));
             VkDescriptorBufferInfo buffer{b.uniforms[f][p].buffer,0,sizeof(BloomUniforms)};
             VkWriteDescriptorSet writes[2]{};
             for(uint32_t i=0;i<2;++i) {
@@ -105,6 +113,7 @@ bool PostProcessPipeline::initBloomResources() {
             writes[0].pImageInfo=&image; writes[1].pBufferInfo=&buffer;
             vkUpdateDescriptorSets(device,2,writes,0,nullptr);
         }
+        b.compositeUniformDirty[f]=false;
     }
     VkShaderModule vertex,blur,composite;
     if(!vertex.loadFromFile(device,"assets/shaders/postprocess.vert.spv") ||
@@ -167,12 +176,19 @@ void PostProcessPipeline::renderBloom() {
     // Shadow inspection modes must remain unmodified by bloom.
     if(volumetric_.debug!=0) { b.status="inspection-bypass";return; }
     const uint32_t f=vkCtx_->getCurrentFrame();
-    for(uint32_t p=0;p<3;++p) {
+    // Extraction and blur texel steps are immutable for the lifetime of these
+    // resources and were uploaded during init. The composite intensity changes
+    // only when the setting changes; update the current fence-safe frame slot
+    // once instead of writing/flushing three UBOs every frame.
+    if (b.compositeUniformDirty[f]) {
         BloomUniforms data{};
-        data.parameters=p==0 ? glm::vec4(1.0f/b.extent.width,0.0f,1.0f,0.0f) :
-            p==1 ? glm::vec4(0.0f,1.0f/b.extent.height,0.0f,0.0f) : glm::vec4(0.0f,0.0f,0.0f,b.intensity);
-        std::memcpy(b.uniforms[f][p].info.pMappedData,&data,sizeof(data));
-        vmaFlushAllocation(vkCtx_->getAllocator(),b.uniforms[f][p].allocation,0,sizeof(data));
+        data.parameters=glm::vec4(0.0f,0.0f,0.0f,b.intensity);
+        std::memcpy(b.uniforms[f][2].info.pMappedData,&data,sizeof(data));
+        vmaFlushAllocation(vkCtx_->getAllocator(),b.uniforms[f][2].allocation,0,sizeof(data));
+        b.compositeUniformDirty[f]=false;
+        ++b.uniformRefreshes;
+    }
+    for(uint32_t p=0;p<3;++p) {
         if(p==2) {
             transitionImageLayout(currentCmd_,fxaa_.sceneColor.image,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,

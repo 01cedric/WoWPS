@@ -166,7 +166,51 @@ static void setCursorType(lua_State* L, CursorType type) {
     }
 }
 
+enum class VehicleActionRead { Has,Texture,Info,Usable,Range,Cooldown,Use,Count,Text,HasRange };
+static bool vehicleAction(lua_State* L,VehicleActionRead kind,int& returns) {
+    auto* gh=getGameHandler(L);const auto v=localVehicleView(gh?gh->localServiceRealm():nullptr);
+    const int index=localVehicleActionIndex(int(luaL_optnumber(L,1,0)));
+    if(!v.active() || index<0)return false;
+    const auto* a=v.ability(index);returns=1;
+    switch(kind) {
+    case VehicleActionRead::Has:lua_pushboolean(L,a!=nullptr);break;
+    case VehicleActionRead::Texture: {
+        const auto path=a?gh->getSpellIconPath(a->spellId):std::string{};
+        if(path.empty())lua_pushnil(L);else lua_pushstring(L,path.c_str());break;
+    }
+    case VehicleActionRead::Info:
+        returns=0;if(a){lua_pushstring(L,"spell");lua_pushnumber(L,a->spellId);lua_pushstring(L,"spell");lua_pushnumber(L,a->spellId);returns=4;}break;
+    case VehicleActionRead::Usable:
+        lua_pushboolean(L,v.usable(index) && (!a || !a->projectileSpeed || gh->localVehicleAimSettled()));
+        lua_pushboolean(L,a && v.hull->vehiclePower<a->powerCost);returns=2;break;
+    case VehicleActionRead::Range: {
+        if(!a || a->repair || a->projectileSpeed>0){lua_pushnil(L);break;}
+        const game::LocalRealmNpc* target=nullptr;
+        for(const auto& n:v.realm->npcs())if(n.guid==gh->getTargetGuid()){target=&n;break;}
+        if(!target){lua_pushnil(L);break;}
+        const float x=target->x-v.hull->x,y=target->y-v.hull->y,z=target->z-v.hull->z;
+        lua_pushnumber(L,target->mapId==v.hull->mapId && target->instanceId==v.hull->instanceId && x*x+y*y+z*z<=a->range*a->range?1:0);break;
+    }
+    case VehicleActionRead::Cooldown: {
+        const auto remaining=v.cooldown(index),total=v.cooldownTotal(index);
+        double now=0;lua_getglobal(L,"GetTime");
+        if(lua_isfunction(L,-1)){lua_call(L,0,1);now=lua_tonumber(L,-1);}lua_pop(L,1);
+        lua_pushnumber(L,remaining?now-(double(total)-remaining)*.001:0);
+        lua_pushnumber(L,remaining?total*.001:0);lua_pushnumber(L,1);returns=3;break;
+    }
+    case VehicleActionRead::Use:
+        if(a && (!a->projectileSpeed || gh->localVehicleAimSettled()))
+            v.realm->useVehicleAbility(uint8_t(index),v.target(index,gh->getTargetGuid()));
+        returns=0;break;
+    case VehicleActionRead::Count:lua_pushnumber(L,0);break;
+    case VehicleActionRead::Text:lua_pushnil(L);break;
+    case VehicleActionRead::HasRange:lua_pushboolean(L,a && a->damage && !a->projectileSpeed);break;
+    }
+    return true;
+}
+
 static int lua_HasAction(lua_State* L) {
+    int count=0;if(vehicleAction(L,VehicleActionRead::Has,count))return count;
     auto* gh = getGameHandler(L);
     if (!gh) { return luaReturnFalse(L); }
     int slot = static_cast<int>(luaL_checknumber(L, 1)) - 1; // WoW uses 1-indexed slots
@@ -181,6 +225,7 @@ static int lua_HasAction(lua_State* L) {
 
 // GetActionTexture(slot) → texturePath or nil
 static int lua_GetActionTexture(lua_State* L) {
+    int count=0;if(vehicleAction(L,VehicleActionRead::Texture,count))return count;
     auto* gh = getGameHandler(L);
     if (!gh) { return luaReturnNil(L); }
     int slot = static_cast<int>(luaL_checknumber(L, 1)) - 1;
@@ -220,6 +265,7 @@ static int lua_IsCurrentAction(lua_State* L) {
 
 // IsUsableAction(slot) → usable, notEnoughMana
 static int lua_IsUsableAction(lua_State* L) {
+    int count=0;if(vehicleAction(L,VehicleActionRead::Usable,count))return count;
     auto* gh = getGameHandler(L);
     if (!gh) { lua_pushboolean(L, 0); lua_pushboolean(L, 0); return 2; }
     int slot = static_cast<int>(luaL_checknumber(L, 1)) - 1;
@@ -264,6 +310,7 @@ static int lua_IsUsableAction(lua_State* L) {
 
 // IsActionInRange(slot) → 1 if in range, 0 if out, nil if no range check applicable
 static int lua_IsActionInRange(lua_State* L) {
+    int count=0;if(vehicleAction(L,VehicleActionRead::Range,count))return count;
     auto* gh = getGameHandler(L);
     if (!gh) { return luaReturnNil(L); }
     int slot = static_cast<int>(luaL_checknumber(L, 1)) - 1;
@@ -307,6 +354,7 @@ static int lua_IsActionInRange(lua_State* L) {
 
 // GetActionInfo(slot) → actionType, id, subType
 static int lua_GetActionInfo(lua_State* L) {
+    int count=0;if(vehicleAction(L,VehicleActionRead::Info,count))return count;
     auto* gh = getGameHandler(L);
     if (!gh) { return 0; }
     int slot = static_cast<int>(luaL_checknumber(L, 1)) - 1;
@@ -344,6 +392,7 @@ static int lua_GetActionInfo(lua_State* L) {
 
 // GetActionCount(slot) → count (item stack count or 0)
 static int lua_GetActionCount(lua_State* L) {
+    int count=0;if(vehicleAction(L,VehicleActionRead::Count,count))return count;
     auto* gh = getGameHandler(L);
     if (!gh) { return luaReturnZero(L); }
     int slot = static_cast<int>(luaL_checknumber(L, 1)) - 1;
@@ -363,6 +412,7 @@ static int lua_GetActionCount(lua_State* L) {
 
 // GetActionCooldown(slot) → start, duration, enable
 static int lua_GetActionCooldown(lua_State* L) {
+    int count=0;if(vehicleAction(L,VehicleActionRead::Cooldown,count))return count;
     auto* gh = getGameHandler(L);
     if (!gh) { lua_pushnumber(L, 0); lua_pushnumber(L, 0); lua_pushnumber(L, 1); return 3; }
     int slot = static_cast<int>(luaL_checknumber(L, 1)) - 1;
@@ -419,6 +469,7 @@ static int lua_GetActionCooldown(lua_State* L) {
 // unit-frame button carrying its own unit acted on whoever was targeted
 // instead.
 static int lua_UseAction(lua_State* L) {
+    int count=0;if(vehicleAction(L,VehicleActionRead::Use,count))return count;
     auto* gh = getGameHandler(L);
     if (!gh) return 0;
     int slot = static_cast<int>(luaL_checknumber(L, 1)) - 1;
@@ -567,6 +618,7 @@ static int lua_PickupAction(lua_State* L) {
     if (!gh) return 0;
     reconcileLocalSpellCursor(L,gh);
     int slot = static_cast<int>(luaL_checknumber(L, 1));
+    if(localVehicleView(gh->localServiceRealm()).active() && localVehicleActionIndex(slot)>=0)return 0;
     const auto& bar = gh->getActionBar();
     if (slot < 1 || slot > static_cast<int>(bar.size())) return 0;
 
@@ -643,6 +695,7 @@ static int lua_PlaceAction(lua_State* L) {
     if (!gh) return 0;
     reconcileLocalSpellCursor(L,gh);
     int slot = static_cast<int>(luaL_checknumber(L, 1));
+    if(localVehicleView(gh->localServiceRealm()).active() && localVehicleActionIndex(slot)>=0)return 0;
     if (slot < 1 || slot > static_cast<int>(gh->getActionBar().size())) return 0;
     if (s_cursorType == CursorType::SPELL && s_cursorId != 0) {
         gh->setActionBarSlot(slot - 1, game::ActionBarSlot::SPELL, s_cursorId);
@@ -2032,6 +2085,7 @@ void registerActionLuaAPI(lua_State* L) {
                 // The names were there: GetMacroInfo has been reading them off
                 // the same handler all along.
                 {"GetActionText", [](lua_State* L) -> int {
+            int count=0;if(vehicleAction(L,VehicleActionRead::Text,count))return count;
             auto* gh = getGameHandler(L);
             const int slot = static_cast<int>(luaL_optnumber(L, 1, 0)) - 1;
             if (!gh || slot < 0) { lua_pushnil(L); return 1; }
@@ -2048,6 +2102,7 @@ void registerActionLuaAPI(lua_State* L) {
                 // here tracks that yet, and false is what "no range check"
                 // looks like - the button simply never dims for distance.
                 {"ActionHasRange",      [](lua_State* L) -> int {
+                    int count=0;if(vehicleAction(L,VehicleActionRead::HasRange,count))return count;
                     lua_pushboolean(L, 0);
                     return 1;
                 }},

@@ -18,6 +18,7 @@
 #include "core/logger.hpp"
 #include "core/app_clock.hpp"
 #include "ui/widget_tree.hpp"
+#include "addons/local_vehicle_api.hpp"
 
 namespace wowee::addons {
 
@@ -316,6 +317,7 @@ inline uint64_t getEntityTargetGuid(game::GameHandler* gh, uint64_t guid) {
 
 // Resolve WoW unit IDs to GUID
 inline uint64_t resolveUnitGuid(game::GameHandler* gh, const std::string& uid) {
+    if(uid=="vehicle") {const auto v=localVehicleView(gh?gh->localServiceRealm():nullptr);return v.hull?v.hull->guid:0;}
     if (uid == "player")      return gh->getPlayerGuid();
     if (uid == "target")      return gh->getTargetGuid();
     if (uid == "focus")       return gh->getFocusGuid();

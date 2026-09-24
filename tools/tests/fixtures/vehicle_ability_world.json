@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "name": "Synthetic vehicle weapon regression fixture, not retail content",
+  "start": {"mapId": 0, "x": 0, "y": 0, "z": 0},
+  "items": [],
+  "spells": [
+    {"id": 9001, "name": "Test cannon", "damage": 90},
+    {"id": 9002, "name": "Test repair", "heal": 60},
+    {"id": 9003, "name": "Test heavy cannon", "damage": 10000}
+  ],
+  "npcs": [
+    {"id": 50, "name": "Test vehicle", "health": 1000, "armor": 0, "hostile": false, "questGiver": true, "respawnSeconds": 2},
+    {"id": 51, "name": "Test enemy", "health": 1000, "armor": 0, "damage": 40, "hostile": true, "aggroRadius": 0, "xp": 80}
+  ],
+  "spawns": [
+    {"id": 1, "entry": 50, "vehicleId": 700, "vehicleSeatCount": 3, "requiredPhaseMask": 1},
+    {"id": 2, "entry": 51, "x": 4, "requiredPhaseMask": 1}
+  ],
+  "quests": [{"id": 1, "title": "Test cannon kill", "giverEntry": 50, "turnInEntry": 50,
+    "objectives": [{"type": "kill", "entry": 51, "count": 1}]}],
+  "vehicleKits": [{"id": 700, "maxPower": 100, "regenPerSecond": 10, "abilities": [
+    {"slot": 1, "spellId": 9001, "seatMask": 3, "powerCost": 30, "cooldownMs": 2000, "damage": 90, "range": 30},
+    {"slot": 2, "spellId": 9002, "seatMask": 1, "powerCost": 20, "cooldownMs": 3000, "repair": 60},
+    {"slot": 6, "spellId": 9003, "seatMask": 3, "powerCost": 50, "cooldownMs": 1000, "damage": 10000, "range": 5}
+  ]}]
+}

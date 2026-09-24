@@ -435,7 +435,7 @@
     "section": "Standalone play — professions, merchants and auction house",
     "status": "⚠️",
     "feature": "Professions",
-    "scope": "Learning, rank training, 96 learned recipes, unlearning and batches of 1–20 crafts are supported, including saved fractional skill gains. Tools remain in inventory; duplicate reagents are combined and race/class restrictions checked. Unsupported extra effects are blocked. Gathering, specialist requirements and non-item effects remain incomplete.",
+    "scope": "Learning, rank training, up to 1024 learned recipes, unlearning and batches of 1–20 crafts are supported, including saved fractional skill gains. Tools remain in inventory; duplicate reagents are combined and race/class restrictions checked. Unsupported extra effects are blocked. Gathering, specialist requirements and non-item effects remain incomplete.",
     "evidence": "README.md:199",
     "evidenceKind": "documented_baseline_not_new_runtime_test"
   },

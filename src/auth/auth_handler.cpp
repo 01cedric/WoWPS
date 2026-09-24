@@ -48,6 +48,7 @@ bool AuthHandler::connect(const std::string& host, uint16_t port) {
     realms.clear();
 
     socket = std::make_unique<network::TCPSocket>();
+    socket->setClientBuild(clientInfo.build);
 
     // Set up packet callback
     socket->setPacketCallback([this](const network::Packet& packet) {
@@ -150,6 +151,7 @@ void AuthHandler::authenticate(const std::string& user, const std::string& pass,
 
     // Initialize SRP
     srp = std::make_unique<SRP>();
+    srp->setWrathMode(clientInfo.majorVersion >= 3);
     srp->initialize(username, password);
 
     // Send LOGON_CHALLENGE
@@ -186,6 +188,7 @@ void AuthHandler::authenticateWithHash(const std::string& user, const std::vecto
 
     // Initialize SRP with pre-computed hash
     srp = std::make_unique<SRP>();
+    srp->setWrathMode(clientInfo.majorVersion >= 3);
     srp->initializeWithHash(username, authHash);
 
     // Send LOGON_CHALLENGE
@@ -196,6 +199,7 @@ void AuthHandler::sendLogonChallenge() {
     LOG_DEBUG("Sending LOGON_CHALLENGE");
 
     auto packet = LogonChallengePacket::build(username, clientInfo);
+    socket->setClientBuild(clientInfo.build);
     socket->send(packet);
 
     setState(AuthState::CHALLENGE_SENT);
@@ -323,13 +327,6 @@ void AuthHandler::sendLogonProof() {
         }
         // Legacy flat extraction layout.
         candidateDirs.emplace_back("Data/misc");
-        // Common turtle repack location used in this workspace
-        if (const char* home = std::getenv("HOME")) {
-            if (home && *home) {
-                candidateDirs.push_back(std::string(home) + "/Downloads/twmoa_1180");
-                candidateDirs.push_back(std::string(home) + "/twmoa_1180");
-            }
-        }
 
         const char* candidateExes[] = { "WoW.exe", "TurtleWoW.exe", "Wow.exe", "wow.exe" };
         bool ok = false;
@@ -499,16 +496,7 @@ void AuthHandler::handlePacket(network::Packet& packet) {
 
     AuthOpcode opcode = static_cast<AuthOpcode>(opcodeValue);
 
-    // Hex dump first bytes for diagnostics
-    {
-        const auto& raw = packet.getData();
-        std::ostringstream hs;
-        for (size_t i = 0; i < std::min<size_t>(raw.size(), 40); ++i)
-            hs << std::hex << std::setfill('0') << std::setw(2) << static_cast<int>(raw[i]);
-        if (raw.size() > 40) hs << "...";
-        LOG_INFO("Auth pkt 0x", std::hex, static_cast<int>(opcodeValue), std::dec,
-                 " (", raw.size(), "B): ", hs.str());
-    }
+    LOG_DEBUG("Auth packet opcode=", static_cast<int>(opcodeValue), " bytes=", packet.getSize());
 
     switch (opcode) {
         case AuthOpcode::LOGON_CHALLENGE:

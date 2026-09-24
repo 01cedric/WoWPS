@@ -298,7 +298,12 @@ bool LocalFrameXml::navigateBars() {
     // Wherever this leaves the selection, that is where the carried icon is
     // drawn. A guard rather than a line before each of the seven returns.
     struct Anchor{LocalFrameXml* self;~Anchor(){self->publishPadCursor();}}anchor{this};
-    platform::ps4::setInputActionBars(ready());
+    bool vehicleInput=false;
+    if(const auto* realm=realm_?realm_():nullptr)
+        if(const auto* player=realm->localPlayer())vehicleInput=player->vehicleGuid!=0;
+    // The native vehicle bar also consumes raw chords before FrameXML loads.
+    // In particular R2+Cross must not synthesize the legacy key4/exit action.
+    platform::ps4::setInputActionBars(ready() || vehicleInput);
     if(!ready() || platform::ps4::keyboardCapturesInput() || platform::ps4::inputTextFocus())return false;
     // A released spirit's Square is a corpse-reclaim request before any
     // action bar, spell cursor, mailbox, NPC or combat interaction. Mark both
@@ -341,6 +346,11 @@ bool LocalFrameXml::navigateBars() {
     const auto* top=panel(tree);
     const bool modal=top && (ui::padModalPanel(top->name));
     if(modal){padFocus_.clear();return false;}
+    // The vehicle input bridge selects the original VehicleMenuBar buttons
+    // (or its fallback) and owns shoulders/contextual Square in the world.
+    // Open panels keep their existing navigation and close bindings.
+    if(!top)if(const auto* realm=realm_?realm_():nullptr)
+        if(const auto* player=realm->localPlayer();player && player->vehicleGuid){padFocus_.clear();return false;}
     // Triangle target selection releases the bar cursor. While a world unit is
     // targeted the shoulders cannot steal Square back from talk/attack.
     const uint64_t targetGuid=target_?target_():0;
@@ -359,7 +369,7 @@ bool LocalFrameXml::navigateBars() {
        padFocus_.lane!=ui::LocalPadFocus::Lane::Menus &&
        !(pad.pressed&(ORBIS_PAD_BUTTON_L2|ORBIS_PAD_BUTTON_R2))) {
         if(const auto* realm=realm_?realm_():nullptr)
-            if(const auto* player=realm->localPlayer();player && game::nearbyLocalMailbox(realm->content(),*player)) {
+            if(const auto* player=realm->localPlayer();player && (player->vehicleGuid || realm->nearbyGameObject() || game::nearbyLocalMailbox(realm->content(),*player))) {
                 padFocus_.clear();return false;
             }
     }

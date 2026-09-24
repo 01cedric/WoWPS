@@ -10,6 +10,7 @@ namespace wowee::rendering::movement {
 inline constexpr float kMaxWalkableSlopeDegrees = 50.0f;
 inline constexpr float kMinWalkableNormalZ = 0.642787635f; // cos(50 degrees)
 inline constexpr float kMaxStepUp = 0.60f;
+inline constexpr float kMaxStepDown = 0.70f;
 
 inline bool isWalkableNormal(float normalZ) {
     return normalZ >= kMinWalkableNormalZ;
@@ -43,7 +44,15 @@ float heightfieldNormalZ(SampleFn&& sample, float x, float y, float spacing) {
 }
 
 inline bool isReachableStep(float deltaZ) {
-    return deltaZ >= -0.25f && deltaZ <= kMaxStepUp;
+    return deltaZ >= -kMaxStepDown && deltaZ <= kMaxStepUp;
+}
+
+/// A missing liquid sample at an ADT/WMO seam is allowed to preserve swim for
+/// only a short grace period.  Solid support at the feet wins immediately so
+/// stepping onto a shore can never leave the player swimming on dry ground.
+inline bool bridgeMissingLiquidSample(bool wasSwimming, float missingSeconds,
+                                      bool nearSolidSupport) {
+    return wasSwimming && !nearSolidSupport && missingSeconds <= 0.20f;
 }
 
 /// Whether the outdoor heightfield at this spot is a roof rather than a floor.

@@ -111,16 +111,9 @@ uint32_t M2Renderer::gatherLocalLights(const glm::vec3& cameraPos,
                                        uint32_t maxLights) const {
     if (!outPosRadius || !outColorIntensity || maxLights == 0) return 0;
 
-    struct Candidate {
-        float distSq;
-        glm::vec4 posRadius;
-        glm::vec4 colorIntensity;
-        bool flame = false;  // lamps/torches/braziers gutter; lava burns steady
-        // Fixture placement, used only to seed the flicker phase. The light's own
-        // position animates with the flame, which would re-roll the phase every frame.
-        glm::vec3 phaseSeed{0.0f};
-    };
-    std::vector<Candidate> candidates;
+    using Candidate = LocalLightCandidate;
+    auto& candidates = localLightCandidates_;
+    candidates.clear();
 
     // Keep original instance order, including ties in partial_sort. Rebuild only
     // after topology/model-reference changes; never cache animated light values.
@@ -1137,6 +1130,7 @@ void M2Renderer::shutdown() {
     }
     localLightInstancesDirty_ = true;
     std::vector<size_t>{}.swap(localLightInstanceIndices_);
+    std::vector<LocalLightCandidate>{}.swap(localLightCandidates_);
     shadowInstanceOrder_.release();
     shadowSnapshot_.release();
     visibilityClusters_.release();
@@ -2221,19 +2215,32 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
                                 &bgpu.materialUBOAlloc, &matAllocInfo) != VK_SUCCESS ||
                 !matAllocInfo.pMappedData) throw std::bad_alloc();
 
-            // Write initial material data (static per-batch - fadeAlpha/interiorDarken updated at draw time)
+            // Resolve immutable material/submission policy once. The render loop
+            // used to repeat these branches and write alphaTest/unlit/threshold
+            // into mapped GPU memory for every draw, even though none of those
+            // values depends on the instance or frame. On PS4 that is especially
+            // expensive because the mapped upload heap is write-combined.
+            const auto staticState = m2StaticMaterialState(
+                static_cast<uint8_t>(bgpu.blendMode), bgpu.hasAlpha, bgpu.colorKeyBlack,
+                bgpu.materialFlags, gpuModel.isGroundDetail, gpuModel.isFoliageLike,
+                gpuModel.isSpellEffect, bgpu.forgeFireCard);
+            bgpu.effectiveBlendMode = staticState.effectiveBlendMode;
+            bgpu.materialAlphaMode = staticState.alphaMode;
+            bgpu.forceCutout = staticState.forceCutout;
+            bgpu.materialUnlit = staticState.unlit;
+            bgpu.materialColorKeyThreshold = staticState.colorKeyThreshold;
+
             M2MaterialUBO mat{};
             mat.hasTexture = (bgpu.texture != nullptr && bgpu.texture != whiteTexture_.get()) ? 1 : 0;
             mat.alphaTest = m2EncodeAlphaTest(
-                m2BatchNeedsAlphaTest(bgpu.blendMode, bgpu.hasAlpha) ? 1 : 0,
-                vkCtx_->getMsaaSamples() == VK_SAMPLE_COUNT_1_BIT);
+                bgpu.materialAlphaMode, vkCtx_->getMsaaSamples() == VK_SAMPLE_COUNT_1_BIT);
             mat.colorKeyBlack =
                 m2BatchWantsColorKey(bgpu.blendMode, bgpu.colorKeyBlack) ? 1 : 0;
             mat.tintR = bgpu.tint.r;
             mat.tintG = bgpu.tint.g;
             mat.tintB = bgpu.tint.b;
-            mat.colorKeyThreshold = 0.08f;
-            mat.unlit = (bgpu.materialFlags & 0x01) ? 1 : 0;
+            mat.colorKeyThreshold = bgpu.materialColorKeyThreshold;
+            mat.unlit = bgpu.materialUnlit;
             mat.blendMode = bgpu.blendMode;
             mat.fadeAlpha = 1.0f;
             mat.interiorDarken = 0.0f;
@@ -2308,9 +2315,14 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
         }
     }
 
-    // Pre-compute available LOD levels to avoid per-instance batch iteration
+    // Pre-compute immutable per-model submission metadata. The render path used
+    // to rescan every batch for every visible instance merely to size its SSBO.
+    // In dense cities that turns a cheap capacity check into O(instances*batches).
+    gpuModel.animatedInstanceSlotUpperBound = 0;
     gpuModel.availableLODs = 0;
     for (const auto& b : gpuModel.batches) {
+        if (b.hasNonIdentityTextureTransform || gpuModel.isLavaModel)
+            ++gpuModel.animatedInstanceSlotUpperBound;
         if (b.submeshLevel < 8) gpuModel.availableLODs |= (1u << b.submeshLevel);
     }
 

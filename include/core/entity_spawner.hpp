@@ -2,6 +2,7 @@
 
 #include "game/character.hpp"
 #include "game/game_services.hpp"
+#include "core/game_object_door_presentation.hpp"
 #include "pipeline/blp_loader.hpp"
 #ifdef WOWEE_PS4
 // The policy half of the console's memory budgets, which compiles anywhere.
@@ -79,6 +80,13 @@ public:
     // policy depends on; harmless if nothing of that entry is waiting.
     void onGameObjectInfoReceived(uint32_t entry);
 
+    // Select the state cache shared by locally-authored game objects. Changing
+    // this token (realm/map/instance) drops every buffered door pose.
+    void setGameObjectPresentationContext(uint64_t context);
+    // Publish an authority revision for a local door. The update is retained
+    // while its model loads and applied immediately after spawn.
+    bool setLocalDoorPresentation(uint64_t guid, bool open, uint32_t revision);
+
 private:
     // Retire presentation assets after their last instance and queued user have
     // gone away. World/AI state remains owned by the realm and entity manager.
@@ -89,6 +97,7 @@ private:
     // Freeze or animate a spawned game object based on its type, deferring the
     // decision when the type has not been queried yet.
     void applyGameObjectAnimationPolicy(uint64_t guid, uint32_t entry, uint32_t instanceId);
+    void applyBufferedDoorPresentation(uint64_t guid);
 
 public:
 
@@ -704,6 +713,7 @@ private:
     std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> gameObjectUploadRetryAt_;
     std::unordered_map<uint32_t, uint32_t> gameObjectDisplayIdWmoCache_;
     std::unordered_map<uint64_t, GameObjectInstanceInfo> gameObjectInstances_;
+    GameObjectDoorPresentationCache localDoorPresentation_;
     std::unordered_map<uint64_t, uint64_t> gameObjectGenerations_;
     struct PendingTransportMove {
         float x = 0.0f, y = 0.0f, z = 0.0f, orientation = 0.0f;

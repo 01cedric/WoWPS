@@ -33,6 +33,8 @@ void InventoryHandler::pumpLocalMail() {
         row.flags=(m.read?1:0)|(m.returned?2:0)|(m.system?4:0);row.stationeryId=41;row.expirationTime=365; // Display grace value; local letters do not auto-expire.
         for(size_t i=0;i<m.items.size();++i)if(m.items[i].itemId){
             MailAttachment a;a.slot=uint8_t(i);a.itemGuidLow=uint32_t(i+1);a.itemId=m.items[i].itemId;a.stackCount=m.items[i].count;
+            a.enchantId=m.items[i].instance.permanentEnchantId;a.randomPropertyId=uint32_t(m.items[i].instance.randomPropertyId);
+            a.randomSuffix=m.items[i].instance.suffixFactor;a.chargesOrDurability=m.items[i].instance.curDurability;a.maxDurability=m.items[i].instance.maxDurability;
             row.attachments.push_back(a);owner_.cacheLocalAuctionItem(a.itemId);
         }
         unread=unread || !m.read;mailInbox_.push_back(std::move(row));

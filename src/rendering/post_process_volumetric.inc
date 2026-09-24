@@ -95,7 +95,10 @@ void PostProcessPipeline::setVolumetricLighting(const glm::mat4& matrix, const g
                  " effectiveGain=", effectiveVolumetricIntensity(volumetric_.intensity),
                  " sourceRGB=", volumetric_.lightColor.r, ",", volumetric_.lightColor.g, ",", volumetric_.lightColor.b,
                  " travel=", travel.x, ",", travel.y, ",", travel.z,
-                 " shadowView=", shadow != VK_NULL_HANDLE);
+                 " shadowView=", shadow != VK_NULL_HANDLE,
+                 " descriptorRefreshes=", volumetric_.descriptorRefreshes,
+                 " projectionInverseRebuilds=", volumetric_.projectionInverseRebuilds,
+                 " bloomUniformRefreshes=", bloom_.uniformRefreshes);
     }
 }
 
@@ -209,6 +212,39 @@ bool PostProcessPipeline::initVolumetricResources() {
         fb.width = fxaa_.sceneExtent.width; fb.height = fxaa_.sceneExtent.height;
         if (vkCreateFramebuffer(device, &fb, nullptr, &v.resolveFramebuffer[i]) != VK_SUCCESS) return false;
     }
+    // Most volumetric descriptors are resource-lifetime constants. Populate
+    // scene depth, the frame-local UBO and the fixed reconstruction images once.
+    // Only the shadow image can change at runtime, so the frame path no longer
+    // rebuilds twelve bindings every draw. A valid depth placeholder keeps all
+    // descriptors complete until the first real shadow view is supplied.
+    for (uint32_t f = 0; f < v.frames; ++f) {
+        const VkDescriptorBufferInfo buffer{v.uniforms[f].buffer, 0, sizeof(VolumetricUniforms)};
+        for (uint32_t pass = 0; pass < 3; ++pass) {
+            const VkDescriptorImageInfo sceneDepth{v.sampler, fxaa_.sceneDepth.imageView,
+                VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+            const VkDescriptorImageInfo radiance{pass == 2 ? v.radianceSampler : v.sampler,
+                pass == 1 ? v.scattering[f].imageView : fxaa_.sceneDepth.imageView,
+                pass == 1 ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+            VkWriteDescriptorSet writes[4]{};
+            VkDescriptorImageInfo imageInfos[3]{sceneDepth, radiance, sceneDepth};
+            for (uint32_t binding = 0; binding < 4; ++binding) {
+                auto& write = writes[binding];
+                write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                write.dstSet = v.sets[f * 3 + pass];
+                write.dstBinding = binding;
+                write.descriptorCount = 1;
+                write.descriptorType = binding == 2 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                if (binding == 2) write.pBufferInfo = &buffer;
+                else write.pImageInfo = &imageInfos[binding == 3 ? 2 : binding];
+            }
+            vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
+        }
+        v.descriptorShadowView[f] = fxaa_.sceneDepth.imageView;
+        v.descriptorShadowLayout[f] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+        v.descriptorCompositeSourceView[f] = fxaa_.sceneDepth.imageView;
+        v.descriptorCompositeSourceLayout[f] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    }
+
     VkShaderModule vertex, march, resolve, composite;
     if (!vertex.loadFromFile(device, "assets/shaders/postprocess.vert.spv") ||
         !march.loadFromFile(device, "assets/shaders/volumetric.frag.spv") ||
@@ -270,6 +306,10 @@ void PostProcessPipeline::destroyVolumetricResources() {
     v.renderPass = VK_NULL_HANDLE; v.sampler = VK_NULL_HANDLE; v.radianceSampler = VK_NULL_HANDLE;
     v.rendered = false;
     for (auto& set : v.sets) set = VK_NULL_HANDLE;
+    for (auto& view : v.descriptorShadowView) view = VK_NULL_HANDLE;
+    for (auto& layout : v.descriptorShadowLayout) layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    for (auto& view : v.descriptorCompositeSourceView) view = VK_NULL_HANDLE;
+    for (auto& layout : v.descriptorCompositeSourceLayout) layout = VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
 void PostProcessPipeline::renderVolumetricScattering() {
@@ -285,7 +325,15 @@ void PostProcessPipeline::renderVolumetricScattering() {
     // subtracting a large world camera position loses precision before the
     // 160-yard march even starts, shifting samples across tree/building edges.
     const glm::mat4 viewRotation = glm::mat4(glm::mat3(camera_->getViewMatrix()));
-    data.inverseRelativeViewProjection = glm::transpose(viewRotation) * glm::inverse(camera_->getProjectionMatrix());
+    const glm::mat4 projection = camera_->getProjectionMatrix();
+    if (!v.cachedInverseProjectionValid ||
+        std::memcmp(&projection, &v.cachedProjection, sizeof(glm::mat4)) != 0) {
+        v.cachedProjection = projection;
+        v.cachedInverseProjection = glm::inverse(projection);
+        v.cachedInverseProjectionValid = true;
+        ++v.projectionInverseRebuilds;
+    }
+    data.inverseRelativeViewProjection = glm::transpose(viewRotation) * v.cachedInverseProjection;
     data.lightMatrix = v.lightMatrix;
     data.nearLightMatrix = v.nearLightMatrix;
     data.camera = glm::vec4(camera_->getPosition(), 1.0f);
@@ -304,28 +352,58 @@ void PostProcessPipeline::renderVolumetricScattering() {
     // radiance. Avoid both draws and their attachment bandwidth entirely.
     const bool hasScattering = glm::dot(glm::vec3(data.sunColor), glm::vec3(data.sunColor)) > 0.0f;
     // Every descriptor and UBO belongs to the frame whose fence beginFrame has
-    // waited for. Other frames' shadow views and uniforms are never rewritten.
-    VkDescriptorBufferInfo buffer{v.uniforms[fi].buffer, 0, sizeof(data)};
+    // waited for. Scene depth, reconstruction images and UBO bindings are static
+    // and were populated at resource creation; only the frame's shadow view can
+    // change. In normal double-buffered world rendering each slot therefore
+    // refreshes once and then stays untouched.
     const VkImageView safeShadow = v.raysAllowed ? v.shadowView : fxaa_.sceneDepth.imageView;
     const VkImageLayout safeShadowLayout = v.raysAllowed ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-    for (uint32_t pass = hasScattering ? 0u : 2u; pass < 3; ++pass) {
-        VkDescriptorImageInfo images[3]{
-            {v.sampler, fxaa_.sceneDepth.imageView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
-            // Bind a valid, already sampled image even when the shader's zero
-            // light branch never reads scattering. Do not describe an unwritten
-            // transient color target in SHADER_READ layout on its first frame.
-            {hasScattering && pass == 2 ? v.radianceSampler : v.sampler, !hasScattering ? safeShadow : pass == 2 ? v.resolvedScattering[fi].imageView : pass == 1 ? v.scattering[fi].imageView : safeShadow,
-             !hasScattering ? safeShadowLayout : pass ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : safeShadowLayout},
-            {v.sampler, safeShadow, safeShadowLayout}};
+    if (v.descriptorShadowView[fi] != safeShadow || v.descriptorShadowLayout[fi] != safeShadowLayout) {
+        VkDescriptorImageInfo shadowInfo{v.sampler, safeShadow, safeShadowLayout};
         VkWriteDescriptorSet writes[4]{};
-        for (uint32_t b = 0; b < 4; ++b) {
-            writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[b].dstSet = v.sets[fi * 3 + pass]; writes[b].dstBinding = b;
-            writes[b].descriptorCount = 1;
-            writes[b].descriptorType = b == 2 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            if (b == 2) writes[b].pBufferInfo = &buffer; else writes[b].pImageInfo = &images[b == 3 ? 2 : b];
+        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet = v.sets[fi * 3];
+        writes[0].dstBinding = 1;
+        writes[0].descriptorCount = 1;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[0].pImageInfo = &shadowInfo;
+        for (uint32_t pass = 0; pass < 3; ++pass) {
+            auto& write = writes[pass + 1];
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = v.sets[fi * 3 + pass];
+            write.dstBinding = 3;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            write.pImageInfo = &shadowInfo;
         }
         vkUpdateDescriptorSets(vkCtx_->getDevice(), 4, writes, 0, nullptr);
+        v.descriptorShadowView[fi] = safeShadow;
+        v.descriptorShadowLayout[fi] = safeShadowLayout;
+        ++v.descriptorRefreshes;
+    }
+    // When no directional scattering is produced, keep the composite source on
+    // a valid sampled depth image rather than describing an unwritten transient
+    // color target as SHADER_READ_ONLY. When rays resume, switch binding 1 back
+    // to the resolved radiance image. This transition is rare and costs one
+    // descriptor write only on the state edge, not every frame.
+    const VkImageView compositeSource = hasScattering ? v.resolvedScattering[fi].imageView
+                                                       : fxaa_.sceneDepth.imageView;
+    const VkImageLayout compositeSourceLayout = hasScattering ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                                               : VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    if (v.descriptorCompositeSourceView[fi] != compositeSource ||
+        v.descriptorCompositeSourceLayout[fi] != compositeSourceLayout) {
+        VkDescriptorImageInfo sourceInfo{hasScattering ? v.radianceSampler : v.sampler,
+                                         compositeSource, compositeSourceLayout};
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.dstSet = v.sets[fi * 3 + 2];
+        write.dstBinding = 1;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = &sourceInfo;
+        vkUpdateDescriptorSets(vkCtx_->getDevice(), 1, &write, 0, nullptr);
+        v.descriptorCompositeSourceView[fi] = compositeSource;
+        v.descriptorCompositeSourceLayout[fi] = compositeSourceLayout;
+        ++v.descriptorRefreshes;
     }
     transitionImageLayout(currentCmd_, fxaa_.sceneDepth.image,
         VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,

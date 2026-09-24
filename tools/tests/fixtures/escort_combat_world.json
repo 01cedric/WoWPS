@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "name": "Synthetic authored combat escort fixture, not retail content",
+  "start": {"mapId": 0, "x": 0, "y": 0, "z": 0},
+  "items": [], "spells": [],
+  "npcs": [
+    {"id": 50, "name": "Escort guide", "health": 100, "armor": 0, "damage": 30, "hostile": false, "questGiver": true, "respawnSeconds": 3},
+    {"id": 51, "name": "Escort attacker", "health": 50, "armor": 0, "damage": 10, "hostile": true, "aggroRadius": 10, "respawnSeconds": 600, "xp": 80}
+  ],
+  "spawns": [
+    {"id": 1, "entry": 50, "requiredPhaseMask": 1},
+    {"id": 2, "entry": 51, "x": 50, "requiredPhaseMask": 1}
+  ],
+  "quests": [
+    {"id": 1, "title": "Protect the guide", "giverEntry": 50, "turnInEntry": 50,
+     "objectives": [{"type": "script", "entry": 600, "count": 1, "text": "Escort the guide"}]},
+    {"id": 2, "title": "Escort attacker credit", "giverEntry": 50, "turnInEntry": 50,
+     "objectives": [{"type": "kill", "entry": 51, "count": 1}]}
+  ],
+  "escortRoutes": [{"id": 900, "questId": 1, "spawnId": 1, "combat": true,
+    "combatChaseRadius": 10, "speed": 4, "followRadius": 15, "failRadius": 30, "timeoutMs": 30000,
+    "points": [{"x": 8, "waitMs": 500}, {"x": 12}]}],
+  "scriptTriggers": [
+    {"trigger": "escortComplete", "sourceId": 900, "scriptId": 600, "operation": "set", "value": 1},
+    {"trigger": "escortFail", "sourceId": 900, "scriptId": 601, "operation": "add", "value": 1},
+    {"trigger": "escortWaypoint", "sourceId": 900, "scriptId": 602, "operation": "add", "value": 1}
+  ]
+}

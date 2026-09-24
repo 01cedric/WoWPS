@@ -1,5 +1,6 @@
 #pragma once
 #include "game/transport_deck_contact.hpp"
+#include "ui/local_vehicle_aim.hpp"
 
 #include "game/quest_giver_status.hpp"
 #include "game/calendar_data.hpp"
@@ -220,6 +221,9 @@ public:
     /// makes the Lua token "pet" resolve to it.
     void syncLocalRealmPet(const LocalRealmPet& pet);
     void greetLocalRealmNpc(const LocalRealmNpc& npc);
+    /// Local realm stand state (chairs): no packet, same animation callback
+    /// as a confirmed SMSG_STANDSTATE_UPDATE.
+    void applyLocalStandState(uint8_t standState);
     void presentLocalMeleeImpact(uint64_t attackerGuid, uint64_t victimGuid);
     uint64_t previousLocalAttackTarget(uint64_t guid) const {
         const auto it = localPresentationStates_.find(guid);
@@ -1711,6 +1715,10 @@ public:
     bool hasPendingPlayerTransportWorldTransfer() const {
         return pendingPlayerTransportTransfer_;
     }
+    // A transient reconnect may keep a transfer armed, but a real movement or
+    // session reset must drop it so the next character cannot inherit an old
+    // ship/zeppelin destination.
+    void clearPendingPlayerTransportWorldTransfer();
     bool completePlayerTransportWorldTransfer(uint64_t transportGuid,
                                               glm::vec3& worldPosition);
 
@@ -2986,6 +2994,10 @@ public:
     float getServerTurnRate() const;
     float getServerCollisionHeight() const;
     bool isPlayerRooted() const { return movementInfo.isPlayerRooted(); }
+    // The local realm's forced movement of the character (fear 1, confuse 2).
+    uint8_t localForcedMovementMode() const { return localForcedMoveMode_; }
+    const glm::vec3& localForcedMovementFrom() const { return localForcedMoveFrom_; }
+    bool localForcedMovementHasSource() const { return localForcedMoveHasSource_; }
     bool isGravityDisabled() const { return movementInfo.isGravityDisabled(); }
     bool isFeatherFalling() const { return movementInfo.isFeatherFalling(); }
     bool isWaterWalking() const { return movementInfo.isWaterWalking(); }
@@ -3034,6 +3046,12 @@ public:
 
     // Vehicle (WotLK)
     bool isInVehicle() const { return vehicleId_ != 0; }
+    bool localVehicleUiAvailable() const;
+    bool localVehicleAimSettled() const;
+    void requestLocalVehicleAim(float yaw,float pitch);
+    void setLocalVehicleAimDirection(int direction);
+    void syncLocalVehicleUi();
+    ui::LocalVehicleAimInput& localVehicleAimInput(){return localVehicleAimInput_;}
     uint32_t getVehicleId() const { return vehicleId_; }
     void sendRequestVehicleExit();
 
@@ -4479,6 +4497,14 @@ private:
     // Shapeshift form (from UNIT_FIELD_BYTES_1 byte 3)
     std::unordered_map<uint64_t,uint32_t> localFormVisuals_;
     float localRealmRunMultiplier_=-1.f;
+    uint8_t localRealmSlowPercent_=0; // strongest creature MOD_DECREASE_SPEED on the local character
+    bool localControlRooted_=false;   // a creature stun/root holds MOVEMENTFLAG_ROOT
+    // 2.36: a creature's fear (1) or confuse (2) drives the character, and the
+    // last creature knockback applied.
+    uint8_t localForcedMoveMode_=0;
+    bool localForcedMoveHasSource_=false,localKnockbackSeen_=false;
+    glm::vec3 localForcedMoveFrom_{0.f};
+    uint32_t localKnockbackSequence_=0;
     uint8_t  shapeshiftFormId_ = 0;
     // Combo points (rogues/druids)
     uint8_t  comboPoints_ = 0;
@@ -4641,6 +4667,17 @@ private:
 
     // Vehicle (WotLK): non-zero when player is seated in a vehicle
     uint32_t vehicleId_ = 0;
+    struct LocalVehicleUiState {
+        uint64_t guid=0,roster=0;
+        uint8_t seat=0,usableMask=0;
+        bool available=false,settled=true;
+        uint32_t health=0,maxHealth=0,power=0,maxPower=0;
+        std::array<uint32_t,6> cooldowns{};
+        float yaw=0,pitch=0;
+    } localVehicleUiState_;
+    int localVehicleAimDirection_=0;
+    double localVehicleAimLastTick_=0;
+    ui::LocalVehicleAimInput localVehicleAimInput_;
     /// The column the arena rosters are sorted by, so clicking it again knows
     /// to reverse rather than re-sort the same way.
     std::string arenaSortKey_;

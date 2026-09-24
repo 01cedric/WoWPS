@@ -320,8 +320,11 @@ void LightingManager::update(const glm::vec3& playerPos, uint32_t mapId, uint32_
     // Update player position and map
     currentPlayerPos_ = playerPos;
 
-    // Find light volumes for blending
-    activeVolumes_ = findLightVolumes(playerPos, mapId);
+    // Find light volumes for blending. Keep activeVolumes_ storage across frames:
+    // lighting runs every frame and the previous return-by-value path repeatedly
+    // constructed a temporary vector before moving it here. The contents still
+    // refresh completely each update; only the allocation is retained.
+    findLightVolumes(playerPos, mapId, activeVolumes_);
 
     // Which sky model is overhead, decided over every volume in range rather
     // than over the two that are blended, and held until it leaves range.
@@ -501,19 +504,28 @@ void LightingManager::update(const glm::vec3& playerPos, uint32_t mapId, uint32_
 }
 
 std::vector<LightingManager::WeightedVolume> LightingManager::findLightVolumes(const glm::vec3& playerPos, uint32_t mapId) const {
+    std::vector<WeightedVolume> weighted;
+    findLightVolumes(playerPos, mapId, weighted);
+    return weighted;
+}
+
+void LightingManager::findLightVolumes(const glm::vec3& playerPos, uint32_t mapId,
+                                       std::vector<WeightedVolume>& weighted) const {
+    weighted.clear();
+
     auto it = lightVolumesByMap_.find(mapId);
     if (it == lightVolumesByMap_.end()) {
-        return {};
+        return;
     }
 
     const std::vector<LightVolume>& volumes = it->second;
     if (volumes.empty()) {
-        return {};
+        return;
     }
 
-    // Collect all volumes with weight > 0
-    std::vector<WeightedVolume> weighted;
-    weighted.reserve(volumes.size());
+    // Reuse the caller's storage. Reserve only when a map actually needs more
+    // capacity so normal frame updates remain allocation-free after warm-up.
+    if (weighted.capacity() < volumes.size()) weighted.reserve(volumes.size());
 
     for (const auto& volume : volumes) {
         glm::vec3 toPlayer = playerPos - volume.position;
@@ -537,7 +549,7 @@ std::vector<LightingManager::WeightedVolume> LightingManager::findLightVolumes(c
     }
 
     if (weighted.empty()) {
-        return {};
+        return;
     }
 
     // Keep the top N by weight, ordered by something that cannot change under
@@ -594,8 +606,6 @@ std::vector<LightingManager::WeightedVolume> LightingManager::findLightVolumes(c
         LOG_INFO("Light volumes on map ", mapId, ": ", weighted.size(),
                  " in range,", named.empty() ? " none" : named);
     }
-
-    return weighted;
 }
 
 uint32_t LightingManager::selectLightParamsId(const LightVolume* volume, bool isRaining, bool isUnderwater) const {

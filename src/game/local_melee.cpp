@@ -1,4 +1,5 @@
 #include "game/local_melee.hpp"
+#include "game/local_aura_presentation.hpp"
 #include "game/local_class_pools.hpp"
 #include "game/local_regeneration_rates.hpp"
 #include "game/local_forms.hpp"
@@ -145,11 +146,16 @@ static uint32_t armorFromAttributes(const LocalRealmPlayer& p,const LocalWorldCo
     float totalValue=flatArmor;
     totalValue+=localTalentBonus(p,c,true);
     totalValue+=localStatAuraBonus(p,c,true);
+    // Creature MOD_RESISTANCE on armor (HandleAuraModResistance): TOTAL_VALUE,
+    // one resolved amount per aura as the authority applied it.
+    for(const auto& view:p.harmfulAuras)totalValue+=float(view.armorModifier);
     float armor=float(baseArmor)*armorMultiplier;
     // Preserve source float addition order: agility precedes TOTAL_VALUE.
     // Reordering fractional equipment bonuses can change integer armor by one.
     armor+=float(std::max(0,agility))*2;
     armor+=totalValue;
+    // Creature MOD_RESISTANCE_PCT on armor: TOTAL_PCT, one multiplier per aura.
+    for(const auto& view:p.harmfulAuras)if(view.armorPercent)armor*=float(100+view.armorPercent)/100.f;
     return uint32_t(std::clamp(armor,0.f,1000000.f));
 }
 static bool activeStatTalent(const LocalRealmPlayer& p,const LocalWorldContent& c,const LocalSpellDefinition* d){
@@ -224,7 +230,9 @@ LocalMeleeStats localMeleeStats(const LocalRealmPlayer& p,const LocalWorldConten
         intellectAttackPower+=float(std::max(0,s.attributes[3]))*d->passiveIntellectAttackPowerPct/100.f;
     // Source accumulates fractional stat-based AP in float, then truncates the
     // TOTAL_VALUE field once. Ranged AP has its own independent source formula.
-    s.attackPower=float(std::clamp(ap+int64_t(intellectAttackPower),int64_t(0),int64_t(1000000)));
+    // MOD_ATTACK_POWER from creature views (a demoralizing debuff) enters the
+    // same TOTAL_VALUE (HandleAuraModAttackPower).
+    s.attackPower=float(std::clamp(ap+int64_t(intellectAttackPower)+int64_t(localPlayerViewModifiers(p,1).attackPower),int64_t(0),int64_t(1000000)));
     // Local training baseline; additional proficiency grants remain separate work.
     bool talentDual=false,talentParry=false;
     uint32_t dualHit=0;
@@ -263,9 +271,16 @@ LocalMeleeStats localMeleeStats(const LocalRealmPlayer& p,const LocalWorldConten
     {const auto formCrit=float(localFormBoostCritPct(p,c));s.crit+=formCrit;s.offHandCrit+=formCrit;}
     s.armorPenetrationPct=localFormArmorPenetrationPct(p,c);
     const auto dodgeAgility=100*ratio[1]*dodgeScale[idx]/1.15f;
-    s.dodge=std::max(0.f,100*dodgeBase[idx]+s.base[1]*dodgeAgility+localFeralDodgePct(p,c)+diminish((agi-s.base[1])*dodgeAgility+bonus[1]+s.defense*.04f,dodgeCap[idx],k[idx]));
-    s.parry=canParry&&mh&&mh->itemClass==2?5+diminish(bonus[2]+s.defense*.04f,parryCap[idx],k[idx]):0;
-    s.block=shield?5+bonus[3]+s.defense*.04f:0;s.blockValue=shield?uint32_t(std::max(int64_t(0),blockValue+oh->block+str/2-10)):0;
+    // 2.37 creature views on the character: MOD_HIT_CHANCE (aura 54; melee
+    // and ranged, m_modMeleeHitChance), MOD_DODGE/PARRY/BLOCK_PERCENT (49/47/51;
+    // Player::UpdateDodgePercentage adds them before the floor at zero) and a
+    // disarm (aura 67: no useable main hand, so no parry - RollMeleeOutcomeAgainst).
+    const auto views=localPlayerViewModifiers(p,1);
+    const bool disarmed=views.disarmed;
+    s.hit+=float(views.hitChancePct);
+    s.dodge=std::max(0.f,100*dodgeBase[idx]+s.base[1]*dodgeAgility+localFeralDodgePct(p,c)+diminish((agi-s.base[1])*dodgeAgility+bonus[1]+s.defense*.04f,dodgeCap[idx],k[idx])+float(views.dodgePct));
+    s.parry=canParry&&mh&&mh->itemClass==2&&!disarmed?std::max(0.f,5+diminish(bonus[2]+s.defense*.04f,parryCap[idx],k[idx])+float(views.parryPct)):0;
+    s.block=shield?std::max(0.f,5+bonus[3]+s.defense*.04f+float(views.blockPct)):0;s.blockValue=shield?uint32_t(std::max(int64_t(0),blockValue+oh->block+str/2-10)):0;
     s.shieldBlockValue=uint32_t(std::max(int64_t(0),blockValue+(shield?int64_t(oh->block):0)+str/2-10));
     s.missBonus=diminish(s.defense*.04f,16,k[idx]);return s;
 }
@@ -325,6 +340,13 @@ float localRangedCritChance(const LocalRealmPlayer& p,const LocalWorldContent& c
 }
 float localSpellCritChance(const LocalRealmPlayer& p,const LocalWorldContent& c,uint32_t schoolMask){
     return schoolMask&&!(schoolMask&~127u)?localSpellCritStats(p,c).crit:0;
+}
+float localSpellCritChance(const LocalRealmPlayer& p,const LocalWorldContent& c,const LocalSpellDefinition& d){
+    const float base=localSpellCritChance(p,c,d.schoolMask);
+    if(base<=0.f || d.sourceCantCrit)return 0.f;
+    const auto flat=localTalentCastModifier(p,c,d,7,false);
+    const auto pct=localTalentCastModifier(p,c,d,7,true);
+    return std::clamp((base+float(flat))*float(100+pct)/100.f,0.f,100.f);
 }
 float localIncomingCritReductionPct(const LocalRealmPlayer& p,const LocalWorldContent& c){
     const auto* armor=activeMoltenArmor(p,c);return armor?float(armor->incomingCritReductionPct):0;
@@ -431,7 +453,10 @@ LocalWeaponAmounts localWeaponAmounts(const LocalRealmPlayer& p,const LocalWorld
     float secondaryLow=0,secondaryHigh=0,secondaryMagicLow=0,secondaryMagicHigh=0;
     if(off&&!s.offHand){a.active=false;a.low=a.high=0;return a;}
     const auto* form=localActiveForm(p);const bool feral=form&&(form->form==1||form->form==5||form->form==8);
-    const auto* item=worn(p,c,off?16:15);
+    // MOD_DISARM from a creature view (2.37): Player::CanUseAttackType is
+    // false for the main hand, so CalculateMinMaxDamage and
+    // SetRegularAttackTime read no weapon there (unarmed range, 2 s).
+    const auto* item=!off&&localPlayerDisarmed(p)?nullptr:worn(p,c,off?16:15);
     if(feral){a.seconds=form->form==1?1.f:2.5f;a.apSeconds=a.seconds;a.low=std::min(60u,unsigned(p.level))*.85f*a.seconds;a.high=std::min(60u,unsigned(p.level))*1.25f*a.seconds;}
     else if(form&&form->form==16){
         // GetWeaponForAttack(useable=true) returns null in Ghost Wolf. The
@@ -459,6 +484,12 @@ LocalWeaponAmounts localWeaponAmounts(const LocalRealmPlayer& p,const LocalWorld
             localTalentWeaponDamageMultiplier(p,c,item->itemClass,item->subclass,item->inventoryType):1.f;
         const float factor=localTalentPhysicalDamageMultiplier(p,c)*localTimedDamageMultiplier(p,c,false)*weaponFactor;
         a.low*=factor;a.high*=factor;
+        // Creature views on the player: MOD_DAMAGE_DONE (physical, TOTAL_VALUE
+        // of UNIT_MOD_DAMAGE_MAINHAND) then MOD_DAMAGE_PERCENT_DONE (TOTAL_PCT).
+        if(const auto mods=localPlayerViewModifiers(p,1);mods.damageDoneFlat||mods.damageDonePct){
+            const float pct=1.f+float(std::max(-99,mods.damageDonePct))/100.f;
+            a.low=std::max(0.f,(a.low+float(mods.damageDoneFlat))*pct);a.high=std::max(0.f,(a.high+float(mods.damageDoneFlat))*pct);
+        }
     }
     // The source returns secondary item damage before applying offhand/AP
     // modifiers. Keep it outside both the baseline half and specialization.
@@ -499,7 +530,11 @@ float localMeleeAuraHastePct(const LocalRealmPlayer& p,const LocalWorldContent& 
 }
 float localMeleeSpeed(const LocalRealmPlayer& p,const LocalWorldContent& c,bool off){
     const auto a=localWeaponAmounts(p,c,off);if(!a.active)return 0;
-    const double multiplier=(1+double(localMeleeStats(p,c).haste)/100)*(1+double(localMeleeAuraHastePct(p,c))/100);
+    double multiplier=(1+double(localMeleeStats(p,c).haste)/100)*(1+double(localMeleeAuraHastePct(p,c))/100);
+    // Unit::ApplyAttackTimePercentMod for a creature's MOD_MELEE_HASTE view:
+    // a positive amount divides the attack time, a negative one multiplies it.
+    if(const auto viewHaste=localPlayerViewModifiers(p,1).hastePct;viewHaste>0)multiplier*=1+double(viewHaste)/100;
+    else if(viewHaste<0)multiplier/=1+double(-viewHaste)/100;
     if(!std::isfinite(a.seconds)||!std::isfinite(multiplier)||a.seconds<=0||multiplier<=0)return 0;
     return float(std::clamp(double(a.seconds)/multiplier,.2,10.0));
 }
@@ -533,10 +568,14 @@ LocalMeleeOutcome localRollPlayerMelee(const LocalRealmPlayer& p,const LocalReal
     if(special&&rules.noActiveDefense)return specialCritical();
     const auto it=std::lower_bound(std::begin(npcs),std::end(npcs),n.entry,[](const auto& a,uint32_t b){return a.id<b;});
     const bool boss=it!=std::end(npcs)&&it->id==n.entry&&it->rank==3;
-    if(take(flags&0x800000?0:(boss?5.85f:5.f)+diff*.04f-s.expertise))return LocalMeleeOutcome::Dodge;
+    // 2.37: the creature's own MOD_DODGE/PARRY/BLOCK_PERCENT buffs enter
+    // GetUnitDodgeChance / GetUnitParryChance / GetUnitBlockChance as
+    // GetTotalAuraModifier terms.
+    const float buffDodge=float(localNpcBuffTotal(n,&LocalNpcBuff::dodgePct)),buffParry=float(localNpcBuffTotal(n,&LocalNpcBuff::parryPct)),buffBlock=float(localNpcBuffTotal(n,&LocalNpcBuff::blockPct));
+    if(take(flags&0x800000?0:(boss?5.85f:5.f)+buffDodge+diff*.04f-s.expertise))return LocalMeleeOutcome::Dodge;
     const bool facing=front(n.x,n.y,n.orientation,p.x,p.y);
-    const float npcParry=it!=std::end(npcs)&&it->id==n.entry?(it->rank==3?13.4f:it->type==7?5.f:0.f):0.f;
-    if(take(!facing||(flags&4)||!npcParry?0:npcParry+diff*.04f-s.expertise))return LocalMeleeOutcome::Parry;
+    const float npcParry=(it!=std::end(npcs)&&it->id==n.entry?(it->rank==3?13.4f:it->type==7?5.f:0.f):0.f)+buffParry;
+    if(take(!facing||(flags&4)||!(npcParry>0)?0:npcParry+diff*.04f-s.expertise))return LocalMeleeOutcome::Parry;
     // Active attacks have a separate crit roll after miss/dodge/parry, unlike white swings.
     if(special){
         // The full block of a COMPLETELY_BLOCKED spell (Unit.cpp:3475-3483):
@@ -544,10 +583,10 @@ LocalMeleeOutcome localRollPlayerMelee(const LocalRealmPlayer& p,const LocalReal
         // CREATURE_FLAG_EXTRA_NO_BLOCK. No accepted row reaches this arm at the
         // pin (localSpellFullyBlockable); a Block here is a nullified hit, not
         // the partial block of a white swing.
-        if(rules.fullBlock&&take(!facing||(flags&16)?0:5+diff*.04f))return LocalMeleeOutcome::Block;
+        if(rules.fullBlock&&take(!facing||(flags&16)?0:5+buffBlock+diff*.04f))return LocalMeleeOutcome::Block;
         return specialCritical();
     }
-    if(take(!facing||(flags&16)?0:5+diff*.04f))return LocalMeleeOutcome::Block;
+    if(take(!facing||(flags&16)?0:5+buffBlock+diff*.04f))return LocalMeleeOutcome::Block;
     if(take(n.level>p.level?std::min(40.f,10+diff):0))return LocalMeleeOutcome::Glancing;
     if(take(std::max(0.f,crit-diff*.04f)))return LocalMeleeOutcome::Critical;
     return LocalMeleeOutcome::Hit;
@@ -572,20 +611,68 @@ LocalMeleeOutcome localRollPetMelee(const LocalRealmPet& pet,const LocalRealmNpc
     if(take(std::clamp(5+(diff>10?1+(diff-10)*.4f:diff*.1f),0.f,60.f)))return LocalMeleeOutcome::Miss;
     const auto it=std::lower_bound(std::begin(npcs),std::end(npcs),n.entry,[](const auto& a,uint32_t b){return a.id<b;});
     const bool boss=it!=std::end(npcs)&&it->id==n.entry&&it->rank==3;
-    if(take(flags&0x800000?0:(boss?5.85f:5.f)+diff*.04f))return LocalMeleeOutcome::Dodge;
+    const float buffDodge=float(localNpcBuffTotal(n,&LocalNpcBuff::dodgePct)),buffParry=float(localNpcBuffTotal(n,&LocalNpcBuff::parryPct)),buffBlock=float(localNpcBuffTotal(n,&LocalNpcBuff::blockPct));
+    if(take(flags&0x800000?0:(boss?5.85f:5.f)+buffDodge+diff*.04f))return LocalMeleeOutcome::Dodge;
     const bool facing=front(n.x,n.y,n.orientation,pet.x,pet.y);
-    const float npcParry=it!=std::end(npcs)&&it->id==n.entry?(it->rank==3?13.4f:it->type==7?5.f:0.f):0.f;
-    if(take(!facing||(flags&4)||!npcParry?0:npcParry+diff*.04f))return LocalMeleeOutcome::Parry;
-    if(take(!facing||(flags&16)?0:5+diff*.04f))return LocalMeleeOutcome::Block;
+    const float npcParry=(it!=std::end(npcs)&&it->id==n.entry?(it->rank==3?13.4f:it->type==7?5.f:0.f):0.f)+buffParry;
+    if(take(!facing||(flags&4)||!(npcParry>0)?0:npcParry+diff*.04f))return LocalMeleeOutcome::Parry;
+    if(take(!facing||(flags&16)?0:5+buffBlock+diff*.04f))return LocalMeleeOutcome::Block;
     if(take(pet.level>=n.level+4&&!(flags&32)?-diff*2-15:0))return LocalMeleeOutcome::Crushing;
     if(take(5-diff*.04f))return LocalMeleeOutcome::Critical;
     return LocalMeleeOutcome::Hit;
 }
+// Unit::MeleeSpellHitResult (Unit.cpp:3316-3486) for a creature's melee or
+// ranged special against a player, roll in 0..10000. MeleeSpellMissChance keeps the
+// victim's base miss and defense terms but never the dual-wield penalty; a
+// creature has no expertise or hit auras. Crushing blows and crits do not
+// exist for spells (SpellDoneCritChance returns -100 for creatures).
+LocalMeleeOutcome localRollNpcMeleeSpell(const LocalRealmNpc& n,const LocalRealmPlayer& p,const LocalMeleeStats& s,
+                                         const LocalSpellDefinition& d,uint32_t roll){
+    if(d.sourceAlwaysHit)return LocalMeleeOutcome::Hit;
+    // skillDiff = creature weapon skill - victim max skill = (n - p) * 5.
+    const float diff=(int(p.level)-int(n.level))*5.f;
+    // 2.37: MOD_HIT_CHANCE on the creature (m_modMeleeHitChance) lowers its
+    // miss chance before the clamp (Unit::MeleeSpellMissChance).
+    const float miss=d.sourceNoAttackMiss?0.f:std::clamp(5+(diff>0?diff*.04f:diff*.02f)+s.missBonus-float(localNpcBuffTotal(n,&LocalNpcBuff::hitChancePct)),0.f,60.f);
+    uint32_t sum=uint32_t(miss*100.f);
+    if(roll<sum)return LocalMeleeOutcome::Miss;
+    if(d.sourceNoActiveDefense)return LocalMeleeOutcome::Hit;
+    bool canDodge=!d.sourceNoAttackDodge,canParry=!d.sourceNoAttackParry;
+    bool canBlock=d.sourceCompletelyBlocked&&!d.sourceDirectDamage;
+    // Ranged attacks can only miss, be deflected (no player source) or, as a
+    // COMPLETELY_BLOCKED spell, be blocked.
+    if(d.sourceDamageClass==3){canDodge=false;canParry=false;}
+    // From behind a player can neither dodge nor parry nor block.
+    if(!front(p.x,p.y,p.orientation,n.x,n.y)){canDodge=false;canParry=false;canBlock=false;}
+    // IsNonMeleeSpellCast / UNIT_STATE_CONTROLLED: a casting or stunned
+    // victim has no active defense.
+    const bool casting=p.castingSpellId!=0||(localPlayerControl(p)&0xdu);
+    const auto take=[&](bool allowed,float pct){
+        int32_t chance=allowed&&!casting?int32_t(pct*100.f)+int32_t(diff*4.f):0;
+        if(chance<0)chance=0;
+        sum+=uint32_t(chance);return roll<sum;
+    };
+    if(canDodge&&take(true,s.dodge))return LocalMeleeOutcome::Dodge;
+    if(canParry&&take(s.parry>0,s.parry))return LocalMeleeOutcome::Parry;
+    if(canBlock&&take(s.block>0,s.block))return LocalMeleeOutcome::Block;
+    return LocalMeleeOutcome::Hit;
+}
+// Unit::isSpellBlocked (Unit.cpp:3262-3286): partial block of a physical
+// melee special, rolled separately; the attacker's skill lead raises it.
+bool localNpcMeleeSpellBlocked(const LocalRealmNpc& n,const LocalRealmPlayer& p,const LocalMeleeStats& s,
+                               const LocalSpellDefinition& d,uint32_t roll){
+    if(d.sourceNoActiveDefense||d.sourceAlwaysHit||s.block<=0||p.castingSpellId||(localPlayerControl(p)&0xdu))return false;
+    if(!front(p.x,p.y,p.orientation,n.x,n.y))return false;
+    const float chance=s.block+(int(n.level)-int(p.level))*5.f*.04f;
+    return chance>0&&float(roll)<chance*100.f;
+}
 LocalMeleeOutcome localRollNpcMelee(const LocalRealmNpc& n,const LocalRealmPlayer& p,const LocalMeleeStats& s,uint32_t roll){
     const auto flags=localNpcMeleeFlags(n.entry);const float diff=(int(p.level)-int(n.level))*5.f;
     float sum=0;auto take=[&](float chance){sum+=std::max(0.f,chance)*100;return roll<sum;};
-    if(take(std::clamp(5+(diff>0?diff*.04f:diff*.02f)+s.missBonus,0.f,60.f)))return LocalMeleeOutcome::Miss;
-    const bool facing=front(p.x,p.y,p.orientation,n.x,n.y)&&!p.castingSpellId;
+    if(take(std::clamp(5+(diff>0?diff*.04f:diff*.02f)+s.missBonus-float(localNpcBuffTotal(n,&LocalNpcBuff::hitChancePct)),0.f,60.f)))return LocalMeleeOutcome::Miss;
+    // IsNonMeleeSpellCast / UNIT_STATE_CONTROLLED: no active defense while
+    // casting or stunned.
+    const bool facing=front(p.x,p.y,p.orientation,n.x,n.y)&&!p.castingSpellId&&!(localPlayerControl(p)&0xdu);
     if(take(facing?s.dodge+diff*.04f:0))return LocalMeleeOutcome::Dodge;
     if(take(facing&&s.parry>0?s.parry+diff*.04f:0))return LocalMeleeOutcome::Parry;
     if(take(facing&&s.block>0?s.block+diff*.04f:0))return LocalMeleeOutcome::Block;

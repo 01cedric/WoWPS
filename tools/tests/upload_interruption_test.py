@@ -34,16 +34,17 @@ void destroyBuffer(uint64_t,Buffer& b){if(b.buffer)++releasedBuffers;b.buffer=0;
 VkResult vkCreateFence(uint64_t,const VkFenceCreateInfo*,void*,VkFence*f){if(!failFence)*f=99;return failFence;}
 VkResult vkQueueSubmit(VkQueue,unsigned,const VkSubmitInfo*info,VkFence fence){assert(fence==99&&info->commandBufferCount==1&&*info->pCommandBuffers==42);++submitted;return failSubmit;}
 struct VkContext {
-    struct InFlightBatch{VkFence fence=0;uint64_t cmd=0;bool separateQueue=false;std::vector<Buffer>stagingBuffers;std::vector<Raw>rawStaging;};
+    struct InFlightBatch{VkFence fence=0;uint64_t cmd=0;bool separateQueue=false;std::vector<Buffer>stagingBuffers;std::vector<Raw>rawStaging;VkDeviceSize stagingBytes=0;};
     int uploadBatchDepth_=0;bool inUploadBatch_=false,hasDedicatedTransfer_=false,deviceLost_=false;
     uint64_t batchCmd_=0,transferCommandPool_=1,immCommandPool=2,device=3,allocator=4,transferQueue_=5,graphicsQueue=6;
     unsigned batchesSubmitted_=0;
     std::vector<InFlightBatch>inFlightBatches_;
+    VkDeviceSize inFlightUploadBytes_=0;
     std::vector<Buffer>batchStagingBuffers_;
     std::vector<Raw>batchRawStaging_;
     void freeRawStaging(){releasedRaw+=batchRawStaging_.size();batchRawStaging_.clear();}
     unsigned waits=0;
-    bool waitAllUploads(){++waits;inFlightBatches_.clear();return true;}
+    bool waitAllUploads(){++waits;inFlightBatches_.clear();inFlightUploadBytes_=0;return true;}
     void pollUploadBatches(){}
     void beginUploadBatch();
     void finishInterruptedUploadBatch();void finishUploadBatch(bool synchronous);
@@ -73,6 +74,7 @@ int main(){
     assert(bounded.inFlightBatches_.size()==16&&bounded.waits==0);
     bounded.beginUploadBatch();assert(bounded.waits==1&&bounded.inFlightBatches_.empty());bounded.finishInterruptedUploadBatch();
     bounded.inFlightBatches_.resize(1);bounded.inFlightBatches_[0].rawStaging.push_back({1,2,32ull*1024*1024});
+    bounded.inFlightBatches_[0].stagingBytes=32ull*1024*1024;bounded.inFlightUploadBytes_=32ull*1024*1024;
     bounded.beginUploadBatch();assert(bounded.waits==2&&bounded.inFlightBatches_.empty());bounded.finishInterruptedUploadBatch();
     for(unsigned stage=0;stage<3;++stage){
         VkContext broken;broken.seed();failEnd=stage==0?-4:0;failFence=stage==1?-4:0;failSubmit=stage==2?-4:0;

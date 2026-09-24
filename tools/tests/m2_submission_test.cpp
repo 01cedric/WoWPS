@@ -1,4 +1,5 @@
 #include "rendering/m2_submission.hpp"
+#include "rendering/m2_blend_mode.hpp"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -71,6 +72,41 @@ int main() {
     reuse.remember(bad, identity, 38);
     assert(!reuse.find(bad, identity, slot));
 
+    // Immutable material policy is resolved once at upload. Representative
+    // cases pin the old per-draw branch results exactly.
+    {
+        const auto opaque = m2StaticMaterialState(M2_BLEND_OPAQUE, true, false, 0,
+            false, false, false, false);
+        assert(!opaque.forceCutout && opaque.effectiveBlendMode == M2_BLEND_OPAQUE);
+        assert(opaque.alphaMode == 0 && opaque.unlit == 0);
+
+        const auto foliage = m2StaticMaterialState(M2_BLEND_OPAQUE, true, false, 0x01,
+            false, true, false, false);
+        assert(foliage.forceCutout && foliage.effectiveBlendMode == M2_BLEND_ALPHA_KEY);
+        assert(foliage.alphaMode == 2 && foliage.unlit == 1);
+
+        const auto ground = m2StaticMaterialState(M2_BLEND_OPAQUE, true, false, 0x01,
+            true, false, false, false);
+        assert(ground.forceCutout && ground.alphaMode == 3 && ground.unlit == 0);
+
+        const auto spell = m2StaticMaterialState(M2_BLEND_OPAQUE, true, false, 0x01,
+            false, false, true, false);
+        assert(!spell.forceCutout && spell.effectiveBlendMode == M2_BLEND_ADD);
+        assert(spell.alphaMode == 0 && spell.unlit == 1);
+
+        const auto forge = m2StaticMaterialState(M2_BLEND_OPAQUE, true, true, 0,
+            false, false, false, true);
+        assert(!forge.forceCutout && forge.effectiveBlendMode == M2_BLEND_ADD);
+        assert(forge.alphaMode == 0);
+
+        const auto modulatedKey = m2StaticMaterialState(M2_BLEND_MODULATE, false, true, 0,
+            false, false, false, false);
+        assert(modulatedKey.effectiveBlendMode == M2_BLEND_MODULATE);
+        assert(modulatedKey.alphaMode == 1 && modulatedKey.colorKeyThreshold == 0.7f);
+        assert(m2EncodeAlphaTest(foliage.alphaMode, false) == 2);
+        assert(m2EncodeAlphaTest(foliage.alphaMode, true) == 10);
+    }
+
     // Match six draws across two instances. Each gets fresh local ownership;
     // repeated layers share only that instance's slot. Animated UV changes
     // require a new entry, while draw order/count and UV values remain exact.
@@ -92,6 +128,6 @@ int main() {
     // A fresh render/frame cannot reuse a prior frame's same-valued UV record.
     M2TransparentRecordReuse nextFrame;
     assert(!nextFrame.find(origin, identity, slot));
-    std::cout << "PASS M2 stable four-LOD grouping, payload retention, warmed scratch, "
+    std::cout << "PASS M2 stable four-LOD grouping, static material policy, payload retention, warmed scratch, "
                  "exact UV matching and instance/frame-local slot ownership\n";
 }

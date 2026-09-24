@@ -783,6 +783,9 @@ static void vk_ps4_reset_user_data_state(VkPs4CommandBuffer *cmd) {
     cmd->vertex_table_pipeline = NULL;
     cmd->index_buffer_state_valid = false;
     cmd->direct_draw_state_valid = false;
+    cmd->direct_draw_userdata_valid = false;
+    cmd->direct_draw_userdata_pipeline = NULL;
+    cmd->direct_draw_first_instance = 0;
     cmd->graphics_sync_endptr = NULL;
     cmd->graphics_sync_shader_reads = false;
 }
@@ -793,6 +796,7 @@ static void vk_ps4_reset_user_data_state(VkPs4CommandBuffer *cmd) {
  * without re-binding its pipeline (per Vulkan spec for CmdClearAttachments). */
 static void vk_ps4_rebind_pipeline_state(VkPs4CommandBuffer *cmd) {
     cmd->direct_draw_state_valid = false;
+    cmd->direct_draw_userdata_valid = false;
     VkPs4Pipeline *pipe = cmd->current_pipeline;
     const uint32_t stencil_front = cmd->stencil_refmask_front;
     const uint32_t stencil_back = cmd->stencil_refmask_back;
@@ -1543,7 +1547,7 @@ vk_ps4_EndCommandBuffer(VkCommandBuffer commandBuffer) {
                 cmd->dynamic_table_cursor, VK_PS4_MAX_DYNAMIC_TABLE_SNAPSHOTS, (int)cmd->recording_error);
     }
     if (total >= 16u * 1024u && cmd->pm4_world_recordings % 300u == 0u) {
-        vk_ps4_log("[ICD_RECORD_API] windowLargeRecordings=300 drawCalls=%llu drawSamples=%llu drawWallMeanNs=%llu drawWallMaxUs=%llu descriptorCalls=%llu descriptorSamples=%llu descriptorWallMeanNs=%llu descriptorWallMaxUs=%llu sampleStride=128/64 wallTimeOnly=1 GPUTime=unmeasured",
+        vk_ps4_log("[ICD_RECORD_API] windowLargeRecordings=300 drawCalls=%llu drawSamples=%llu drawWallMeanNs=%llu drawWallMaxUs=%llu descriptorCalls=%llu descriptorSamples=%llu descriptorWallMeanNs=%llu descriptorWallMaxUs=%llu directUserdataWrites=%llu directUserdataReuses=%llu sampleStride=128/64 wallTimeOnly=1 GPUTime=unmeasured",
             (unsigned long long)cmd->recording_perf.draw_calls,
             (unsigned long long)cmd->recording_perf.draw_samples,
             (unsigned long long)(cmd->recording_perf.draw_samples ? cmd->recording_perf.draw_us * 1000u / cmd->recording_perf.draw_samples : 0),
@@ -1551,7 +1555,9 @@ vk_ps4_EndCommandBuffer(VkCommandBuffer commandBuffer) {
             (unsigned long long)cmd->recording_perf.descriptor_calls,
             (unsigned long long)cmd->recording_perf.descriptor_samples,
             (unsigned long long)(cmd->recording_perf.descriptor_samples ? cmd->recording_perf.descriptor_us * 1000u / cmd->recording_perf.descriptor_samples : 0),
-            (unsigned long long)cmd->recording_perf.descriptor_max_us);
+            (unsigned long long)cmd->recording_perf.descriptor_max_us,
+            (unsigned long long)cmd->recording_perf.direct_userdata_writes,
+            (unsigned long long)cmd->recording_perf.direct_userdata_reuses);
         memset(&cmd->recording_perf, 0, sizeof(cmd->recording_perf));
     }
     if (cmd->recording_error != VK_SUCCESS) return cmd->recording_error;
@@ -1681,6 +1687,8 @@ vk_ps4_CmdBindPipeline(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipeli
      * secondary execution and command-buffer reset invalidate this pointer. */
     if (cmd->current_pipeline == pipe && !cmd->pipeline_rebind_required) return;
     cmd->current_pipeline = pipe;
+    if (pipelineBindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS)
+        cmd->direct_draw_userdata_valid = false;
 
     /* Whatever is bound reaches the new shaders through their own user-data
      * registers: sets, push constants and the vertex table go out again
@@ -2426,6 +2434,61 @@ static void vk_ps4_set_direct_draw_state(VkPs4CommandBuffer *cmd,
     cmd->direct_draw_state_valid = cmd->recording_error == VK_SUCCESS;
 }
 
+/* Base vertex is carried by VGT_INDX_OFFSET in this backend, so the shader's
+ * base-vertex SGPR is always zero. startInstance is likewise almost always zero
+ * for scene/shadow draws. Cache the exact pipeline+firstInstance pair so
+ * thousands of depth draws do not append an identical SET_SH_REG packet. */
+static void vk_ps4_set_direct_draw_userdata(VkPs4CommandBuffer *cmd,
+                                            VkPs4Pipeline *pipe,
+                                            uint32_t first_instance) {
+    if (!cmd || !pipe) return;
+    if (cmd->direct_draw_userdata_valid &&
+        cmd->direct_draw_userdata_pipeline == pipe &&
+        cmd->direct_draw_first_instance == first_instance) {
+        ++cmd->recording_perf.direct_userdata_reuses;
+        return;
+    }
+    ++cmd->recording_perf.direct_userdata_writes;
+
+    const bool both = pipe->has_base_vertex_reg && pipe->has_start_instance_reg &&
+                      pipe->vs_base_vertex_reg + 1 == pipe->vs_start_instance_reg;
+    if (both) {
+        const uint32_t reg_addr = R_00B130_SPI_SHADER_USER_DATA_VS_0 +
+                                  pipe->vs_base_vertex_reg * 4;
+        if ((uint32_t)(cmd->gnm_cmd.endptr - cmd->gnm_cmd.cmdptr) < 4u &&
+            !vk_ps4_command_overflow(&cmd->gnm_cmd, 4u, cmd)) return;
+        cmd->gnm_cmd.cmdptr[0] = PKT3(PKT3_SET_SH_REG, 2, 0);
+        cmd->gnm_cmd.cmdptr[1] = (reg_addr - SI_SH_REG_OFFSET) >> 2;
+        cmd->gnm_cmd.cmdptr[2] = 0u;
+        cmd->gnm_cmd.cmdptr[3] = first_instance;
+        cmd->gnm_cmd.cmdptr += 4;
+    } else {
+        if (pipe->has_base_vertex_reg) {
+            const uint32_t reg_addr = R_00B130_SPI_SHADER_USER_DATA_VS_0 +
+                                      pipe->vs_base_vertex_reg * 4;
+            if ((uint32_t)(cmd->gnm_cmd.endptr - cmd->gnm_cmd.cmdptr) < 3u &&
+                !vk_ps4_command_overflow(&cmd->gnm_cmd, 3u, cmd)) return;
+            cmd->gnm_cmd.cmdptr[0] = PKT3(PKT3_SET_SH_REG, 1, 0);
+            cmd->gnm_cmd.cmdptr[1] = (reg_addr - SI_SH_REG_OFFSET) >> 2;
+            cmd->gnm_cmd.cmdptr[2] = 0u;
+            cmd->gnm_cmd.cmdptr += 3;
+        }
+        if (pipe->has_start_instance_reg) {
+            const uint32_t reg_addr = R_00B130_SPI_SHADER_USER_DATA_VS_0 +
+                                      pipe->vs_start_instance_reg * 4;
+            if ((uint32_t)(cmd->gnm_cmd.endptr - cmd->gnm_cmd.cmdptr) < 3u &&
+                !vk_ps4_command_overflow(&cmd->gnm_cmd, 3u, cmd)) return;
+            cmd->gnm_cmd.cmdptr[0] = PKT3(PKT3_SET_SH_REG, 1, 0);
+            cmd->gnm_cmd.cmdptr[1] = (reg_addr - SI_SH_REG_OFFSET) >> 2;
+            cmd->gnm_cmd.cmdptr[2] = first_instance;
+            cmd->gnm_cmd.cmdptr += 3;
+        }
+    }
+    cmd->direct_draw_userdata_pipeline = pipe;
+    cmd->direct_draw_first_instance = first_instance;
+    cmd->direct_draw_userdata_valid = cmd->recording_error == VK_SUCCESS;
+}
+
 VKAPI_ATTR void VKAPI_CALL
 vk_ps4_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount, uint32_t instanceCount,
                uint32_t firstVertex, uint32_t firstInstance) {
@@ -2490,50 +2553,8 @@ vk_ps4_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount, uint32_t ins
      * which is why the SGPR below is written as 0 rather than the offset.
      * Written on every draw, offset or not: the register is sticky. */
     vk_ps4_set_direct_draw_state(cmd, instanceCount, firstVertex);
-    if (cmd->current_pipeline) {
-        VkPs4Pipeline *pipe = cmd->current_pipeline;
-        bool both = pipe->has_base_vertex_reg && pipe->has_start_instance_reg &&
-                    pipe->vs_base_vertex_reg + 1 == pipe->vs_start_instance_reg;
-        if (both) {
-            /* Batched: single SET_SH_REG with 2 values */
-            uint32_t reg_addr = R_00B130_SPI_SHADER_USER_DATA_VS_0 +
-                                pipe->vs_base_vertex_reg * 4;
-            if ((uint32_t)(cmd->gnm_cmd.endptr - cmd->gnm_cmd.cmdptr) < 4u &&
-                    !vk_ps4_command_overflow(&cmd->gnm_cmd, 4u, cmd)) return;
-                {
-                cmd->gnm_cmd.cmdptr[0] = PKT3(PKT3_SET_SH_REG, 2, 0);
-                cmd->gnm_cmd.cmdptr[1] = (reg_addr - SI_SH_REG_OFFSET) >> 2;
-                cmd->gnm_cmd.cmdptr[2] = 0u; /* carried by VGT_INDX_OFFSET */
-                cmd->gnm_cmd.cmdptr[3] = firstInstance;
-                cmd->gnm_cmd.cmdptr += 4;
-            }
-        } else {
-            if (pipe->has_base_vertex_reg) {
-                uint32_t reg_addr = R_00B130_SPI_SHADER_USER_DATA_VS_0 +
-                                    pipe->vs_base_vertex_reg * 4;
-                if ((uint32_t)(cmd->gnm_cmd.endptr - cmd->gnm_cmd.cmdptr) < 3u &&
-                    !vk_ps4_command_overflow(&cmd->gnm_cmd, 3u, cmd)) return;
-                {
-                    cmd->gnm_cmd.cmdptr[0] = PKT3(PKT3_SET_SH_REG, 1, 0);
-                    cmd->gnm_cmd.cmdptr[1] = (reg_addr - SI_SH_REG_OFFSET) >> 2;
-                    cmd->gnm_cmd.cmdptr[2] = 0u; /* carried by VGT_INDX_OFFSET */
-                    cmd->gnm_cmd.cmdptr += 3;
-                }
-            }
-            if (pipe->has_start_instance_reg) {
-                uint32_t reg_addr = R_00B130_SPI_SHADER_USER_DATA_VS_0 +
-                                    pipe->vs_start_instance_reg * 4;
-                if ((uint32_t)(cmd->gnm_cmd.endptr - cmd->gnm_cmd.cmdptr) < 3u &&
-                    !vk_ps4_command_overflow(&cmd->gnm_cmd, 3u, cmd)) return;
-                {
-                    cmd->gnm_cmd.cmdptr[0] = PKT3(PKT3_SET_SH_REG, 1, 0);
-                    cmd->gnm_cmd.cmdptr[1] = (reg_addr - SI_SH_REG_OFFSET) >> 2;
-                    cmd->gnm_cmd.cmdptr[2] = firstInstance;
-                    cmd->gnm_cmd.cmdptr += 3;
-                }
-            }
-        }
-    }
+    vk_ps4_set_direct_draw_userdata(cmd, cmd->current_pipeline, firstInstance);
+    if (cmd->recording_error != VK_SUCCESS) return;
 
     GnmDrawModifier mod = {0};
     sceGnmDrawCmdDrawIndexAuto2(&cmd->gnm_cmd, vertexCount, mod);
@@ -2707,49 +2728,8 @@ vk_ps4_record_draw_indexed(VkCommandBuffer commandBuffer, uint32_t indexCount, u
      * lists fetched the first list's vertices, and the login screen showed
      * the whole glyph atlas stretched over the backdrop quad (B4 test 8). */
     vk_ps4_set_direct_draw_state(cmd, instanceCount, (uint32_t)vertexOffset);
-    if (cmd->current_pipeline) {
-        VkPs4Pipeline *pipe = cmd->current_pipeline;
-        bool both = pipe->has_base_vertex_reg && pipe->has_start_instance_reg &&
-                    pipe->vs_base_vertex_reg + 1 == pipe->vs_start_instance_reg;
-        if (both) {
-            uint32_t reg_addr = R_00B130_SPI_SHADER_USER_DATA_VS_0 +
-                                pipe->vs_base_vertex_reg * 4;
-            if ((uint32_t)(cmd->gnm_cmd.endptr - cmd->gnm_cmd.cmdptr) < 4u &&
-                    !vk_ps4_command_overflow(&cmd->gnm_cmd, 4u, cmd)) return;
-                {
-                cmd->gnm_cmd.cmdptr[0] = PKT3(PKT3_SET_SH_REG, 2, 0);
-                cmd->gnm_cmd.cmdptr[1] = (reg_addr - SI_SH_REG_OFFSET) >> 2;
-                cmd->gnm_cmd.cmdptr[2] = 0u; /* carried by VGT_INDX_OFFSET */
-                cmd->gnm_cmd.cmdptr[3] = firstInstance;
-                cmd->gnm_cmd.cmdptr += 4;
-            }
-        } else {
-            if (pipe->has_base_vertex_reg) {
-                uint32_t reg_addr = R_00B130_SPI_SHADER_USER_DATA_VS_0 +
-                                    pipe->vs_base_vertex_reg * 4;
-                if ((uint32_t)(cmd->gnm_cmd.endptr - cmd->gnm_cmd.cmdptr) < 3u &&
-                    !vk_ps4_command_overflow(&cmd->gnm_cmd, 3u, cmd)) return;
-                {
-                    cmd->gnm_cmd.cmdptr[0] = PKT3(PKT3_SET_SH_REG, 1, 0);
-                    cmd->gnm_cmd.cmdptr[1] = (reg_addr - SI_SH_REG_OFFSET) >> 2;
-                    cmd->gnm_cmd.cmdptr[2] = 0u; /* carried by VGT_INDX_OFFSET */
-                    cmd->gnm_cmd.cmdptr += 3;
-                }
-            }
-            if (pipe->has_start_instance_reg) {
-                uint32_t reg_addr = R_00B130_SPI_SHADER_USER_DATA_VS_0 +
-                                    pipe->vs_start_instance_reg * 4;
-                if ((uint32_t)(cmd->gnm_cmd.endptr - cmd->gnm_cmd.cmdptr) < 3u &&
-                    !vk_ps4_command_overflow(&cmd->gnm_cmd, 3u, cmd)) return;
-                {
-                    cmd->gnm_cmd.cmdptr[0] = PKT3(PKT3_SET_SH_REG, 1, 0);
-                    cmd->gnm_cmd.cmdptr[1] = (reg_addr - SI_SH_REG_OFFSET) >> 2;
-                    cmd->gnm_cmd.cmdptr[2] = firstInstance;
-                    cmd->gnm_cmd.cmdptr += 3;
-                }
-            }
-        }
-    }
+    vk_ps4_set_direct_draw_userdata(cmd, cmd->current_pipeline, firstInstance);
+    if (cmd->recording_error != VK_SUCCESS) return;
 
     /* The first draws of a session, with everything they bind: a GPU fault
      * on a draw kills the process before any completion can be logged, so
@@ -2845,6 +2825,7 @@ vk_ps4_CmdDrawIndirect(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceS
     if (!commandBuffer || !buffer) return;
     VkPs4CommandBuffer *cmd = (VkPs4CommandBuffer *)commandBuffer;
     cmd->direct_draw_state_valid = false; /* GPU arguments change draw registers. */
+    cmd->direct_draw_userdata_valid = false;
     VkPs4Buffer *buf = (VkPs4Buffer *)buffer;
     if (!cmd->current_pipeline) return;
     vk_ps4_flush_graphics_user_data(cmd);
@@ -2892,8 +2873,14 @@ vk_ps4_CmdDrawIndexedIndirect(VkCommandBuffer commandBuffer, VkBuffer buffer, Vk
     if (!commandBuffer || !buffer) return;
     VkPs4CommandBuffer *cmd = (VkPs4CommandBuffer *)commandBuffer;
     cmd->direct_draw_state_valid = false; /* GPU arguments change draw registers. */
+    cmd->direct_draw_userdata_valid = false;
+    const bool depth_receipt = cmd->depth_draw_diagnostics.active;
+    if (depth_receipt) cmd->depth_draw_diagnostics.attempts += drawCount;
     VkPs4Buffer *buf = (VkPs4Buffer *)buffer;
-    if (!cmd->current_pipeline) return;
+    if (!cmd->current_pipeline) {
+        if (depth_receipt) cmd->depth_draw_diagnostics.no_pipeline += drawCount;
+        return;
+    }
     vk_ps4_flush_graphics_user_data(cmd);
     if (cmd->recording_error != VK_SUCCESS) return;
 
@@ -2923,9 +2910,15 @@ vk_ps4_CmdDrawIndexedIndirect(VkCommandBuffer commandBuffer, VkBuffer buffer, Vk
 
     for (uint32_t i = 0; i < drawCount; i++) {
         uint32_t data_offset = i * stride;
+        uint32_t *before_draw = cmd->gnm_cmd.cmdptr;
         sceGnmDrawCmdDrawIndexIndirect(
             &cmd->gnm_cmd, data_offset, GNM_STAGE_VS, 0, 0
         );
+        if (depth_receipt) {
+            if (cmd->recording_error == VK_SUCCESS && cmd->gnm_cmd.cmdptr != before_draw)
+                ++cmd->depth_draw_diagnostics.emitted;
+            else ++cmd->depth_draw_diagnostics.emitter_failed;
+        }
     }
 }
 
@@ -4261,4 +4254,5 @@ vk_ps4_CmdExecuteCommands(VkCommandBuffer commandBuffer,
     primary->vertex_table_pipeline = NULL;
     primary->index_buffer_state_valid = false;
     primary->direct_draw_state_valid = false;
+    primary->direct_draw_userdata_valid = false;
 }

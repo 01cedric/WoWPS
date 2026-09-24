@@ -1172,6 +1172,7 @@ void EntitySpawner::spawnOnlineGameObject(uint64_t guid, uint32_t entry, uint32_
             }
 
             gameObjectInstances_[guid] = {.modelId = modelId, .instanceId = instanceId, .isWmo = true};
+            applyBufferedDoorPresentation(guid);
             LOG_DEBUG("Spawned gameobject WMO: guid=0x", std::hex, guid, std::dec,
                      " displayId=", displayId, " at (", x, ", ", y, ", ", z, ")");
 
@@ -1347,6 +1348,7 @@ void EntitySpawner::spawnOnlineGameObject(uint64_t guid, uint32_t entry, uint32_
         }
 
         gameObjectInstances_[guid] = {.modelId = modelId, .instanceId = instanceId, .isWmo = false};
+        applyBufferedDoorPresentation(guid);
 
         // Notify transport system for M2 transports (e.g. Deeprun Tram cars)
         if (gameHandler_ && gameHandler_->isTransportGuid(guid)) {

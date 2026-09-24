@@ -163,24 +163,47 @@ function WoWPS_LocalBankActivate(name)
     end end
     return false
 end
+-- 2.40: the creature's own gossip options (gossip_menu_option rows the
+-- authority admitted) come first, in the page's order; a gossip option goes
+-- to the authority, a service option opens the local window for it. The
+-- generic service rows below fill in only for a service the page has no
+-- option of its own for.
+local gossipIcons={[0]='gossip',[1]='vendor',[2]='taxi',[3]='trainer',[4]='gossip',[5]='gossip',[6]='banker',[7]='gossip',[8]='tabard',[9]='battlemaster',[10]='gossip'}
+local gossipKinds={[3]='merchant_open',[5]='trainer_open',[8]='set_home',[9]='bank_open',[13]='auction_open',[16]='talents_reset'}
 local function options()
-    local s=state();local t={};local m=s.merchant
-    if m and (m.vendor or m.repair)then t[#t+1]={'I would like to browse your goods.','vendor','merchant_open',0}end
+    local s=state();local t={};local m=s.merchant;local covered={}
+    for _,o in ipairs(s.gossipOptions or {})do
+        if o.type~=4 and o.type~=14 then
+            covered[o.type]=true
+            t[#t+1]={o.text,gossipIcons[o.icon] or 'gossip',gossipKinds[o.type] or 'gossip_select',o.id,o}
+        end
+    end
+    if m and (m.vendor or m.repair) and not covered[3] then t[#t+1]={'I would like to browse your goods.','vendor','merchant_open',0}end
     if s.flightMaster then
         if not s.taxiKnown then t[#t+1]={'Discover this flight point.','taxi','taxi_discover',0} end
         for _,f in ipairs(s.flights or {})do t[#t+1]={'Fly to '..f.name..' ('..f.cost..' copper).','taxi','taxi_fly',f.id}end
     end
-    if s.banker then t[#t+1]={'I would like to check my bank.','banker','bank_open',0}end
-    if s.classTrainer then t[#t+1]={'Reset my talents (free local testing).','trainer','talents_reset',0}end
+    if s.banker and not covered[9] then t[#t+1]={'I would like to check my bank.','banker','bank_open',0}end
+    if s.classTrainer and not covered[16] then t[#t+1]={'Reset my talents (free local testing).','trainer','talents_reset',0}end
     if s.trainer then
-        t[#t+1]={'I would like some training.','trainer','trainer_open',0}
+        if not covered[5] then t[#t+1]={'I would like some training.','trainer','trainer_open',0} end
         for _,skill in ipairs(s.professions)do if skill.id==s.trainerSkill then t[#t+1]={'Practice '..skill.name..'.','trainer','craft_open',skill.id}end end
     end
+    if s.innkeeper and not covered[8] then t[#t+1]={'Make this inn your home.','innkeeper','set_home',0}end
     return t
 end
 wrap('GetGossipOptions',function()local t={}for _,v in ipairs(options())do t[#t+1]=v[1];t[#t+1]=v[2]end;return unpack(t)end)
 wrap('GetNumGossipOptions',function()return #options()end)
-wrap('SelectGossipOption',function(_,i)local v=options()[i];if v then return cmd(v[3],v[4])end end)
+-- SelectGossipOption(index, text, confirmed): a priced option asks first
+-- (GOSSIP_CONFIRM, answered with confirmed=true by the popup's Accept); a
+-- service row of the page still tells the authority which option was taken.
+wrap('SelectGossipOption',function(_,i,_text,confirmed)
+    local v=options()[i];if not v then return end
+    local o=v[5]
+    if o and not confirmed and ((o.boxMoney or 0)>0 or (o.boxText or '')~='') then return cmd('gossip_confirm',o.id) end
+    if o and v[3]~='gossip_select' then cmd('gossip_select',o.id) end
+    return cmd(v[3],v[4])
+end)
 local skillSelection,skillOwner
 local function skillRows()
     local s=state();local rows={};for _,p in ipairs(s.professions or {})do rows[#rows+1]=p end

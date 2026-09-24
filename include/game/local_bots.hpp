@@ -17,6 +17,7 @@ struct LocalAuction {
     uint32_t id = 0;
     uint32_t itemId = 0;
     uint16_t count = 1;
+    LocalItemInstanceState instance{};
     /// Copper. buyout is what the item sells for outright; bid is where the
     /// bidding starts. Cap-priced collectibles have the same bid and buyout.
     uint32_t bid = 0;
@@ -37,6 +38,7 @@ struct LocalAuctionDelivery {
     uint64_t recipient = 0;
     uint32_t itemId = 0, money = 0;
     uint16_t count = 0;
+    LocalItemInstanceState instance{};
 };
 
 /// What a bot is currently doing. Deliberately few states: a bot that looks

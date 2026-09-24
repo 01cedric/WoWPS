@@ -1141,6 +1141,7 @@ void EntitySpawner::finishWmoSpawn(const PreparedGameObjectWMO& result, uint32_t
     if (instanceId == 0) return;
 
     gameObjectInstances_[result.guid] = {.modelId = modelId, .instanceId = instanceId, .isWmo = true};
+    applyBufferedDoorPresentation(result.guid);
 
     // The synchronous WMO path notifies TransportManager after creating the
     // render instance. Do the same here: unique/uncached transport WMOs (notably
@@ -2239,6 +2240,42 @@ bool gameObjectPoseIsStateDriven(uint32_t goType) {
 }
 
 } // namespace
+
+void EntitySpawner::setGameObjectPresentationContext(uint64_t context) {
+    if (localDoorPresentation_.setContext(context)) {
+        LOG_DEBUG("Local game-object presentation context changed: ", context);
+    }
+}
+
+bool EntitySpawner::setLocalDoorPresentation(uint64_t guid, bool open, uint32_t revision) {
+    const auto pose = open ? GameObjectDoorPose::Open : GameObjectDoorPose::Closed;
+    if (!localDoorPresentation_.publish(guid, pose, revision)) return false;
+    applyBufferedDoorPresentation(guid);
+    return true;
+}
+
+void EntitySpawner::applyBufferedDoorPresentation(uint64_t guid) {
+    const auto state = localDoorPresentation_.lookup(guid);
+    if (!state || !renderer_) return;
+    const auto object = gameObjectInstances_.find(guid);
+    if (object == gameObjectInstances_.end()) return; // update-before-spawn
+
+    // A WMO has no per-instance M2 sequence. Keep it visible and retain the
+    // state; guessing a hinge axis would move collision and art independently.
+    if (object->second.isWmo) return;
+    auto* m2Renderer = renderer_->getM2Renderer();
+    if (!m2Renderer) return;
+
+    constexpr uint32_t kCloseAnimation = 146;
+    constexpr uint32_t kOpenAnimation = 148;
+    const uint32_t animation = state->pose == GameObjectDoorPose::Open
+        ? kOpenAnimation : kCloseAnimation;
+    if (!m2Renderer->setInstanceAnimationEndPose(object->second.instanceId, animation)) {
+        // There is no safe generic transform for a model without the canonical
+        // transition. Use a stable, visible bind pose instead of hiding it.
+        m2Renderer->setInstanceAnimationFrozen(object->second.instanceId, true);
+    }
+}
 
 void EntitySpawner::applyGameObjectAnimationPolicy(uint64_t guid, uint32_t entry,
                                                    uint32_t instanceId) {

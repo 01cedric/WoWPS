@@ -9,6 +9,7 @@
 #include "rendering/shadow_instances.hpp"
 #include "rendering/m2_shadow_snapshot.hpp"
 #include "rendering/m2_visibility_clusters.hpp"
+#include "rendering/m2_animation_clock.hpp"
 
 #include "pipeline/m2_loader.hpp"
 #include "pipeline/blp_loader.hpp"
@@ -70,6 +71,15 @@ struct M2ModelGPU {
         bool hasNonIdentityTextureTransform = false; // proved once from all authored keys
         uint16_t blendMode = 0;   // 0=Opaque, 1=AlphaKey, 2=Alpha, 3=Add, etc.
         uint16_t materialFlags = 0; // M2 material flags (0x01=Unlit, 0x04=TwoSided, 0x10=NoDepthWrite)
+        // Immutable submission/material policy resolved once at model upload.
+        // These used to be recomputed, and the same UBO fields rewritten, for
+        // every visible draw group every frame. alphaMode is encoded for the
+        // current MSAA mode only when the model loads or pipelines are rebuilt.
+        uint8_t effectiveBlendMode = 0;
+        uint8_t materialAlphaMode = 0;
+        bool forceCutout = false;
+        int32_t materialUnlit = 0;
+        float materialColorKeyThreshold = 0.08f;
         uint16_t submeshLevel = 0; // LOD level: 0=base, 1=LOD1, 2=LOD2, 3=LOD3
         uint8_t textureUnit = 0;  // UV set index (0=texCoords[0], 1=texCoords[1])
         uint8_t texFlags = 0;     // M2Texture.flags (bit0=WrapS, bit1=WrapT)
@@ -193,6 +203,10 @@ struct M2ModelGPU {
     bool isTransportDoodad = false; // Animated ship sail/paddle child
     bool hasTextureAnimation = false; // True if any batch has UV animation
     bool hasTransparentBatches = false; // True if any batch uses alpha-blend or additive (blendMode >= 2)
+    // Number of extra instance-SSBO records the conservative capacity pass may
+    // need for one visible instance. This depends only on immutable batch data
+    // and the lava fallback, so do not rescan every batch of every instance each frame.
+    uint32_t animatedInstanceSlotUpperBound = 0;
     uint8_t availableLODs = 0;  // Bitmask: bit N set if any batch has submeshLevel==N
 
     // Particle emitter data (kept from M2Model)
@@ -476,6 +490,9 @@ public:
     /// Set the animation sequence by animation ID (e.g. anim::OPEN, anim::CLOSE).
     /// Finds the first sequence with matching ID. Unfreezes the instance and resets time.
     void setInstanceAnimation(uint32_t instanceId, uint32_t animationId, bool loop = true);
+    /// Select an animation and freeze at its final authored sample. Used for
+    /// persistent state-driven props whose transition happened off-screen.
+    bool setInstanceAnimationEndPose(uint32_t instanceId, uint32_t animationId);
     /// Check if a model instance has a specific animation ID in its sequence table.
     [[nodiscard]] bool hasAnimation(uint32_t instanceId, uint32_t animationId) const;
     [[nodiscard]] float getInstanceAnimDuration(uint32_t instanceId) const;
@@ -978,6 +995,15 @@ private:
     std::vector<size_t> animatedInstanceIndices_;   // hasAnimation && !disableAnimation
     std::vector<size_t> particleOnlyInstanceIndices_; // !hasAnimation && hasParticleEmitters
     // Model eligibility is immutable; positions, bones and flicker remain live.
+    struct LocalLightCandidate {
+        float distSq;
+        glm::vec4 posRadius;
+        glm::vec4 colorIntensity;
+        bool flame = false;
+        glm::vec3 phaseSeed{0.0f};
+    };
+    // Scratch only: recompute animated values every gather, retain capacity.
+    mutable std::vector<LocalLightCandidate> localLightCandidates_;
     mutable std::vector<size_t> localLightInstanceIndices_;
     mutable bool localLightInstancesDirty_ = true;
     std::vector<size_t> particleInstanceIndices_;    // ALL instances with particle emitters

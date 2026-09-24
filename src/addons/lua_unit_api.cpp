@@ -10,8 +10,15 @@
 
 namespace wowee::addons {
 
+static LocalVehicleView vehicleUnit(lua_State* L,const char* unit) {
+    std::string id(unit?unit:"");toLowerInPlace(id);
+    if(id!="vehicle")return {};
+    auto* gh=getGameHandler(L);return localVehicleView(gh?gh->localServiceRealm():nullptr);
+}
+
 static int lua_UnitName(lua_State* L) {
     const char* uid = luaL_optstring(L, 1, "player");
+    if(const auto v=vehicleUnit(L,uid);v.hull){lua_pushstring(L,v.hull->name.c_str());return 1;}
     auto* unit = resolveUnit(L, uid);
     // No game object branch here either, for the reason in UnitExists: a name
     // is the one answer about an object that would have been right, and giving
@@ -66,6 +73,7 @@ static int lua_UnitName(lua_State* L) {
 
 static int lua_UnitHealth(lua_State* L) {
     const char* uid = luaL_optstring(L, 1, "player");
+    if(const auto v=vehicleUnit(L,uid);v.hull){lua_pushnumber(L,v.hull->health);return 1;}
     auto* unit = resolveUnit(L, uid);
     if (unit) {
         lua_pushnumber(L, unit->getHealth());
@@ -83,6 +91,7 @@ static int lua_UnitHealth(lua_State* L) {
 
 static int lua_UnitHealthMax(lua_State* L) {
     const char* uid = luaL_optstring(L, 1, "player");
+    if(const auto v=vehicleUnit(L,uid);v.hull){lua_pushnumber(L,v.hull->maxHealth);return 1;}
     auto* unit = resolveUnit(L, uid);
     if (unit) {
         lua_pushnumber(L, unit->getMaxHealth());
@@ -110,6 +119,7 @@ static int lua_UnitHealthMax(lua_State* L) {
 /// this is a matter of reading the one asked for.
 static int lua_UnitPower(lua_State* L) {
     const char* uid = luaL_optstring(L, 1, "player");
+    if(const auto v=vehicleUnit(L,uid);v.hull){lua_pushnumber(L,!lua_isnumber(L,2) || lua_tonumber(L,2)==3?v.hull->vehiclePower:0);return 1;}
     const bool byType = lua_isnumber(L, 2);
     const uint8_t want = byType ? static_cast<uint8_t>(lua_tonumber(L, 2)) : 0;
     auto* unit = resolveUnit(L, uid);
@@ -134,6 +144,7 @@ static int lua_UnitPower(lua_State* L) {
 /// before showing itself.
 static int lua_UnitPowerMax(lua_State* L) {
     const char* uid = luaL_optstring(L, 1, "player");
+    if(const auto v=vehicleUnit(L,uid);v.hull){lua_pushnumber(L,v.kit && (!lua_isnumber(L,2) || lua_tonumber(L,2)==3)?v.kit->maxPower:0);return 1;}
     const bool byType = lua_isnumber(L, 2);
     const uint8_t want = byType ? static_cast<uint8_t>(lua_tonumber(L, 2)) : 0;
     auto* unit = resolveUnit(L, uid);
@@ -153,6 +164,7 @@ static int lua_UnitPowerMax(lua_State* L) {
 
 static int lua_UnitLevel(lua_State* L) {
     const char* uid = luaL_optstring(L, 1, "player");
+    if(const auto v=vehicleUnit(L,uid);v.hull){lua_pushnumber(L,v.hull->level);return 1;}
     auto* unit = resolveUnit(L, uid);
     if (unit) {
         lua_pushnumber(L, unit->getLevel());
@@ -169,6 +181,7 @@ static int lua_UnitLevel(lua_State* L) {
 
 static int lua_UnitExists(lua_State* L) {
     const char* uid = luaL_optstring(L, 1, "player");
+    if(const auto v=vehicleUnit(L,uid);v.hull){lua_pushboolean(L,1);return 1;}
     auto* unit = resolveUnit(L, uid);
     // A game object is not a unit, and saying otherwise here does not stop at
     // the name. This client targets objects because its right-click path reads
@@ -194,6 +207,7 @@ static int lua_UnitExists(lua_State* L) {
 
 static int lua_UnitIsDead(lua_State* L) {
     const char* uid = luaL_optstring(L, 1, "player");
+    if(const auto v=vehicleUnit(L,uid);v.hull){lua_pushboolean(L,v.hull->dead);return 1;}
     auto* unit = resolveUnit(L, uid);
     if (unit) {
         lua_pushboolean(L, unit->getHealth() == 0);
@@ -297,6 +311,7 @@ static int lua_UnitIsGhost(lua_State* L) {
 // UnitIsDeadOrGhost(unit)
 static int lua_UnitIsDeadOrGhost(lua_State* L) {
     const char* uid = luaL_optstring(L, 1, "player");
+    if(const auto v=vehicleUnit(L,uid);v.hull){lua_pushboolean(L,v.hull->dead || !v.hull->health);return 1;}
     auto* unit = resolveUnit(L, uid);
     auto* gh = getGameHandler(L);
     bool dead = (unit && unit->getHealth() == 0);
@@ -972,6 +987,7 @@ static int lua_UnitRace(lua_State* L) {
 
 static int lua_UnitPowerType(lua_State* L) {
     const char* uid = luaL_optstring(L, 1, "player");
+    if(const auto v=vehicleUnit(L,uid);v.hull){lua_pushnumber(L,3);lua_pushstring(L,"ENERGY");return 2;}
     auto* unit = resolveUnit(L, uid);
 
     if (unit) {
@@ -1054,22 +1070,16 @@ static int lua_UnitIsPlayer(lua_State* L) {
     return 1;
 }
 
-// Vehicles are not modelled at all, and the honest answer to every question
-// about one is no. It matters that these are real rather than left to the
-// fallback: PlayerFrame_UpdateStatus asks first thing, and a wrong yes swaps
-// the whole frame to vehicle art and hides the rest of it.
+// Supported authored kits expose a transient original bonus bar.
 static int lua_UnitHasVehicleUI(lua_State* L) {
-    (void)L;
-    return luaReturnFalse(L);
+    auto* gh=getGameHandler(L);const char* unit=luaL_optstring(L,1,"player");
+    lua_pushboolean(L,std::strcmp(unit,"player")==0 && gh && gh->localVehicleUiAvailable());return 1;
 }
 /// Whether that unit is riding a vehicle. Only the player's own state is
 /// known - no per-unit vehicle field is parsed - so everyone else answers
 /// false, which is what this answered for the player too.
 ///
-/// UnitHasVehicleUI beside it stays false deliberately. Turning it on hands
-/// the action bar to VehicleMenuBar, whose own readers - GetVehicleUIIndicator,
-/// UnitVehicleSeatInfo, CanEjectPassengerFromSeat - are not bound, so the bar
-/// would raise where it now simply does not appear.
+/// The separate vehicle UI is available for authored local kits only.
 static int lua_UnitInVehicle(lua_State* L) {
     auto* gh = getGameHandler(L);
     const char* unit = lua_tostring(L, 1);
@@ -1077,7 +1087,13 @@ static int lua_UnitInVehicle(lua_State* L) {
     lua_pushboolean(L, (isPlayer && gh && gh->isInVehicle()) ? 1 : 0);
     return 1;
 }
-static int lua_UnitControllingVehicle(lua_State* L) { return luaReturnFalse(L); }
+static int lua_UnitControllingVehicle(lua_State* L) {
+    auto* gh=getGameHandler(L);auto* realm=gh?gh->localServiceRealm():nullptr;
+    const char* unit=lua_tostring(L,1);
+    const auto* player=realm?realm->localPlayer():nullptr;
+    lua_pushboolean(L,unit && std::strcmp(unit,"player")==0 && player && player->vehicleGuid && player->vehicleControl);
+    return 1;
+}
 /// The guid held in a two-word unit field, or zero.
 ///
 /// Absent on an expansion whose table does not name the field, which is every
@@ -2403,6 +2419,7 @@ static int lua_UnitIsConnected(lua_State* L) {
     auto* gh = getGameHandler(L);
     if (!gh) { return luaReturnFalse(L); }
     const char* uid = luaL_optstring(L, 1, "player");
+    if(const auto v=vehicleUnit(L,uid);v.hull){lua_pushboolean(L,1);return 1;}
     std::string uidStr(uid);
     toLowerInPlace(uidStr);
     uint64_t guid = resolveUnitGuid(gh, uidStr);
@@ -2461,13 +2478,24 @@ void registerUnitLuaAPI(lua_State* L) {
                 // UnitVehicleSeatInfo(unit, seat) → controlType, occupantName,
                 // serverName, ejectable, canSwitchSeats.
                 //
-                // Seats are not modelled: SMSG_PLAYER_VEHICLE_DATA carries the
-                // vehicle a player is in and nothing about who else is aboard.
-                // Nothing rather than an invented seat - the caller shows an
-                // occupant's name from it, and a made-up one would be a name.
+                // Local seats use the published occupants and authored roles.
+                // No invented VehicleUIIndicator texture or seat coordinates.
                 {"UnitVehicleSeatInfo", [](lua_State* L) -> int {
-            for (int i = 0; i < 5; ++i) lua_pushnil(L);
-            return 5;
+            auto* gh=getGameHandler(L);auto* realm=gh?gh->localServiceRealm():nullptr;
+            const auto* self=realm?realm->localPlayer():nullptr;const char* unit=lua_tostring(L,1);
+            const int seat=int(luaL_optnumber(L,2,0))-1;
+            const game::LocalRealmNpc* vehicle=nullptr;
+            if(self && self->vehicleGuid && unit && std::strcmp(unit,"player")==0)
+                for(const auto& n:realm->npcs())if(n.guid==self->vehicleGuid){vehicle=&n;break;}
+            if(!vehicle || seat<0 || seat>=vehicle->vehicleSeatCount){for(int i=0;i<5;++i)lua_pushnil(L);return 5;}
+            bool gunner=false;
+            if(const auto* kit=realm->content().vehicleKit(vehicle->vehicleId))
+                for(const auto& a:kit->abilities)if(a.spellId && (a.seatMask&(1u<<seat)))gunner=true;
+            lua_pushstring(L,seat==vehicle->vehicleControllerSeat?"Root":gunner?"Child":"None");
+            const game::LocalRealmPlayer* occupant=nullptr;
+            for(const auto& p:realm->players())if(p.vehicleGuid==vehicle->guid && p.vehicleSeat==seat){occupant=&p;break;}
+            if(occupant)lua_pushstring(L,occupant->name.c_str());else lua_pushnil(L);
+            lua_pushnil(L);lua_pushboolean(L,0);lua_pushboolean(L,!occupant && !self->dead);return 5;
         }},
                 {"UnitIsGhost",   lua_UnitIsGhost},
                 {"UnitIsDeadOrGhost", lua_UnitIsDeadOrGhost},
@@ -3006,14 +3034,13 @@ void registerUnitLuaAPI(lua_State* L) {
                 {"UnitInParty",         lua_UnitInParty},
                 {"UnitInRaid",          lua_UnitInRaid},
                 {"UnitHasVehicleUI",    lua_UnitHasVehicleUI},
-                // Which vehicle art a unit's frame should wear. Reached only
-                // behind UnitHasVehicleUI, which answers false here because no
-                // vehicle is modelled - so this is unreachable today and nil
-                // is the honest answer for a unit that is not in one. It is
-                // bound because leaving it out is the difference between the
-                // party frames calling nothing this client lacks and calling
-                // one thing it does.
-                {"UnitVehicleSkin",     [](lua_State* L) -> int { return luaReturnNil(L); }},
+                // The stock mechanical fallback is supported; model-specific
+                // skin/indicator metadata is not inferred from our kit ids.
+                {"UnitVehicleSkin", [](lua_State* L) -> int {
+                    auto* gh=getGameHandler(L);const char* unit=luaL_optstring(L,1,"player");
+                    if(gh && std::strcmp(unit,"player")==0 && gh->localVehicleUiAvailable())lua_pushstring(L,"Mechanical");
+                    else lua_pushnil(L);return 1;
+                }},
                 {"UnitInVehicle",       lua_UnitInVehicle},
                 {"UnitControllingVehicle", lua_UnitControllingVehicle},
                 {"UnitIsPossessed",     lua_UnitIsPossessed},

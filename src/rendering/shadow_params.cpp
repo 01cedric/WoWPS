@@ -30,7 +30,8 @@ bool createShadowParamsSet(VkDevice device, VmaAllocator allocator,
     // Zeroed rather than left as whatever the allocator handed back - a draw
     // that reaches the shader before the first per-draw write would otherwise
     // read a random alpha cutoff and a random useTexture.
-    std::memset(allocInfo.pMappedData, 0, static_cast<size_t>(paramsSize));
+    out.mapped = allocInfo.pMappedData;
+    std::memset(out.mapped, 0, static_cast<size_t>(paramsSize));
 
     // Binding 0 is the texture, binding 1 the params.
     //
@@ -121,6 +122,7 @@ void destroyShadowParamsSet(VkDevice device, VmaAllocator allocator, ShadowParam
     }
     destroy(device, s.layout);
     destroy(allocator, s.ubo, s.alloc);
+    s.mapped = nullptr;
 }
 
 }  // namespace rendering

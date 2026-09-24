@@ -51,6 +51,8 @@ enum class LocalVendorCategory : uint8_t {
 
 struct LocalVendorOffer {
     uint32_t entry = 0, itemId = 0, maxCount = 0, restockSeconds = 0;
+    uint32_t requiredReputationFaction = 0;
+    uint8_t requiredReputationRank = 0;
 };
 struct LocalVendorPrice {
     uint32_t itemId = 0, buyPrice = 0, buyCount = 1, sellPrice = 0;
@@ -70,6 +72,17 @@ uint8_t localVendorCategories(uint32_t npcFlags);
 // Wide total for authority affordability checks; display APIs retain their
 // bounded 32-bit price. A price above the wallet limit must never be discounted.
 uint64_t localVendorBuyTotal(const LocalItemDefinition& item, uint32_t count);
+/// WotLK faction discount: Friendly/Honored/Revered/Exalted = 5/10/15/20%.
+inline constexpr uint16_t localReputationDiscountBasisPoints(uint8_t reputationRank) {
+    switch (reputationRank) {
+        case 4: return 500;
+        case 5: return 1000;
+        case 6: return 1500;
+        case 7: return 2000;
+        default: return 0;
+    }
+}
+uint64_t localVendorDiscountedBuyTotal(const LocalItemDefinition& item, uint32_t count, uint8_t reputationRank);
 uint32_t localVendorBuyPrice(const LocalItemDefinition& item, uint32_t count);
 uint32_t localVendorSellPrice(const LocalItemDefinition& item, uint32_t count);
 

@@ -15,7 +15,10 @@ start = src.index('    if (fresh && character.guid != playerGuid && playerSpawnC
 end = src.index('\n}\n\nvoid GameHandler::removeLocalExplorationPlayer', start)
 rollback = src[start:end]
 start = src.index('void GameHandler::removeLocalExplorationPlayer(')
-end = src.index('\nbool GameHandler::syncLocalRealmPlayer(', start)
+# Keep this extraction scoped to the removal function.  Additional helpers may
+# legitimately live between removal and syncLocalRealmPlayer and need unrelated
+# production members that this focused harness does not model.
+end = src.index('\n}\n', start) + len('\n}\n')
 remove = src[start:end]
 preamble = r'''
 #include <array>
@@ -65,6 +68,7 @@ struct GameHandler {
  void fireAddonEvent(const char* e,std::initializer_list<int>){events.emplace_back(e);}
  bool syncLocalRealmPlayer(const LocalRealmPlayer&,const LocalWorldContent&);
  void removeLocalExplorationPlayer(uint64_t);
+ void syncLocalVehicleUi() {}
  void syncLocalExplorationPlayer(const Character& character,float yaw) {
   auto& manager=controller.manager;bool fresh=!manager.getEntity(character.guid);
   manager.entities.insert(character.guid);uint32_t displayId=1;

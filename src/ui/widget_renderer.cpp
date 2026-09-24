@@ -6,7 +6,6 @@
 #include "ui/text_markup.hpp"
 #include "ui/link_hit.hpp"
 #include "ui/text_wrap.hpp"
-#include <deque>
 #include <set>
 
 #include "ui/widget_tree.hpp"
@@ -71,6 +70,8 @@ void WidgetRenderer::releaseSessionTextures() {
     decltype(textures_){}.swap(textures_);
     decltype(textureSizes_){}.swap(textureSizes_);
     decltype(microButtonContent_){}.swap(microButtonContent_);
+    uploadWantedScratch_.clear();
+    uploadDiscoveryCooldown_ = 0;
     forgetFace();
     facedName_.clear();
     lastFullLayoutAt_ = -1.0;
@@ -82,6 +83,9 @@ void WidgetRenderer::initialize(pipeline::AssetManager* assets,
                                 rendering::VkContext* vkCtx) {
     assets_ = assets;
     vkCtx_ = vkCtx;
+    // Exactly the per-frame upload budget; reserving once keeps discovery from
+    // touching the heap on every frame that finds missing Interface art.
+    uploadWantedScratch_.reserve(3);
 }
 
 // Additive art is uploaded as its own image, because the same file can be
@@ -1398,13 +1402,14 @@ void WidgetRenderer::reportWidgetDiagnostics(WidgetTree& tree,
         }
     }
 
+    const bool askedFor = frameXmlTakeCheckRequest();
+
     // Frames FrameXML puts on screen that no element accounts for.
     //
-    // Every frame around it, and this runs every frame rather than on the
-    // checkpoints below, because the ones worth catching are the ones that are
-    // only up for a moment: the zone banner fades in on a crossing and was
-    // drawn beside this client's own for months without any check mentioning
-    // it. A checkpoint pass would have to land inside the fade to see it.
+    // Frequent, but not literally every frame: this is diagnostic-only and
+    // walks UIParent children through two std::set lookups each. Sampling one
+    // frame in four still catches transient zone banners while removing 75% of
+    // that steady-state bookkeeping. Explicit/load/world checks always scan.
     //
     // frameXmlReportUnaccountedElements cannot find these. It iterates the
     // element list, so it reports gaps among names somebody already thought of,
@@ -1413,7 +1418,10 @@ void WidgetRenderer::reportWidgetDiagnostics(WidgetTree& tree,
     //
     // Said once per name, ever. A frame that is legitimately unlisted costs one
     // line for the life of the process.
-    {
+    static uint32_t unaccountedFrame = 0;
+    const bool scanUnaccounted = askedFor || loadPass || worldPass ||
+                                 ((++unaccountedFrame & 3u) == 0u);
+    if (scanUnaccounted) {
         static const std::set<std::string> accounted = [] {
             const auto all = frameXmlAccountedFrames();
             return std::set<std::string>(all.begin(), all.end());
@@ -1447,7 +1455,6 @@ void WidgetRenderer::reportWidgetDiagnostics(WidgetTree& tree,
         }
     }
 
-    const bool askedFor = frameXmlTakeCheckRequest();
     if (loadPass || worldPass || askedFor) {
         if (!askedFor) ++passesDone;
         const char* when = askedFor ? "on request" : (loadPass ? "at load" : "in world");
@@ -1955,67 +1962,76 @@ void WidgetRenderer::draw(WidgetTree& tree, float screenW, float screenH) {
     // appearing a frame or two later, which is invisible, and shortens each
     // stall to something that cannot sit across a driver's patience.
     constexpr int kUploadsPerFrame = 3;
-    std::vector<std::pair<const std::string*, bool>> wanted;
-    wanted.reserve(kUploadsPerFrame);
+    auto& wanted = uploadWantedScratch_;
+    wanted.clear();
+
+    // Once all currently visible art is resident, the old path still walked
+    // every widget, every tooltip line and every message on every frame only to
+    // discover nothing. Alternate idle discovery frames instead. A texture
+    // introduced during the skipped frame is picked up on the next one, so the
+    // worst-case latency is one rendered frame while steady-state scan traffic
+    // is cut in half. During an actual upload burst cooldown stays zero and the
+    // scanner continues every frame until the burst is drained.
+    const bool discoverUploads = uploadDiscoveryCooldown_ == 0;
+    if (!discoverUploads) --uploadDiscoveryCooldown_;
+
     auto want = [&](const std::string& path, bool add = false) {
         if (static_cast<int>(wanted.size()) >= kUploadsPerFrame || path.empty()) return;
         if (cachedTexture(path, add)) return;
-        for (const auto& p : wanted) if (*p.first == path && p.second == add) return;
-        wanted.emplace_back(&path, add);
+        for (const auto& p : wanted) if (p.first == path && p.second == add) return;
+        wanted.emplace_back(path, add);
     };
-    // An inline texture is named inside the text rather than in a field of
-    // its own, so this pass never saw one: |TInterface\MoneyFrame\UI-GoldIcon|t
-    // was parsed, given its width and drawn as nothing, because nothing had
-    // ever asked for it to be uploaded. That is every coin on every sell
-    // price, and the gap where each one belongs.
-    //
-    // The strings outlive the parse because `wanted` holds pointers into them
-    // and is drained further down; a deque keeps those valid as it grows.
-    std::deque<std::string> markupPaths;
     const auto wantMarkup = [&](const std::string& text) {
         // Cheap first: almost no label carries one, and parsing every string
-        // on screen each frame to learn that would not pay.
+        // on screen each discovery frame to learn that would not pay.
         if (text.find("|T") == std::string::npos) return;
         for (const auto& run : parseMarkup(text)) {
             if (run.texture.empty()) continue;
             if (static_cast<int>(wanted.size()) >= kUploadsPerFrame) return;
-            if (cachedTexture(run.texture, false)) continue;
-            markupPaths.push_back(run.texture);
-            want(markupPaths.back());
+            want(run.texture);
         }
     };
 
-    for (const Widget* w : order) {
-        if (static_cast<int>(wanted.size()) >= kUploadsPerFrame) break;
-        if (w->kind == WidgetKind::Texture && !w->solidColor)
-            want(w->texturePath, w->blendAdd);
-        if (!w->text.empty()) wantMarkup(w->text);
-        for (const auto& line : w->tooltipLines) {
-            wantMarkup(line.left);
-            wantMarkup(line.right);
+    if (discoverUploads) {
+        for (const Widget* w : order) {
+            if (static_cast<int>(wanted.size()) >= kUploadsPerFrame) break;
+            if (w->kind == WidgetKind::Texture && !w->solidColor)
+                want(w->texturePath, w->blendAdd);
+            if (!w->text.empty()) wantMarkup(w->text);
+            for (const auto& line : w->tooltipLines) {
+                wantMarkup(line.left);
+                wantMarkup(line.right);
+            }
+            for (const auto& m : w->messages) wantMarkup(m.text);
+            if (w->kind == WidgetKind::Frame) {
+                if (w->hasBackdrop) { want(w->bgFile); want(w->edgeFile); }
+                if (w->isStatusBar) want(w->barTexture);
+                if (w->isSlider) want(w->thumbTexture);
+            }
         }
-        for (const auto& m : w->messages) wantMarkup(m.text);
-        if (w->kind == WidgetKind::Frame) {
-            if (w->hasBackdrop) { want(w->bgFile); want(w->edgeFile); }
-            if (w->isStatusBar) want(w->barTexture);
-            if (w->isSlider) want(w->thumbTexture);
-        }
+        uploadDiscoveryCooldown_ = wanted.empty() ? 1 : 0;
     }
 
-    // One submit and one wait for the whole batch rather than one of each per
-    // texture. Every upload used to be its own immediate submit, and with
-    // FrameXML asking for hundreds of distinct files the seconds after a load
-    // cost 70-140ms a frame. Batched, how many go in a frame stops mattering
-    // much, which is why the budget can be larger and the burst shorter.
+    // One submit for the whole batch rather than one per texture. The runtime
+    // path no longer waits on the CPU when uploads share the graphics queue:
+    // this upload submit is issued now, while the frame command buffer is only
+    // being recorded, and endFrame submits that frame later to the SAME queue.
+    // Vulkan queue order therefore guarantees the copy/layout transition lands
+    // before the ImGui draw samples it, without a vkWaitForFences on the main
+    // thread. 2.08 still showed 50-90 ms frameXml->draw spikes when new UI art
+    // appeared; those were the synchronous completion waits, not the draw list.
     //
-    // Synchronous, because the draw below uses whatever was just uploaded; the
-    // asynchronous form would let this frame sample an image whose copy has not
-    // landed. Nothing to upload means no batch at all, so an idle frame does
-    // not allocate a command buffer to record nothing into.
+    // The opt-in diagnostic transfer-queue mode is different: there is no
+    // cross-queue semaphore from this late upload to the already-recording main
+    // frame, so retain the synchronous fallback there for correctness.
     if (!wanted.empty() && vkCtx_) {
         vkCtx_->beginUploadBatch();
-        for (const auto& p : wanted) texture(*p.first, p.second);
-        vkCtx_->endUploadBatchSync();
+        for (const auto& p : wanted) texture(p.first, p.second);
+        const char* asyncQueueEnv = std::getenv("WOWEE_VK_ASYNC_UPLOAD_QUEUE");
+        const bool separateTransfer = vkCtx_->hasDedicatedTransferQueue() &&
+            asyncQueueEnv && *asyncQueueEnv && *asyncQueueEnv != '0';
+        if (separateTransfer) vkCtx_->endUploadBatchSync();
+        else vkCtx_->endUploadBatch();
     }
 
     // Interface units to pixels. The tree is laid out against a virtual screen

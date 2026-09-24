@@ -1977,12 +1977,30 @@ bool CharacterRenderer::loadSharedModel(std::shared_ptr<const pipeline::M2Model>
     M2ModelGPU gpuModel;
     gpuModel.data = std::move(asset);
 #ifdef WOWEE_PS4
+    const bool ownUploadBatch = vkCtx_ && !vkCtx_->isInUploadBatch();
     struct ModelRollback {
         CharacterRenderer* owner;
         M2ModelGPU* model;
+        bool ownUploadBatch = false;
         bool committed = false;
-        ~ModelRollback() { if (!committed) owner->destroyModelGPU(*model); }
-    } rollback{this, &gpuModel};
+        ~ModelRollback() {
+            if (committed) return;
+            // If an allocation throws while this model owns an open upload
+            // batch, submit the already-recorded copies and prove completion
+            // before destroying their destinations. The failure path may block;
+            // the successful path below uses exactly one synchronous wait.
+            if (ownUploadBatch && owner->vkCtx_ && owner->vkCtx_->isInUploadBatch()) {
+                try {
+                    owner->vkCtx_->finishInterruptedUploadBatch();
+                    (void)owner->vkCtx_->waitAllUploads();
+                } catch (...) {
+                    // The renderer is already in a failed-upload state. Resource
+                    // destruction below is still preferable to leaking the model.
+                }
+            }
+            owner->destroyModelGPU(*model);
+        }
+    } rollback{this, &gpuModel, ownUploadBatch};
 #endif
     gpuModel.boneHierarchy = buildBoneHierarchy(model.bones);
     if (gpuModel.boneHierarchy.invalidParents || gpuModel.boneHierarchy.cycleBreaks) {
@@ -2027,9 +2045,15 @@ bool CharacterRenderer::loadSharedModel(std::shared_ptr<const pipeline::M2Model>
         model.vertices.size(), model.particleEmitters.size());
     gpuModel.isSkyBird = classification.isSkyBird;
 
-    // Batch all GPU uploads (VB, IB, textures) into a single command buffer
-    // submission with one fence wait, instead of one fence wait per upload.
-#ifndef WOWEE_PS4
+    // Batch all GPU uploads (VB, IB, textures) into one command buffer. On
+    // PS4 2.06, local entity loading reached 19 ms/frame average and 197 ms
+    // worst while each buffer/texture paid its own immediate-submit fence. A
+    // character model is not published until this function returns, so one
+    // synchronous batch completion preserves the old visibility guarantee with
+    // a single queue round-trip. Nested callers keep ownership of their batch.
+#ifdef WOWEE_PS4
+    if (ownUploadBatch) vkCtx_->beginUploadBatch();
+#else
     vkCtx_->beginUploadBatch();
 #endif
 
@@ -2048,7 +2072,9 @@ bool CharacterRenderer::loadSharedModel(std::shared_ptr<const pipeline::M2Model>
         gpuModel.textureIds.push_back(texPtr);
     }
 
-#ifndef WOWEE_PS4
+#ifdef WOWEE_PS4
+    if (ownUploadBatch) vkCtx_->endUploadBatchSync();
+#else
     vkCtx_->endUploadBatch();
 #endif
 
@@ -3653,13 +3679,11 @@ bool CharacterRenderer::initializeShadow(VkRenderPass shadowRenderPass) {
     // alpha is 1 and passes the cutoff untouched, while an alpha-keyed batch is
     // bound to its own texture below and cuts properly.
     {
-        VmaAllocationInfo paramsInfo{};
-        vmaGetAllocationInfo(vkCtx_->getAllocator(), shadowParams_.alloc, &paramsInfo);
-        if (paramsInfo.pMappedData) {
+        if (shadowParams_.mapped) {
             ShadowCharParams p{};
             p.alphaTest = 1;
             p.colorKeyBlack = 0;
-            std::memcpy(paramsInfo.pMappedData, &p, sizeof(p));
+            std::memcpy(shadowParams_.mapped, &p, sizeof(p));
         }
     }
 
@@ -3758,6 +3782,7 @@ bool CharacterRenderer::initializeShadow(VkRenderPass shadowRenderPass) {
 
 void CharacterRenderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMatrix,
                                      const glm::vec3& shadowCenter, float shadowRadius, uint32_t shadowPassIndex,
+                                     float minCasterDiameter,
                                      const ShadowReceiverHull* receiverHull) {
     if (!shadowPipeline_ || !shadowParams_.set) return;
     if (instances.empty() || models.empty()) return;
@@ -3784,7 +3809,8 @@ void CharacterRenderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& light
     (void)shadowRadius;
     Frustum shadowFrustum;
     shadowFrustum.extractFromMatrix(lightSpaceMatrix);
-    uint32_t lightCulled = 0, receiverCulled = 0, missingBones = 0, submittedInstances = 0, submittedBatches = 0;
+    uint32_t lightCulled = 0, receiverCulled = 0, subtexelCulled = 0,
+             missingBones = 0, submittedInstances = 0, submittedBatches = 0;
     // Which set is bound at 0 right now, so a run of opaque batches does not
     // rebind the same fallback for each one.
     VkDescriptorSet currentTexSet = VK_NULL_HANDLE;
@@ -3802,12 +3828,26 @@ void CharacterRenderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& light
         if (!modelBoundsInFrustum(shadowFrustum, modelMat,
                                   gpuModel.visualBoundMin, gpuModel.visualBoundMax,
                                   gpuModel.visualBoundRadius)) { ++lightCulled; continue; }
-        if (receiverHull) {
+        if (receiverHull || (shadowPassIndex == 1 && minCasterDiameter > 0.0f)) {
             glm::vec3 center;
             float radius;
             if (modelBoundsSphere(modelMat, gpuModel.visualBoundMin, gpuModel.visualBoundMax,
-                                  gpuModel.visualBoundRadius, center, radius) &&
-                !receiverHull->intersects(center, radius)) { ++receiverCulled; continue; }
+                                  gpuModel.visualBoundRadius, center, radius)) {
+                if (receiverHull && !receiverHull->intersects(center, radius)) {
+                    ++receiverCulled;
+                    continue;
+                }
+                // The far region is only 512x512. A conservative bounding
+                // sphere smaller than one world texel cannot cover one output
+                // texel in any light-space orientation. Keep every near-pass
+                // character, including the player, unchanged.
+                if (shadowPassIndex == 1 && minCasterDiameter > 0.0f &&
+                    std::isfinite(radius) && radius >= 0.0f &&
+                    2.0f * radius < minCasterDiameter) {
+                    ++subtexelCulled;
+                    continue;
+                }
+            }
         }
 
         // Ensure bone SSBO is allocated and upload bone matrices
@@ -3875,27 +3915,27 @@ void CharacterRenderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& light
 
         if (!inst.boneSet[frameIndex]) { ++missingBones; continue; }
 
-        // Params at set 1 and bones at set 2, together, per instance.
-        //
-        // Binding set 1 once before the loop was not enough. This pass runs
-        // after the M2 shadow pass, which binds its own set at set 0 under a
-        // different pipeline layout, and a descriptor set bound while a lower
-        // set carries an incompatible layout is disturbed rather than kept. The
-        // fragment shader then read set 1 binding 1 - its alpha-test flags -
-        // from a set the GPU no longer considered bound, which GPU-assisted
-        // validation reports as indexing a descriptor array of length zero,
-        // thousands of times a session.
-        VkDescriptorSet sets[2] = {shadowParams_.set, inst.boneSet[frameIndex]};
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout_,
-            0, 2, sets, 0, nullptr);
-        currentTexSet = shadowParams_.set;
-
+        // Record descriptor/push/buffer state only once a surviving batch is
+        // actually flushed. Hidden geosets and transparent-only attachments can
+        // pass the instance bounds checks yet contribute no shadow draw at all.
+        // Eagerly recording four state commands for them was pure submission cost.
         ShadowPush push{.lightSpaceMatrix = lightSpaceMatrix, .model = modelMat};
-        vkCmdPushConstants(cmd, shadowPipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT, 0, 128, &push);
-
-        VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &gpuModel.vertexBuffer, &offset);
-        vkCmdBindIndexBuffer(cmd, gpuModel.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+        bool drawStateBound = false;
+        const auto ensureDrawState = [&] {
+            if (drawStateBound) return;
+            // Params at set 0 and bones at set 1 must be rebound together for
+            // this pipeline layout. M2 shadow submission before this pass can
+            // disturb descriptor compatibility.
+            VkDescriptorSet sets[2] = {shadowParams_.set, inst.boneSet[frameIndex]};
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout_,
+                0, 2, sets, 0, nullptr);
+            currentTexSet = shadowParams_.set;
+            vkCmdPushConstants(cmd, shadowPipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT, 0, 128, &push);
+            VkDeviceSize offset = 0;
+            vkCmdBindVertexBuffers(cmd, 0, 1, &gpuModel.vertexBuffer, &offset);
+            vkCmdBindIndexBuffer(cmd, gpuModel.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+            drawStateBound = true;
+        };
 
         bool applyGeosetFilter = !inst.activeGeosets.empty();
         bool submitted = false;
@@ -3903,6 +3943,7 @@ void CharacterRenderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& light
         VkDescriptorSet pendingTexture = VK_NULL_HANDLE;
         const auto flushShadow = [&] {
             if (!pendingCount) return;
+            ensureDrawState();
             if (pendingTexture != currentTexSet) {
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout_,
                                         0, 1, &pendingTexture, 0, nullptr);
@@ -3913,17 +3954,24 @@ void CharacterRenderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& light
             submitted = true;
             pendingCount = 0;
         };
-        for (const auto& batch : gpuModel.data->batches) {
+        const auto& batches = gpuModel.data->batches;
+        const bool haveBatchStatics = gpuModel.batchStatics.size() == batches.size();
+        for (size_t bi = 0; bi < batches.size(); ++bi) {
+            const auto& batch = batches[bi];
             uint16_t blendMode = 0;
-            if (batch.materialIndex < gpuModel.data->materials.size()) {
+            uint16_t submeshGroup = static_cast<uint16_t>(batch.submeshId / 100);
+            if (haveBatchStatics) {
+                const auto& bs = gpuModel.batchStatics[bi];
+                blendMode = bs.blendMode;
+                submeshGroup = bs.submeshGroup;
+            } else if (batch.materialIndex < gpuModel.data->materials.size()) {
                 blendMode = gpuModel.data->materials[batch.materialIndex].blendMode;
             }
             if (blendMode >= 2) continue; // skip transparent
             if (applyGeosetFilter &&
                 inst.activeGeosets.find(batch.submeshId) == inst.activeGeosets.end()) continue;
             if (!applyGeosetFilter) {
-                uint16_t grp = batch.submeshId / 100;
-                if (grp == 17 || grp == 18) continue;
+                if (submeshGroup == 17 || submeshGroup == 18) continue;
             }
 
             // An alpha-keyed batch casts the shape of its texture; everything
@@ -3951,7 +3999,8 @@ void CharacterRenderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& light
     const uint32_t diagnosticPass = std::min(shadowPassIndex, 1u);
     if (++shadowFrames[diagnosticPass] % 300u == 1u)
         LOG_INFO("[CHARACTER_SHADOW] pass=", shadowPassIndex, " loaded=", instances.size(), " lightCulled=", lightCulled,
-                 " receiverCulled=", receiverCulled, " missingBoneSets=", missingBones, " submittedInstances=", submittedInstances,
+                 " receiverCulled=", receiverCulled, " subtexelCulled=", subtexelCulled,
+                 " missingBoneSets=", missingBones, " submittedInstances=", submittedInstances,
                  " submittedBatches=", submittedBatches, "; CPU submissions, not GPU coverage");
 }
 
@@ -4589,24 +4638,50 @@ void CharacterRenderer::unloadModelIfUnused(uint32_t modelId) {
 
 void CharacterRenderer::reclaimUnusedResources(const std::unordered_set<uint32_t>& preparing) {
     if (!vkCtx_) return;
-    std::unordered_set<uint32_t> usedModels;
-    usedModels.reserve(instances.size());
-    for (const auto& [id, instance] : instances) usedModels.insert(instance.modelId);
+    reclaimUsedModelsScratch_.clear();
+    if (reclaimUsedModelsScratch_.capacity() < instances.size())
+        reclaimUsedModelsScratch_.reserve(instances.size());
+    for (const auto& [id, instance] : instances)
+        reclaimUsedModelsScratch_.push_back(instance.modelId);
+    std::sort(reclaimUsedModelsScratch_.begin(), reclaimUsedModelsScratch_.end());
+    reclaimUsedModelsScratch_.erase(
+        std::unique(reclaimUsedModelsScratch_.begin(), reclaimUsedModelsScratch_.end()),
+        reclaimUsedModelsScratch_.end());
+    const auto modelIsUsed = [&](uint32_t id) {
+        return std::binary_search(reclaimUsedModelsScratch_.begin(),
+                                  reclaimUsedModelsScratch_.end(), id);
+    };
     size_t removedModels = 0;
     for (auto it = models.begin(); it != models.end();) {
-        if (usedModels.count(it->first) || preparing.count(it->first)) { ++it; continue; }
+        if (modelIsUsed(it->first) || preparing.count(it->first)) { ++it; continue; }
         destroyModelGPU(it->second, /*defer=*/true);
         it = models.erase(it); // release decoded CPU vertices and animation tracks immediately
         ++removedModels;
     }
 
-    std::unordered_set<VkTexture*> referenced;
+    reclaimReferencedTexturesScratch_.clear();
+    const size_t roughTextureCount = models.size() * 4u + instances.size() * 2u;
+    if (reclaimReferencedTexturesScratch_.capacity() < roughTextureCount)
+        reclaimReferencedTexturesScratch_.reserve(roughTextureCount);
     for (const auto& [id, model] : models)
-        referenced.insert(model.textureIds.begin(), model.textureIds.end());
+        reclaimReferencedTexturesScratch_.insert(reclaimReferencedTexturesScratch_.end(),
+                                                  model.textureIds.begin(), model.textureIds.end());
     for (const auto& [id, instance] : instances) {
-        for (const auto& [group, texture] : instance.groupTextureOverrides) referenced.insert(texture);
-        for (const auto& [slot, texture] : instance.textureSlotOverrides) referenced.insert(texture);
+        for (const auto& [group, texture] : instance.groupTextureOverrides)
+            reclaimReferencedTexturesScratch_.push_back(texture);
+        for (const auto& [slot, texture] : instance.textureSlotOverrides)
+            reclaimReferencedTexturesScratch_.push_back(texture);
     }
+    std::sort(reclaimReferencedTexturesScratch_.begin(), reclaimReferencedTexturesScratch_.end(),
+              std::less<VkTexture*>{});
+    reclaimReferencedTexturesScratch_.erase(
+        std::unique(reclaimReferencedTexturesScratch_.begin(), reclaimReferencedTexturesScratch_.end()),
+        reclaimReferencedTexturesScratch_.end());
+    const auto textureIsReferenced = [&](VkTexture* texture) {
+        return std::binary_search(reclaimReferencedTexturesScratch_.begin(),
+                                  reclaimReferencedTexturesScratch_.end(), texture,
+                                  std::less<VkTexture*>{});
+    };
     const auto device = vkCtx_->getDevice();
     const auto allocator = vkCtx_->getAllocator();
     size_t releasedBytes = 0;
@@ -4615,7 +4690,7 @@ void CharacterRenderer::reclaimUnusedResources(const std::unordered_set<uint32_t
         // An asynchronous normal result is identified by cache key. Retaining
         // its entry until completion prevents a late job attaching its result
         // to a newly loaded texture that happened to reuse the same key.
-        if (referenced.count(texture) || it->second.normalMapPending) { ++it; continue; }
+        if (textureIsReferenced(texture) || it->second.normalMapPending) { ++it; continue; }
         auto retired = std::make_shared<TextureCacheEntry>();
         // Register retirement before moving ownership: allocation failure
         // cannot silently leak images because VkTexture's destructor is empty.

@@ -91,6 +91,24 @@ void WorldEntryCallbackHandler::clearMountForUnstuck() {
     }
 }
 
+void WorldEntryCallbackHandler::applyAuthoritativeRelocation(
+    const glm::vec3& renderPos, float movementSuppressSeconds, float gravitySuspendSeconds) {
+    if (!std::isfinite(renderPos.x) || !std::isfinite(renderPos.y) || !std::isfinite(renderPos.z)) {
+        LOG_ERROR("[MOVEMENT_GUARD] rejected non-finite authoritative relocation");
+        return;
+    }
+    renderer_.getCharacterPosition() = renderPos;
+    if (auto* cc = renderer_.getCameraController()) {
+        // Keep every local movement state in the same transaction as the server
+        // position. Directly overwriting FollowTarget leaves vertical velocity,
+        // swimming/sitting state and collision recovery from the previous place.
+        cc->teleportTo(renderPos);
+        cc->clearMovementInputs();
+        if (movementSuppressSeconds > 0.0f) cc->suppressMovementFor(movementSuppressSeconds);
+        if (gravitySuspendSeconds > 0.0f) cc->suspendGravityFor(gravitySuspendSeconds);
+    }
+}
+
 // Sync teleported render position to server
 void WorldEntryCallbackHandler::syncTeleportedPositionToServer(const glm::vec3& renderPos) {
     glm::vec3 canonical = core::coords::renderToCanonical(renderPos);
@@ -146,6 +164,10 @@ static void precacheNearbyTiles(rendering::TerrainManager* terrainMgr,
 void WorldEntryCallbackHandler::setupCallbacks() {
     // World entry callback (online mode) - load terrain when entering world
     gameHandler_.setWorldEntryCallback([this](uint32_t mapId, float x, float y, float z, bool isInitialEntry) {
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+            LOG_ERROR("[MOVEMENT_GUARD] rejected non-finite world entry for map ", mapId);
+            return;
+        }
         // Every authoritative relocation invalidates the previous support,
         // including short same-map moves that avoid a full terrain reload.
         if (auto* cc = renderer_.getCameraController()) cc->resetGroundRecovery();
@@ -171,16 +193,10 @@ void WorldEntryCallbackHandler::setupCallbacks() {
             // Update player position and re-queue nearby tiles (same logic as teleport)
             glm::vec3 canonical = core::coords::serverToCanonical(glm::vec3(x, y, z));
             glm::vec3 renderPos = core::coords::canonicalToRender(canonical);
-            renderer_.getCharacterPosition() = renderPos;
-            if (renderer_.getCameraController()) {
-                auto* ft = renderer_.getCameraController()->getFollowTargetMutable();
-                if (ft) *ft = renderPos;
-                renderer_.getCameraController()->clearMovementInputs();
-                renderer_.getCameraController()->suppressMovementFor(1.0f);
-                renderer_.getCameraController()->suspendGravityFor(10.0f);
-            }
+            applyAuthoritativeRelocation(renderPos, 1.0f, 10.0f);
             worldEntryMovementGraceTimer_ = 2.0f;
             taxiLandingClampTimer_ = 0.0f;
+            taxiLandingReferenceZ_ = 0.0f;
             lastTaxiFlight_ = false;
             renderer_.getTerrainManager()->processReadyTiles();
             precacheNearbyTiles(renderer_.getTerrainManager(), renderPos, 8);
@@ -202,32 +218,22 @@ void WorldEntryCallbackHandler::setupCallbacks() {
                 LOG_WARNING("Far same-map teleport (dist=", std::sqrt(teleportDistSq),
                             "), deferring world reload to next frame");
                 // Update position immediately so the player doesn't keep moving at old location
-                renderer_.getCharacterPosition() = renderPos;
-                if (renderer_.getCameraController()) {
-                    auto* ft = renderer_.getCameraController()->getFollowTargetMutable();
-                    if (ft) *ft = renderPos;
-                    renderer_.getCameraController()->clearMovementInputs();
-                    renderer_.getCameraController()->suppressMovementFor(1.0f);
-                    renderer_.getCameraController()->suspendGravityFor(10.0f);
-                }
+                applyAuthoritativeRelocation(renderPos, 1.0f, 10.0f);
+                worldEntryMovementGraceTimer_ = 2.0f;
+                taxiLandingClampTimer_ = 0.0f;
+                taxiLandingReferenceZ_ = 0.0f;
+                lastTaxiFlight_ = false;
                 if (worldLoader_) worldLoader_->setPendingEntry(mapId, x, y, z);
                 return;
             }
             LOG_INFO("Same-map teleport (map ", mapId, "), skipping full world reload");
             // canonical and renderPos already computed above for distance check
-            renderer_.getCharacterPosition() = renderPos;
-            if (renderer_.getCameraController()) {
-                auto* ft = renderer_.getCameraController()->getFollowTargetMutable();
-                if (ft) *ft = renderPos;
-            }
+            applyAuthoritativeRelocation(renderPos, 0.5f, 0.0f);
             worldEntryMovementGraceTimer_ = 2.0f;
             taxiLandingClampTimer_ = 0.0f;
+            taxiLandingReferenceZ_ = 0.0f;
             lastTaxiFlight_ = false;
-            // Stop any movement that was active before the teleport
-            if (renderer_.getCameraController()) {
-                renderer_.getCameraController()->clearMovementInputs();
-                renderer_.getCameraController()->suppressMovementFor(0.5f);
-            }
+            // Movement/fall state was reset atomically with the relocation above.
             // Kick off async upload for any tiles that finished background
             // parsing. Bounded on purpose: finalizing every ready tile here
             // stalls the main thread for seconds when many are ready, and the
@@ -414,7 +420,20 @@ void WorldEntryCallbackHandler::setupCallbacks() {
                             server.x, ",", server.y, ",", server.z);
                 return true;
             }
-            return false;
+
+            // On a normal realm the client owns ordinary movement updates.  A
+            // recovery is permitted only while alive (or already a ghost), in
+            // the world, and off taxis/transports; getValidatedRecoveryPosition
+            // above has already proved that the old support still exists.
+            if (gameHandler_.getState() != game::WorldState::IN_WORLD ||
+                (gameHandler_.isPlayerDead() && !gameHandler_.isPlayerGhost()) ||
+                gameHandler_.isOnTaxiFlight() || gameHandler_.isOnTransport()) {
+                return false;
+            }
+            cc->teleportTo(*safe);
+            syncTeleportedPositionToServer(*safe);
+            LOG_WARNING("[GROUND_RECOVERY] restored last supported online position");
+            return true;
         });
     }
 
@@ -496,6 +515,7 @@ void WorldEntryCallbackHandler::resetState() {
     worldEntryMovementGraceTimer_ = 0.0f;
     lastTaxiFlight_ = false;
     taxiLandingClampTimer_ = 0.0f;
+    taxiLandingReferenceZ_ = 0.0f;
 }
 
 }} // namespace wowee::core

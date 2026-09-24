@@ -374,6 +374,7 @@ struct VkPs4CommandBuffer {
     struct {
         uint64_t draw_calls, draw_samples, draw_us, draw_max_us;
         uint64_t descriptor_calls, descriptor_samples, descriptor_us, descriptor_max_us;
+        uint64_t direct_userdata_writes, direct_userdata_reuses;
     } recording_perf;
 
     uint32_t compute_dispatch_count; /* B18: trace first compute submissions */
@@ -407,8 +408,14 @@ struct VkPs4CommandBuffer {
     /* Current pipeline */
     VkPs4Pipeline *current_pipeline;
     bool pipeline_rebind_required; /* dynamic commands overwrote static state */
-    /* Direct draw registers survive pipeline binds; raw/indirect draws invalidate. */
+    /* Direct draw context registers survive pipeline binds; raw/indirect draws invalidate. */
     bool direct_draw_state_valid;
+    /* VS base-vertex/start-instance user-data is pipeline-relative. Cache it
+     * separately so repeated shadow draws do not emit identical SET_SH_REG
+     * packets, while a graphics pipeline switch can invalidate only this part. */
+    bool direct_draw_userdata_valid;
+    VkPs4Pipeline *direct_draw_userdata_pipeline;
+    uint32_t direct_draw_first_instance;
     uint32_t *graphics_sync_endptr; /* exact stream position after full release/acquire */
     bool graphics_sync_shader_reads;
     uint32_t direct_draw_instances, direct_draw_vertex_offset;
@@ -941,6 +948,7 @@ bool vk_ps4_queue_ticket_wait(VkPs4Device *dev,
 /* Latch a resolved ticket into the object's signalled state.  Both are safe
  * to call on objects that carry no ticket. */
 bool vk_ps4_sync_resolve_fence(VkPs4Fence *fence);
+bool vk_ps4_sync_validate_semaphore(const VkPs4Semaphore *sem);
 bool vk_ps4_sync_resolve_semaphore(VkPs4Semaphore *sem);
 void vk_ps4_emit_address32_user_data(VkPs4CommandBuffer *cmd, GnmShaderStage stage,
                                    uint32_t reg, const void *address);

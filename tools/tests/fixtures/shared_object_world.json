@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "name": "Synthetic shared door, chest and resource regression fixture",
+  "start": {"mapId": 0, "x": 0, "y": 0, "z": 0},
+  "items": [
+    {"id": 101, "name": "Test collected token", "stack": 20},
+    {"id": 102, "name": "Test single-slot reward", "stack": 1},
+    {"id": 103, "name": "Test ore", "stack": 20},
+    {"id": 104, "name": "Test mining tool", "stack": 1},
+    {"id": 105, "name": "Test bag filler", "stack": 1}
+  ],
+  "spells": [],
+  "npcs": [{"id": 50, "name": "Test guide", "health": 1000, "hostile": false, "questGiver": true}],
+  "spawns": [{"id": 1, "entry": 50, "mapId": 0, "x": 0, "y": 0, "z": 0}],
+  "quests": [
+    {"id": 1, "title": "Collect the shared chest tokens", "giverEntry": 50, "turnInEntry": 50,
+      "objectives": [{"type": "collect", "entry": 101, "count": 2}]},
+    {"id": 2, "title": "Use the gated chest", "giverEntry": 50, "turnInEntry": 50,
+      "objectives": [{"type": "script", "entry": 601, "count": 1, "text": "Open the gated chest"}]}
+  ],
+  "gameObjects": [
+    {"id": 800, "kind": "chest", "entry": 1, "displayId": 1, "name": "Shared test chest", "x": 4,
+      "requiredPhaseMask": 1, "respawnMs": 1000, "money": 37,
+      "loot": [{"itemId": 101, "count": 2}, {"itemId": 102, "count": 1}]},
+    {"id": 801, "kind": "door", "entry": 2, "displayId": 2, "name": "Shared test door", "x": 3,
+      "requiredPhaseMask": 1, "respawnMs": 500},
+    {"id": 802, "kind": "resource", "entry": 3, "displayId": 3, "name": "Shared test vein", "x": 4,
+      "requiredPhaseMask": 1, "respawnMs": 500, "requiredSkillId": 186, "requiredSkill": 25, "toolItemId": 104,
+      "loot": [{"itemId": 103, "count": 3}]},
+    {"id": 803, "kind": "chest", "entry": 4, "displayId": 4, "name": "Permanent test chest", "x": 2,
+      "requiredPhaseMask": 1, "respawnMs": 0, "money": 11},
+    {"id": 804, "kind": "chest", "entry": 5, "displayId": 5, "name": "Gated test chest", "x": 4,
+      "requiredPhaseMask": 1, "requiredQuestId": 2, "requiredScriptId": 600, "requiredValue": 0,
+      "loot": [{"itemId": 101, "count": 1}]},
+    {"id": 805, "kind": "chest", "entry": 1, "displayId": 1, "name": "Independent chest spawn", "x": 4,
+      "requiredPhaseMask": 1, "respawnMs": 1000, "money": 37,
+      "loot": [{"itemId": 101, "count": 2}, {"itemId": 102, "count": 1}]},
+    {"id": 806, "kind": "script", "entry": 6, "displayId": 6, "name": "Legacy script beacon", "x": 4,
+      "requiredPhaseMask": 1}
+  ],
+  "scriptTriggers": [
+    {"trigger": "objectUse", "sourceId": 800, "scriptId": 610, "operation": "add", "value": 1},
+    {"trigger": "questComplete", "sourceId": 1, "scriptId": 611, "operation": "add", "value": 1},
+    {"trigger": "objectUse", "sourceId": 801, "scriptId": 620, "operation": "add", "value": 1},
+    {"trigger": "questAccept", "sourceId": 2, "scriptId": 600, "value": 0},
+    {"trigger": "objectUse", "sourceId": 804, "scriptId": 601, "value": 1},
+    {"trigger": "objectUse", "sourceId": 806, "scriptId": 630, "operation": "add", "value": 1}
+  ]
+}

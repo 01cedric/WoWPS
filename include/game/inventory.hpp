@@ -179,6 +179,17 @@ struct ItemDef {
     uint32_t itemLevel = 0;
     uint32_t requiredLevel = 0;
     uint32_t bindType = 0;      // 0=none, 1=BoP, 2=BoE, 3=BoU, 4=BoQ
+
+    // ---- Per-instance state -------------------------------------------------
+    // These values belong to the concrete item object identified by guid, not
+    // to the item template. Keeping them on ItemDef makes every inventory
+    // surface (bags, paper doll, tooltips and later bank/mail/AH persistence)
+    // operate on the same instance snapshot instead of re-querying side maps.
+    uint32_t instanceFlags = 0; // raw ITEM_FIELD_FLAGS
+    uint32_t permanentEnchantId = 0;
+    uint32_t temporaryEnchantId = 0;
+    std::array<uint32_t, 3> socketEnchantIds{};
+
     // Per-instance bound state from ITEM_FIELD_FLAGS bit 0x1 (ITEM_FLAG_SOULBOUND).
     // A BoE item is bindType==2 but only prompts on equip while this is false; once the
     // server sets the soulbound bit (on equip), it is already bound and must not prompt.
@@ -194,6 +205,16 @@ struct ItemDef {
     /// nowhere on the path FrameXML takes - so equipping through the interface
     /// bound the item with no prompt at all.
     [[nodiscard]] bool wouldBindOnEquip() const { return bindType == 2 && !soulbound; }
+    [[nodiscard]] bool hasDurability() const { return maxDurability != 0; }
+    [[nodiscard]] bool isBroken() const { return hasDurability() && curDurability == 0; }
+    [[nodiscard]] float durabilityFraction() const {
+        return maxDurability ? static_cast<float>(curDurability) / static_cast<float>(maxDurability) : 1.0f;
+    }
+    [[nodiscard]] bool hasEnchantments() const {
+        if (permanentEnchantId || temporaryEnchantId) return true;
+        for (uint32_t id : socketEnchantIds) if (id) return true;
+        return false;
+    }
     // Per-instance ITEM_FIELD_RANDOM_PROPERTIES_ID: >0 → ItemRandomProperties.dbc (prefix),
     // <0 → ItemRandomSuffix.dbc (e.g. "of the Bear"). 0 means no random property rolled.
     int32_t randomPropertyId = 0;

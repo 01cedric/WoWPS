@@ -14,6 +14,7 @@
 #include <vk_mem_alloc.h>
 #include <glm/glm.hpp>
 #include <memory>
+#include <array>
 #include <unordered_map>
 #include <unordered_set>
 #include <string>
@@ -51,6 +52,16 @@ struct TerrainChunkGPU {
     VkTexture* baseTexture = nullptr;
     VkTexture* layerTextures[3] = {nullptr, nullptr, nullptr};
     VkTexture* alphaTextures[3] = {nullptr, nullptr, nullptr};
+#ifdef WOWEE_PS4
+    // PS4: two or three non-trivial 64x64 layer masks share one RGBA image.
+    // Each binding receives a small swizzled image view whose .r component
+    // selects R/G/B, so terrain.frag.spv remains byte-for-byte unchanged.
+    // This removes two expensive VMA image allocations on the common
+    // three-layer chunk path while preserving the authored alpha bytes.
+    std::unique_ptr<VkTexture> alphaPackTexture;
+    VkImageView alphaPackViews[3] = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
+    VkSampler alphaPackSampler = VK_NULL_HANDLE;
+#endif
     int layerCount = 0;
 
     // Per-chunk alpha textures (owned by this chunk, destroyed on removal)
@@ -136,6 +147,7 @@ public:
      */
     void renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMatrix,
                       const glm::vec3& shadowCenter, float shadowRadius,
+                      uint32_t shadowPassIndex,
                       const ShadowReceiverHull* receiverHull = nullptr);
 
     [[nodiscard]] bool hasShadowPipeline() const { return shadowPipeline_ != VK_NULL_HANDLE; }
@@ -171,6 +183,9 @@ private:
     TerrainChunkGPU uploadChunk(const pipeline::ChunkMesh& chunk);
     VkTexture* loadTexture(const std::string& path);
     VkTexture* createAlphaTexture(const std::vector<uint8_t>& alphaData);
+#ifdef WOWEE_PS4
+    VkTexture* createAlphaTexture(const TerrainAlphaCache<VkTexture>::Mask& mask);
+#endif
     bool isChunkVisible(const TerrainChunkGPU& chunk, const Frustum& frustum);
     void calculateBoundingSphere(TerrainChunkGPU& chunk, const pipeline::ChunkMesh& meshChunk);
     VkDescriptorSet allocateMaterialSet();
@@ -189,6 +204,13 @@ private:
                            const pipeline::ChunkMesh& chunk,
                            const std::vector<std::string>& texturePaths,
                            int tileX, int tileY, int chunkX, int chunkY);
+
+#ifdef WOWEE_PS4
+    bool createPackedAlphaTexture(
+        TerrainChunkGPU& gpuChunk,
+        const std::array<TerrainAlphaCache<VkTexture>::Mask, 3>& masks,
+        const std::array<bool, 3>& packed);
+#endif
 
     /// Allocate and fill a chunk's params UBO. False means the allocation
     /// failed, and the two callers answer that differently: the one-shot load
@@ -243,6 +265,7 @@ private:
     // Fallback textures
     std::unique_ptr<VkTexture> whiteTexture;
     std::unique_ptr<VkTexture> opaqueAlphaTexture;
+    std::unique_ptr<VkTexture> transparentAlphaTexture;
 
     // Rendering state
     bool wireframe = false;
@@ -269,7 +292,9 @@ private:
 
     VkBuffer indirectBuffer_ = VK_NULL_HANDLE;
     VmaAllocation indirectAlloc_ = VK_NULL_HANDLE;
+    void* indirectMapped_ = nullptr;
     static constexpr uint32_t MAX_INDIRECT_DRAWS = 8192;
+    static constexpr uint32_t SHADOW_INDIRECT_SLICES = 4; // 2 frame slots x 2 cascades
 };
 
 } // namespace rendering

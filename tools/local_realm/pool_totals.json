@@ -1,0 +1,82 @@
+{
+ "archiveSha256": "8d4bd0efd5eed412120dd5d1d09b9001b409bc986ae2b3db866127adc77bbee4",
+ "kind": "original-pool-totals",
+ "pools": [
+  {
+   "entry": 5700,
+   "motherPool": 0,
+   "totalMembers": 25
+  },
+  {
+   "entry": 11640,
+   "motherPool": 0,
+   "totalMembers": 5
+  },
+  {
+   "entry": 20377,
+   "motherPool": 0,
+   "totalMembers": 19
+  },
+  {
+   "entry": 20378,
+   "motherPool": 0,
+   "totalMembers": 17
+  },
+  {
+   "entry": 20380,
+   "motherPool": 0,
+   "totalMembers": 9
+  },
+  {
+   "entry": 20383,
+   "motherPool": 0,
+   "totalMembers": 30
+  },
+  {
+   "entry": 20384,
+   "motherPool": 0,
+   "totalMembers": 19
+  },
+  {
+   "entry": 20385,
+   "motherPool": 0,
+   "totalMembers": 15
+  },
+  {
+   "entry": 20386,
+   "motherPool": 0,
+   "totalMembers": 36
+  },
+  {
+   "entry": 20387,
+   "motherPool": 0,
+   "totalMembers": 34
+  },
+  {
+   "entry": 20388,
+   "motherPool": 0,
+   "totalMembers": 20
+  },
+  {
+   "entry": 20389,
+   "motherPool": 0,
+   "totalMembers": 30
+  },
+  {
+   "entry": 20390,
+   "motherPool": 0,
+   "totalMembers": 36
+  },
+  {
+   "entry": 60006,
+   "motherPool": 0,
+   "totalMembers": 2
+  },
+  {
+   "entry": 60007,
+   "motherPool": 0,
+   "totalMembers": 2
+  }
+ ],
+ "schemaVersion": 1
+}

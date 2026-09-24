@@ -1,5 +1,8 @@
 {
   "schemaVersion": 1,
+  "questChains": "quest_chains.json",
+  "reviewedOriginalContent": "reviewed_original_content.json",
+  "creatureTalk": "creature_talk.json",
   "name": "Northshire and Goldshire — local realm adaptation",
   "provenance": {
     "repository": "https://github.com/azerothcore/azerothcore-wotlk",

@@ -20,6 +20,74 @@ class ShadowReceiverHull {
     glm::vec3 x_{}, y_{}, origin_{};
     static float cross(glm::vec2 a, glm::vec2 b) { return a.x*b.y-a.y*b.x; }
 public:
+    /// Fast repeated local-AABB query for one immutable model transform.
+    ///
+    /// WMO shadow submission tests many material ranges of the same placed
+    /// building against the same receiver hull. The generic method rebuilds
+    /// the model-to-hull projection for every range; this object resolves that
+    /// projection once per instance/cascade and leaves only a few scalar MADs
+    /// per hull edge in the inner loop. Reflection uses two hulls, so that less
+    /// common path deliberately falls back to the generic exact method.
+    class TransformedBoundsTester {
+    public:
+        TransformedBoundsTester() = default;
+        TransformedBoundsTester(const ShadowReceiverHull& hull, const glm::mat4& model)
+            : hull_(&hull), model_(model), count_(hull.count_), empty_(hull.empty_) {
+            if (hull.additional_) return;
+            fast_ = true;
+            if (count_ < 3 || empty_) return;
+
+            const glm::vec3 translation(model[3]);
+            const glm::vec3 d = translation - hull.origin_;
+            const glm::vec2 originProj{glm::dot(hull.x_, d), glm::dot(hull.y_, d)};
+            std::array<glm::vec2, 3> axisProj{};
+            for (unsigned axis = 0; axis < 3; ++axis) {
+                const glm::vec3 worldAxis(model[axis]);
+                axisProj[axis] = {glm::dot(hull.x_, worldAxis),
+                                  glm::dot(hull.y_, worldAxis)};
+            }
+            for (unsigned i = 0; i < count_; ++i) {
+                base_[i] = glm::dot(hull.inward_[i], originProj) - hull.offsets_[i];
+                coeff_[i] = glm::vec3(glm::dot(hull.inward_[i], axisProj[0]),
+                                      glm::dot(hull.inward_[i], axisProj[1]),
+                                      glm::dot(hull.inward_[i], axisProj[2]));
+            }
+        }
+
+        bool intersects(glm::vec3 low, glm::vec3 high) const {
+            if (!hull_) return true;
+            if (!fast_) return hull_->intersectsTransformedBounds(low, high, model_);
+            if (empty_) return false;
+            if (count_ < 3) return true;
+            const glm::vec3 center = (low + high) * 0.5f;
+            const glm::vec3 extent = (high - low) * 0.5f;
+            for (unsigned axis = 0; axis < 3; ++axis) {
+                if (!std::isfinite(center[axis]) || !std::isfinite(extent[axis]) || extent[axis] < 0.0f)
+                    return true;
+            }
+            for (unsigned i = 0; i < count_; ++i) {
+                const float signedCenter = base_[i] + glm::dot(coeff_[i], center);
+                const float support = glm::dot(glm::abs(coeff_[i]), extent);
+                if (!std::isfinite(signedCenter) || !std::isfinite(support)) return true;
+                if (signedCenter < -support - 2.0f - hull_->supportPadding_) return false;
+            }
+            return true;
+        }
+
+    private:
+        const ShadowReceiverHull* hull_ = nullptr;
+        glm::mat4 model_{1.0f};
+        std::array<float, 32> base_{};
+        std::array<glm::vec3, 32> coeff_{};
+        unsigned count_ = 0;
+        bool empty_ = false;
+        bool fast_ = false;
+    };
+
+    [[nodiscard]] TransformedBoundsTester transformedBoundsTester(const glm::mat4& model) const {
+        return TransformedBoundsTester(*this, model);
+    }
+
     template <size_t N>
     void build(const std::array<glm::vec3, N>& corners, const glm::mat4& light,
                float supportPadding = 0.0f, size_t pointCount = N) {

@@ -43,6 +43,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <functional>
+#include <new>
 #include <unordered_set>
 
 #ifdef __linux__
@@ -331,10 +332,14 @@ bool TerrainManager::enqueueTile(int x, int y, bool priority, bool repairIncompl
             } else if (priority && pendingTiles.count(coord)) {
                 // A speculative object repair has become visible/required.
                 // Promote only queued work; an active worker keeps ownership.
-                auto queued = std::find(loadQueue.begin(), loadQueue.end(), coord);
-                if (queued != loadQueue.end()) {
-                    loadQueue.erase(queued);
-                    loadQueue.push_front(coord);
+                // Repeated camera/intro requests commonly hit the already-front
+                // tile, which needs no O(n) deque scan or erase/reinsert.
+                if (loadQueue.empty() || loadQueue.front() != coord) {
+                    auto queued = std::find(loadQueue.begin(), loadQueue.end(), coord);
+                    if (queued != loadQueue.end()) {
+                        loadQueue.erase(queued);
+                        loadQueue.push_front(coord);
+                    }
                 }
             }
         }
@@ -347,9 +352,12 @@ bool TerrainManager::enqueueTile(int x, int y, bool priority, bool repairIncompl
     {
         std::lock_guard<std::mutex> lock(queueMutex);
         if (pendingTiles.find(coord) != pendingTiles.end()) {
-            if(priority) {
-                auto it=std::find(loadQueue.begin(),loadQueue.end(),coord);
-                if(it!=loadQueue.end()){loadQueue.erase(it);loadQueue.push_front(coord);}
+            if (priority && (loadQueue.empty() || loadQueue.front() != coord)) {
+                auto it = std::find(loadQueue.begin(), loadQueue.end(), coord);
+                if (it != loadQueue.end()) {
+                    loadQueue.erase(it);
+                    loadQueue.push_front(coord);
+                }
             }
             return true;
         }
@@ -1331,7 +1339,7 @@ bool TerrainManager::advanceFinalization(FinalizingTile& ft) {
                     uploadedM2Ids_.insert(m2Ready.modelId);
                 }
 #ifdef WOWEE_PS4
-                m2Ready.model = {}; // Renderer owns animation/collision data.
+                retireParsedM2Model(std::make_unique<pipeline::M2Model>(std::move(m2Ready.model)));
 #endif
                 ft.m2ModelIndex++;
                 uploaded++;
@@ -1454,12 +1462,27 @@ bool TerrainManager::advanceFinalization(FinalizingTile& ft) {
                 const auto result = wmoRenderer->loadModelIncremental(
                     wmoReady.model, wmoReady.modelId, kWmoGroupBudgetMs, /*terrainManaged=*/true);
 #ifdef WOWEE_PS4
-                wmoRenderer->releaseUploadedGeometry(wmoReady.model, wmoReady.modelId);
+                // Detach at most one committed source group per frame. 2.08
+                // hardware still showed 40-55 ms WMO_MODELS spikes even though
+                // whole parsed models were already destroyed on a worker. The
+                // remaining cost was the per-group vector swap here: freeing a
+                // large CpuGeometryVector coalesces allocator state immediately
+                // on the render thread. Move ownership into a tiny retirement
+                // object and let the terrain worker perform the actual frees.
+                size_t releasedBytes = 0;
+                auto detached = std::unique_ptr<pipeline::DetachedWmoGeometry>(
+                    new (std::nothrow) pipeline::DetachedWmoGeometry());
+                const bool releaseCaughtUp = wmoRenderer->releaseUploadedGeometry(
+                    wmoReady.model, wmoReady.modelId, 1, &releasedBytes,
+                    detached ? detached.get() : nullptr);
+                if (detached && releasedBytes != 0) retireDetachedWmoGeometry(std::move(detached));
+#else
+                const bool releaseCaughtUp = true;
 #endif
-                if (result == WMORenderer::ModelLoadResult::InProgress) {
-                    break;  // same model resumes on the next call
+                if (result == WMORenderer::ModelLoadResult::InProgress || !releaseCaughtUp) {
+                    break;  // same model resumes (or retires one more source group) next call
                 }
-                ft.wmoModelIndex++;  // Complete or Failed - either way, move on
+                ft.wmoModelIndex++;  // Complete/Failed and CPU source retirement caught up
                 break;               // one model per step
             }
             wmoRenderer->setDeferNormalMaps(false);
@@ -1490,7 +1513,7 @@ bool TerrainManager::advanceFinalization(FinalizingTile& ft) {
                 // Skip duplicates and unloaded models
                 if (ft.wmoLiquidGroupIndex == 0 && wmoReady.uniqueId != 0 && placedWmoIds.count(wmoReady.uniqueId)) {
 #ifdef WOWEE_PS4
-                    wmoReady.model = {}; // Liquids consumed; renderer owns group resources.
+                    retireParsedWmoModel(std::make_unique<pipeline::WMOModel>(std::move(wmoReady.model)));
 #endif
                     ft.wmoInstanceIndex++;
                     ft.wmoLiquidGroupIndex = 0;
@@ -1498,7 +1521,7 @@ bool TerrainManager::advanceFinalization(FinalizingTile& ft) {
                 }
                 if (!wmoRenderer->isModelLoaded(wmoReady.modelId)) {
 #ifdef WOWEE_PS4
-                    wmoReady.model = {}; // Liquids consumed; renderer owns group resources.
+                    retireParsedWmoModel(std::make_unique<pipeline::WMOModel>(std::move(wmoReady.model)));
 #endif
                     ft.wmoInstanceIndex++;
                     ft.wmoLiquidGroupIndex = 0;
@@ -1510,7 +1533,7 @@ bool TerrainManager::advanceFinalization(FinalizingTile& ft) {
                         wmoReady.modelId, wmoReady.position, wmoReady.rotation, wmoReady.scale);
                     if (!wmoInstId) {
 #ifdef WOWEE_PS4
-                        wmoReady.model = {}; // Liquids consumed; renderer owns group resources.
+                        retireParsedWmoModel(std::make_unique<pipeline::WMOModel>(std::move(wmoReady.model)));
 #endif
                         ft.wmoInstanceIndex++;
                         continue;
@@ -1559,7 +1582,7 @@ bool TerrainManager::advanceFinalization(FinalizingTile& ft) {
                     }
                 }
 #ifdef WOWEE_PS4
-                wmoReady.model = {}; // Liquids consumed; renderer owns group resources.
+                retireParsedWmoModel(std::make_unique<pipeline::WMOModel>(std::move(wmoReady.model)));
 #endif
                 ft.wmoInstanceIndex++;
                 ft.wmoLiquidGroupIndex = 0;
@@ -1606,7 +1629,7 @@ bool TerrainManager::advanceFinalization(FinalizingTile& ft) {
                     (!doodad.model || !m2Renderer->loadModel(*doodad.model, doodad.modelId))) {
                     pending->objectsIncomplete = true;
 #ifdef WOWEE_PS4
-                    doodad.model = {};
+                    retireParsedM2Model(std::move(doodad.model));
 #endif
                     ft.wmoDoodadIndex++;
                     uploaded++;
@@ -1636,7 +1659,7 @@ bool TerrainManager::advanceFinalization(FinalizingTile& ft) {
                     if (!sharedChild) ft.m2InstanceIds.push_back(wmoDoodadInstId);
                 }
 #ifdef WOWEE_PS4
-                doodad.model = {};
+                retireParsedM2Model(std::move(doodad.model));
 #endif
                 ft.wmoDoodadIndex++;
                 uploaded++;
@@ -1783,6 +1806,52 @@ bool TerrainManager::advanceFinalization(FinalizingTile& ft) {
     return true;
 }
 
+#ifdef WOWEE_PS4
+void TerrainManager::retireParsedM2Model(std::unique_ptr<pipeline::M2Model> model) noexcept {
+    if (!model) return;
+    try {
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            retiredCpuM2Models_.push_back(std::move(model));
+        }
+        queueCV.notify_one();
+    } catch (...) {
+        // Allocation failure in the retirement queue must never lose the model
+        // or crash streaming. The local unique_ptr falls back to synchronous
+        // destruction in this rare path.
+    }
+}
+
+void TerrainManager::retireParsedWmoModel(std::unique_ptr<pipeline::WMOModel> model) noexcept {
+    if (!model) return;
+    try {
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            retiredCpuWmoModels_.push_back(std::move(model));
+        }
+        queueCV.notify_one();
+    } catch (...) {
+        // Same fallback contract as M2 retirement.
+    }
+}
+
+void TerrainManager::retireDetachedWmoGeometry(
+    std::unique_ptr<pipeline::DetachedWmoGeometry> geometry) noexcept {
+    if (!geometry) return;
+    try {
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            retiredWmoGeometry_.push_back(std::move(geometry));
+        }
+        queueCV.notify_one();
+    } catch (...) {
+        // Same rare fallback as parsed-model retirement. If queue growth itself
+        // fails, local destruction is still correct; memory pressure already
+        // means there is no safe additional allocation available for indirection.
+    }
+}
+#endif
+
 void TerrainManager::workerLoop() {
 #ifdef WOWEE_PS4
     platform::ps4::registerCrashReportingThread("terrain worker");
@@ -1798,49 +1867,85 @@ void TerrainManager::workerLoop() {
         bool objectsOnly = false;
         bool pressureProbe = false;
         TerrainPreparationBudget::Lease preparationLease;
+#ifdef WOWEE_PS4
+        std::unique_ptr<pipeline::M2Model> retiredCpuModel;
+        std::unique_ptr<pipeline::WMOModel> retiredCpuWmo;
+        std::unique_ptr<pipeline::DetachedWmoGeometry> retiredWmoGeometry;
+#endif
 
         {
             std::unique_lock<std::mutex> lock(queueMutex);
             queueCV.wait(lock, [this]() {
+#ifdef WOWEE_PS4
+                return !loadQueue.empty() || !retiredCpuM2Models_.empty() ||
+                       !retiredCpuWmoModels_.empty() || !retiredWmoGeometry_.empty() ||
+                       !workerRunning.load();
+#else
                 return !loadQueue.empty() || !workerRunning.load();
+#endif
             });
 
             if (!workerRunning.load()) {
                 break;
             }
 
-            const auto& memMon = core::MemoryMonitor::getInstance();
 #ifdef WOWEE_PS4
-            // One decoded payload across ALL phases, not one per worker or
-            // per queue. Draining readyQueue into finalizingTiles_ must not
-            // admit another tile while the first still retains its textures.
-            const uint64_t nowMs = static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now().time_since_epoch()).count());
-            const auto admission = preparationBudget_.acquire(1, memMon.isMemoryPressure(), nowMs);
-            if (admission == TerrainPreparationBudget::Admission::Wait) {
-                queueCV.wait_for(lock, std::chrono::milliseconds(100));
-                continue;
-            }
-            pressureProbe = admission == TerrainPreparationBudget::Admission::PressureProbe;
-#else
-            // Preserve desktop pressure behavior and worker parallelism.
-            if (memMon.isSevereMemoryPressure() || readyQueue.size() >= maxReadyQueueSize_ ||
-                memMon.isMemoryPressure()) {
-                queueCV.wait_for(lock, std::chrono::milliseconds(100));
-                continue;
-            }
-            preparationBudget_.acquire(static_cast<size_t>(-1), false, 0);
+            if (!retiredCpuM2Models_.empty()) {
+                retiredCpuModel = std::move(retiredCpuM2Models_.front());
+                retiredCpuM2Models_.pop_front();
+            } else if (!retiredCpuWmoModels_.empty()) {
+                retiredCpuWmo = std::move(retiredCpuWmoModels_.front());
+                retiredCpuWmoModels_.pop_front();
+            } else if (!retiredWmoGeometry_.empty()) {
+                retiredWmoGeometry = std::move(retiredWmoGeometry_.front());
+                retiredWmoGeometry_.pop_front();
+            } else
 #endif
-            preparationLease = preparationBudget_.lease();
+            {
+                const auto& memMon = core::MemoryMonitor::getInstance();
+#ifdef WOWEE_PS4
+                // One decoded payload across ALL phases, not one per worker or
+                // per queue. Draining readyQueue into finalizingTiles_ must not
+                // admit another tile while the first still retains its textures.
+                const uint64_t nowMs = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch()).count());
+                const auto admission = preparationBudget_.acquire(1, memMon.isMemoryPressure(), nowMs);
+                if (admission == TerrainPreparationBudget::Admission::Wait) {
+                    queueCV.wait_for(lock, std::chrono::milliseconds(100));
+                    continue;
+                }
+                pressureProbe = admission == TerrainPreparationBudget::Admission::PressureProbe;
+#else
+                // Preserve desktop pressure behavior and worker parallelism.
+                if (memMon.isSevereMemoryPressure() || readyQueue.size() >= maxReadyQueueSize_ ||
+                    memMon.isMemoryPressure()) {
+                    queueCV.wait_for(lock, std::chrono::milliseconds(100));
+                    continue;
+                }
+                preparationBudget_.acquire(static_cast<size_t>(-1), false, 0);
+#endif
+                preparationLease = preparationBudget_.lease();
 
-            if (!loadQueue.empty()) {
-                coord = loadQueue.front();
-                objectsOnly = objectRepairRequests_.erase(coord) != 0;
-                loadQueue.pop_front();
-                hasWork = true;
+                if (!loadQueue.empty()) {
+                    coord = loadQueue.front();
+                    objectsOnly = objectRepairRequests_.erase(coord) != 0;
+                    loadQueue.pop_front();
+                    hasWork = true;
+                }
             }
         }
+
+#ifdef WOWEE_PS4
+        if (retiredCpuModel || retiredCpuWmo || retiredWmoGeometry) {
+            // Destruction/free runs here, off the render thread and outside the
+            // queue lock so allocator work cannot block streaming admission.
+            retiredCpuModel.reset();
+            retiredCpuWmo.reset();
+            retiredWmoGeometry.reset();
+            continue;
+        }
+#endif
 
         if (hasWork) {
             // A throw here (bad_alloc on the console's small heap, a
@@ -1964,8 +2069,9 @@ void TerrainManager::processReadyTiles() {
         const auto phaseBefore = ft.phase;
         const auto stepStart = std::chrono::steady_clock::now();
         bool done = advanceFinalization(ft);
+        const auto stepEnd = std::chrono::steady_clock::now();
         const float stepMs = std::chrono::duration<float, std::milli>(
-            std::chrono::steady_clock::now() - stepStart).count();
+            stepEnd - stepStart).count();
         if (stepMs > budgetMs) {
             ++finalizeOverrunCount_;
             finalizeOverrunWorstMs_ = std::max(finalizeOverrunWorstMs_, stepMs);
@@ -1983,7 +2089,7 @@ void TerrainManager::processReadyTiles() {
             finalizingTiles_.pop_front();
         }
         float elapsed = std::chrono::duration<float, std::milli>(
-            std::chrono::steady_clock::now() - budgetStart).count();
+            stepEnd - budgetStart).count();
         if (elapsed >= budgetMs) break;
     }
 
@@ -2014,6 +2120,7 @@ void TerrainManager::processPendingUnloads() {
     while (!pendingUnloadQueue_.empty()) {
         TileCoord coord = pendingUnloadQueue_.front();
         pendingUnloadQueue_.pop_front();
+        pendingUnloadSet_.erase(coord);
 
         // Skip stale entries: the player may have reversed course since this
         // tile was queued, bringing it back within range. Unloading it now
@@ -2471,6 +2578,7 @@ void TerrainManager::softReset() {
     failedTiles.clear();
     collisionTiles_.clear();
     pendingUnloadQueue_.clear();
+    pendingUnloadSet_.clear();
 
     currentTile = {.x = -1, .y = -1};
     lastStreamTile = {.x = -1, .y = -1};
@@ -3244,22 +3352,13 @@ std::optional<std::string> TerrainManager::getDominantTextureAt(float glX, float
 }
 
 void TerrainManager::streamTiles() {
-    auto shouldSkipMissingAdt = [this](const TileCoord& coord) -> bool {
-        if (!assetManager) return false;
-        if (failedTiles.find(coord) != failedTiles.end()) return true;
-        const std::string adtPath = getADTPath(coord);
-        if (!assetManager->fileExists(adtPath)) {
-            // Mark permanently failed so future stream/precache passes do not retry.
-            failedTiles[coord] = true;
-            return true;
-        }
-        return false;
-    };
+    struct PendingEntry { TileCoord coord; int distSq; };
+    std::vector<PendingEntry> newTiles;
 
-    // Enqueue tiles in radius around current tile for async loading.
-    // Collect all newly-needed tiles, then sort by distance so the closest
-    // (most visible) tiles get loaded first.  This is critical during taxi
-    // flight where new tiles enter the radius faster than they can load.
+    // First prune stale queued work and take a cheap snapshot of candidate
+    // coordinates while holding the queue mutex. File existence checks are
+    // intentionally NOT done here: AssetManager may touch MPQ/disk state, and
+    // keeping queueMutex locked across that I/O stalls every terrain worker.
     {
         std::lock_guard<std::mutex> lock(queueMutex);
 
@@ -3279,20 +3378,14 @@ void TerrainManager::streamTiles() {
         }
 #endif
 
-        struct PendingEntry { TileCoord coord; int distSq; };
-        std::vector<PendingEntry> newTiles;
-
+        const size_t diameter = static_cast<size_t>(loadRadius * 2 + 1);
+        newTiles.reserve(diameter * diameter);
         for (int dy = -loadRadius; dy <= loadRadius; dy++) {
             for (int dx = -loadRadius; dx <= loadRadius; dx++) {
                 int tileX = currentTile.x + dx;
                 int tileY = currentTile.y + dy;
 
-                // Check valid range
-                if (tileX < 0 || tileX > 63 || tileY < 0 || tileY > 63) {
-                    continue;
-                }
-
-                // Circular pattern: skip corner tiles beyond radius (Euclidean distance)
+                if (tileX < 0 || tileX > 63 || tileY < 0 || tileY > 63) continue;
 #ifdef WOWEE_PS4
                 if (!ps4budget::neededTile(dx, dy)) continue;
                 if (!stationaryPreload_.load() &&
@@ -3301,27 +3394,43 @@ void TerrainManager::streamTiles() {
 #else
                 if (dx*dx + dy*dy > loadRadius*loadRadius) continue;
 #endif
-
                 TileCoord coord = {.x = tileX, .y = tileY};
-
-                // Skip if already loaded, pending, or failed
                 if (loadedTiles.find(coord) != loadedTiles.end()) continue;
                 if (pendingTiles.find(coord) != pendingTiles.end()) continue;
                 if (failedTiles.find(coord) != failedTiles.end()) continue;
-                if (shouldSkipMissingAdt(coord)) continue;
-
                 newTiles.push_back({.coord = coord, .distSq = dx*dx + dy*dy});
-                pendingTiles[coord] = true;
             }
         }
+    }
 
-        // Sort nearest tiles first so workers service the most visible tiles
-        std::sort(newTiles.begin(), newTiles.end(),
-                  [](const PendingEntry& a, const PendingEntry& b) { return a.distSq < b.distSq; });
+    // Missing-ADT probes can involve archive/disk lookups. Do them without the
+    // worker queue lock, then commit surviving coordinates under a short lock.
+    size_t keep = 0;
+    for (size_t i = 0; i < newTiles.size(); ++i) {
+        const auto coord = newTiles[i].coord;
+        if (failedTiles.find(coord) != failedTiles.end()) continue;
+        if (assetManager && !assetManager->fileExists(getADTPath(coord))) {
+            failedTiles[coord] = true;
+            continue;
+        }
+        if (keep != i) newTiles[keep] = newTiles[i];
+        ++keep;
+    }
+    newTiles.resize(keep);
+    std::sort(newTiles.begin(), newTiles.end(),
+              [](const PendingEntry& a, const PendingEntry& b) { return a.distSq < b.distSq; });
 
-        // Insert at front so new close tiles preempt any distant tiles already queued
+    if (!newTiles.empty()) {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        // A worker/cinematic request may have queued a candidate while the I/O
+        // probes ran. Recheck membership before publishing it.
         for (auto it = newTiles.rbegin(); it != newTiles.rend(); ++it) {
-            loadQueue.push_front(it->coord);
+            const TileCoord coord = it->coord;
+            if (loadedTiles.find(coord) != loadedTiles.end()) continue;
+            if (pendingTiles.find(coord) != pendingTiles.end()) continue;
+            if (failedTiles.find(coord) != failedTiles.end()) continue;
+            pendingTiles[coord] = true;
+            loadQueue.push_front(coord);
         }
     }
 
@@ -3350,23 +3459,17 @@ void TerrainManager::streamTiles() {
         }
     }
 
-    // Notify workers that there's work
     queueCV.notify_all();
 
     // Unload tiles beyond unload radius (well past the camera far clip).
-    // Queue them rather than unloading synchronously here - processPendingUnloads()
-    // drains a time-budgeted batch per frame instead (see pendingUnloadQueue_'s comment).
-    std::unordered_set<TileCoord, TileCoord::Hash> alreadyQueued(
-        pendingUnloadQueue_.begin(), pendingUnloadQueue_.end());
+    // Membership is mirrored in pendingUnloadSet_ so repeated stream passes do
+    // not rebuild a hash table from the entire backlog.
     size_t queuedNow = 0;
-
     for (const auto& pair : loadedTiles) {
         const TileCoord& coord = pair.first;
-
-        // Retire travel history outside the current spatial working set.
-        if (!retainStreamTile(coord) && !alreadyQueued.count(coord)) {
+        if (!retainStreamTile(coord) && pendingUnloadSet_.insert(coord).second) {
             pendingUnloadQueue_.push_back(coord);
-            queuedNow++;
+            ++queuedNow;
         }
     }
 

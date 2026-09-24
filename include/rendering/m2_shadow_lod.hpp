@@ -12,6 +12,13 @@ inline bool m2FarShadowSubtexel(uint32_t pass, float threshold,
     // Wind maximum local displacements: x=.35+.15+.06, y=.25+.12+.05.
     // hypot(.56,.42)=.70. Round upward for float arithmetic.
     const float paddedRadius = radius + (wind ? 0.701f : 0.001f);
-    return 2.0f * paddedRadius * std::sqrt(normSquared) < threshold;
+    // Compare squared diameters. The far pass evaluates this for thousands of
+    // doodads every frame on Jaguar; sqrt here was pure scalar cost. Inputs are
+    // already finite/non-negative, and using double for the products keeps the
+    // threshold decision conservative around float rounding boundaries.
+    const double diameterSquared = 4.0 * static_cast<double>(paddedRadius) *
+        static_cast<double>(paddedRadius) * static_cast<double>(normSquared);
+    const double thresholdSquared = static_cast<double>(threshold) * threshold;
+    return diameterSquared < thresholdSquared;
 }
 }

@@ -6,6 +6,7 @@
 #include "core/input.hpp"
 #include <SDL2/SDL.h>
 #include <algorithm>
+#include <cstdint>
 #include <functional>
 #include <optional>
 
@@ -248,6 +249,12 @@ public:
     void setTurnRateOverride(float rateRadS) { turnRateOverride_ = rateRadS; }
     void setMovementRooted(bool rooted) { movementRooted_ = rooted; }
     [[nodiscard]] bool isMovementRooted() const { return movementRooted_; }
+    // Server-driven loss of control (a creature's fear or confuse): mode 1 runs
+    // away from `fromRender` in legs as FleeingMovementGenerator does, mode 2
+    // wanders within 4 yd of the start as ConfusedMovementGenerator does; input
+    // is ignored meanwhile. Mode 0 hands control back.
+    void setForcedMovement(uint8_t mode, const glm::vec3& fromRender, bool hasSource);
+    [[nodiscard]] uint8_t forcedMovementMode() const { return forcedMode_; }
     void setGravityDisabled(bool disabled) { gravityDisabled_ = disabled; }
     void setFeatherFallActive(bool active) { featherFallActive_ = active; }
     void setWaterWalkActive(bool active) { waterWalkActive_ = active; }
@@ -388,6 +395,11 @@ private:
     /// `includeDoodads` adds M2 collision, which the free-fly camera does not use.
     glm::vec3 sweepAgainstWalls(const glm::vec3& from, const glm::vec3& to, bool includeDoodads);
 
+    /// Refresh WMO containment from more than one body height and require a
+    /// second consecutive miss before leaving. Door frames and stair portals
+    /// routinely put the waist and feet in different groups for one frame.
+    void refreshWmoContainment(const glm::vec3& feet, bool force);
+
     WMORenderer* wmoRenderer = nullptr;
     M2Renderer* m2Renderer = nullptr;
     WaterRenderer* waterRenderer = nullptr;
@@ -506,6 +518,8 @@ private:
     bool indoorZoomHeld_ = false;
     int insideStateCheckCounter_ = 0;
     glm::vec3 lastInsideStateCheckPos_ = glm::vec3(0.0f);
+    uint8_t insideWMOMissCount_ = 0;
+    uint8_t insideInteriorMissCount_ = 0;
     int insideWMOCheckCounter = 0;
     glm::vec3 lastInsideWMOCheckPos = glm::vec3(0.0f);
 
@@ -558,6 +572,9 @@ private:
     // riding on top of the water; retail treads with the shoulders out and the
     // water at the chest.
     static constexpr float WATER_SURFACE_OFFSET = 1.45f;
+    // A liquid tile can disappear for one or two frames at an ADT/WMO seam.
+    // Keep swim briefly across that data gap, but never indefinitely on land.
+    float waterSampleGapSeconds_ = 0.0f;
 
     // Movement input suppression (after teleport/portal, ignore held keys)
     float movementSuppressTimer_ = 0.0f;
@@ -656,6 +673,15 @@ private:
     float turnRateOverride_ = 0.0f;  // rad/s; 0 = WOW_TURN_SPEED default (π rad/s)
     // Server-driven root state: when true, block all horizontal movement input.
     bool movementRooted_ = false;
+    // Forced movement (fear/confuse) state: the fright source, the current leg's
+    // destination, its remaining time, the pause between legs and the start of
+    // a confused wander.
+    uint8_t forcedMode_ = 0;
+    bool forcedHasSource_ = false, forcedHasDest_ = false;
+    glm::vec3 forcedFrom_{0.0f}, forcedDest_{0.0f}, forcedOrigin_{0.0f};
+    float forcedLegTimer_ = 0.0f, forcedWaitTimer_ = 0.0f;
+    uint32_t forcedRandom_ = 0x9e3779b9u;
+    float forcedRand01();
     // Server-driven gravity disable (levitate/hover): skip gravity accumulation.
     bool gravityDisabled_ = false;
     // Server-driven feather fall: cap downward velocity to slow-fall terminal.
