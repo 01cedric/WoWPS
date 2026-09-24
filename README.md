@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="ps4/sce\_sys/icon0.png" alt="WoWPS" width="160">
+  <img src="ps4/sce_sys/icon0.png" alt="WoWPS" width="160">
 </p>
 
 <h1 align="center">WoWPS 2.10</h1>
@@ -92,9 +92,9 @@ The client contains login, realm/character selection, movement, combat, quest, i
 
 ## Install and upgrade
 
-1. **Back up your saves first:** `/data/wow\_ps/saves/local\_realm/`. Keep the complete directory, including identity and backup files; retain your configuration/action-bar files as well.
+1. **Back up your saves first:** `/data/wow_ps/saves/local_realm/`. Keep the complete directory, including identity and backup files; retain your configuration/action-bar files as well.
 2. Install the **WoWPS 2.10** PKG on a compatible homebrew-enabled PS4. The title remains **WoWPS**, title ID **WOWE00001**.
-3. Copy your original WotLK client `Data` directory to `/data/wow\_ps/Data/`, retaining locale subdirectories and MPQ layout. Launch WoWPS.
+3. Copy your original WotLK client `Data` directory to `/data/wow_ps/Data/`, retaining locale subdirectories and MPQ layout. Launch WoWPS.
 
 For solo play choose **Single Player**. For LAN, one console chooses **Host LAN**, the others **Join LAN**. All participants must use **2.10** with matching content. External realms use the connected-client/server setup.
 
@@ -112,7 +112,7 @@ must also be reachable from the PS4. See [connection setup and troubleshooting](
 
 **Optional collision data:** the local line-of-sight rule supports collision data extracted from your own MPQs. No extracted collision pack is supplied. Without one, that visibility query defaults to visible and cannot prevent casting through walls. A host and its guests must use matching collision content.
 
-Runtime logs are written below `/data/wow\_ps/wowps/logs/`. Keep `boot`, `wowps` and `vulkan\_icd` logs together when reporting a fault.
+Runtime logs are written below `/data/wow_ps/wowps/logs/`. Keep `boot`, `wowps` and `vulkan_icd` logs together when reporting a fault.
 
 ## Controller
 
@@ -149,14 +149,14 @@ Local and locally hosted day/night lighting follows PS4 Date and Time changes du
 
 ## Build
 
-See [**docs/BUILD\_PS4.md**](docs/BUILD_PS4.md). On Linux, with the OpenOrbis toolchain installed:
+See [**docs/BUILD_PS4.md**](docs/BUILD_PS4.md). On Linux, with the OpenOrbis toolchain installed:
 
 ```bash
-export OO\_PS4\_TOOLCHAIN=/path/to/OpenOrbis-PS4-Toolchain
-./tools/ps4/build\_ps4\_pkg.sh --jobs 3
+export OO\_PS4_TOOLCHAIN=/path/to/OpenOrbis-PS4-Toolchain
+./tools/ps4/build_ps4\_pkg.sh --jobs 3
 ```
 
-`BUILD\_VERSION` is the shared source of client/package identity. Update 2.10 contains `02.10`. The source includes the required vendored PS4 rendering components and checked shader binaries, but not original client data or the external toolchain.
+`BUILD_VERSION` is the shared source of client/package identity. Update 2.10 contains `02.10`. The source includes the required vendored PS4 rendering components and checked shader binaries, but not original client data or the external toolchain.
 
 ## Credits and licenses
 
