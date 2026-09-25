@@ -2,7 +2,7 @@
   <img src="ps4/sce_sys/icon0.png" alt="WoWPS" width="160">
 </p>
 
-<h1 align="center">WoWPS 2.11</h1>
+<h1 align="center">WoWPS</h1>
 <p align="center"><em>World of Warcraft, running natively on PlayStation 4.</em></p>
 <p align="center">
   <img alt="Release" src="https://img.shields.io/badge/release-2.11-blue">
@@ -28,12 +28,6 @@ with the PlayStation `SO_NBIO` socket option. It applies to authentication and
 world connections and retains the 2.10 SRP, packet-framing and encryption fixes.
 The connection tests now include denied `fcntl`/`ioctl` calls. The local-world,
 renderer, streaming, movement and persistence features from 2.10 are retained.
-
-See [CHANGELOG.md](CHANGELOG.md) for the consolidated release notes,
-[current implementation](docs/CURRENT_IMPLEMENTATION.md) for scope, and
-[TODO.md](TODO.md) for remaining work. [Build validation](docs/BUILD_VALIDATION.md)
-separates automated checks from PS4 acceptance. A successful build is not a
-guarantee of complete gameplay, visual correctness or a particular frame rate.
 
 ## Feature status
 
