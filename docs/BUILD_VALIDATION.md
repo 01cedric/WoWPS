@@ -1,14 +1,14 @@
-# WoWPS Update 2.10 — build and package validation
+# WoWPS Update 2.11 — build and package validation
 
-Validated on 2026-09-23. These results describe this release's source, host tests
+Validated on 2026-09-25. These results describe this release's source, host tests
 and package; they do not certify a PS4 installation or a live server session.
 
 ## Release identity
 
 | Field | Value |
 |---|---|
-| Public release / CMake project | 2.10 / 2.10.0 |
-| BUILD_VERSION / packaged APP_VER / VERSION | 02.10 |
+| Public release / CMake project | 2.11 / 2.11.0 |
+| BUILD_VERSION / packaged APP_VER / VERSION | 02.11 |
 | TITLE / TITLE_ID | WoWPS / WOWE00001 |
 | CONTENT_ID | IV0000-WOWE00001_00-WOWEEPS4CLIENT00 |
 | Build | PS4 Release, supplied OpenOrbis SDK |
@@ -17,14 +17,17 @@ and package; they do not certify a PS4 installation or a live server session.
 
 ## Build and package
 
-- Fresh CMake configuration, full compile/link, final integration rebuild and
-  PKG creation completed successfully. Existing compiler warnings remain.
+- Fresh CMake configuration, all 778 build steps including the PS4 compile/link,
+  and PKG creation completed successfully. Existing compiler warnings remain.
+- The compiled authentication/world socket objects call `setsockopt` with
+  `SOL_SOCKET=0xffff` and `SO_NBIO=0x1200`; neither imports `fcntl` or `ioctl`.
+  This verifies the target build uses the correction, not console acceptance.
 - The OpenOrbis package validator passed all **28 hash, signature and structural
   checks**. These are homebrew package checks, not retail signing/notarization.
 - **148 extracted runtime files**, including the executable and **95 shader
   binaries**, match their staged inputs by SHA-256. The generated keystone is
   accounted for separately; the icon and SFO were extracted from package entries.
-- The actual package SFO contains APP_VER and VERSION `02.10`, TITLE `WoWPS`,
+- The actual package SFO contains APP_VER and VERSION `02.11`, TITLE `WoWPS`,
   TITLE_ID `WOWE00001` and the content ID above.
 - **30 lighting GLSL/SPIR-V manifest pairs** passed their source/binary integrity
   checks. Unchanged shader sources were not recompiled or hardware-rendered here.
@@ -37,7 +40,7 @@ is enabled by the individual runners; not every check is sanitizer-instrumented.
 
 | Suite | Coverage | Result |
 |---|---|---|
-| Network/authentication | Production TCP, SRP/auth handler and world socket | PASS |
+| Network/authentication | PS4 socket-control fixture, production TCP/SRP and world socket | PASS |
 | Lighting shader pairs | Committed GLSL/SPIR-V manifest | PASS |
 | Package staging | Repeat staging and unsafe output-directory rejection | PASS |
 | M2 cutout shader | Source and alpha-coverage guards | PASS |
@@ -49,7 +52,16 @@ is enabled by the individual runners; not every check is sanitizer-instrumented.
 | Ghost presentation | Presentation routing | PASS |
 | Settings access | Category access and input | PASS |
 
-The new network suite covers proof framing at every split for four client
+The network suite includes 25 reported passing groups. Two new groups compile
+the production PS4 mode-switch helper and use a host socket-option adapter while
+`fcntl` and `ioctl` explicitly return `EACCES`. They verify the `SO_NBIO` option
+and integer payload, loopback connection, two-way traffic, nonblocking empty
+receive, preserved descriptor flags and propagation of option/descriptor errors.
+The adapter maps the PS4 option to a Linux socket for the test; it does not
+execute a PlayStation syscall. This closes the earlier host-test coverage gap
+without claiming the previously failing console has been retested.
+
+The network suite also covers proof framing at every split for four client
 builds; fragmented realm lists; short writes; EINTR/EAGAIN; status-query failures;
 reconnects; terminal failure responses followed by FIN; and deadline/descriptor
 guards. Eighteen synthetic authentication exchanges cover normal login, proof
@@ -80,7 +92,7 @@ See [BUILD_PS4.md](BUILD_PS4.md) for build/package commands and
 - Project/third-party licences, notices and credits are retained. All 240
   supplied runtime files under `assets/`, `Data/` and `addons/` remain unchanged.
 - Obsolete development handovers and superseded validation notes were removed
-  from the release copy. Public documentation is consolidated for Update 2.10.
+  from the release copy. Public documentation is updated for Update 2.11.
   Toolchains, build products, personal state, test logs and Python caches are
   excluded from the source ZIP. Required renderer libraries remain included.
 
@@ -92,7 +104,17 @@ reconnection on your console/server. Original MPQ/DBC visuals, full LAN play,
 sustained FPS, long sessions, save migration and every class/quest/encounter
 remain outside these checks. Additional data-dependent tests were not all rerun.
 
-Back up saves and configuration before installing. `02.10` is numerically lower
+Back up saves and configuration before installing. `02.11` upgrades the public
+`02.10` package normally, but is numerically lower
 than higher-numbered development packages; do not delete saves to work around
 an installer version conflict. The display version does not downgrade save or
 LAN protocol identifiers.
+
+## Socket API references
+
+- [WebKit PlayStation nonblocking helper](https://github.com/WebKit/WebKit/blob/main/Source/WTF/wtf/playstation/UniStdExtrasPlayStation.cpp)
+  uses the `SO_NBIO` socket option.
+- [shadPS4 network ABI definitions](https://github.com/shadps4-emu/shadPS4/blob/main/src/core/libraries/network/net.h)
+  identify `SO_NBIO=0x1200` and `SOL_SOCKET=0xffff`.
+- The supplied OpenOrbis library exports the descriptor-based `setsockopt`
+  function. This release keeps the existing kernel socket descriptor API.

@@ -22,8 +22,11 @@ and the firewall allow both TCP ports on the intended network.
 ## Locating the failure
 
 - **Cannot connect:** check the address, auth port, server process and network.
-  Update 2.10 uses OpenOrbis `fcntl` for nonblocking TCP and records socket
-  failures with their error codes.
+  Update 2.11 uses the PlayStation `SO_NBIO` socket option for nonblocking TCP.
+  The 2.10 `Failed to make TCP socket nonblocking ... errno=13` message means
+  local socket setup failed before the server handshake. If 2.11 reports
+  `TCP setsockopt(SO_NBIO) failed`, preserve the complete error line and record
+  the console firmware and homebrew loader version.
 - **Account/password rejected:** check the account on the server. Repeated
   automatic retries are intentionally not used for account rejection.
 - **Realm list appears but world connection fails:** inspect the advertised
@@ -39,18 +42,19 @@ Client logs are under `/data/wow_ps/wowps/logs/`. Keep `boot`, `wowps` and
 `vulkan_icd` logs together. Redact account names and private addresses before
 posting them publicly; never publish passwords or saved login hashes.
 
-## Update 2.10 console check
+## Update 2.11 console check
 
 1. Back up `/data/wow_ps/saves/local_realm/` and configuration files. Install
-   the release and check the displayed version. The requested `02.10` package
+   the release and check that the displayed version is `2.11`. The `02.11` package
    version is lower than higher-numbered development builds; do not delete
    saves or configuration to resolve an installer conflict.
 2. Connect using the server's reachable address and auth port. Verify login,
    realm selection, character selection and world entry.
 3. Move, cast, open an NPC dialogue, log out, reconnect and change character.
-4. Check Single Player and, with matching 2.10 peers/content, Host/Join LAN.
+4. Check Single Player and, with matching 2.11 peers/content, Host/Join LAN.
 
-The host tests use a synthetic local SRP/authentication peer. They do not claim
-an actual PS4 or live AzerothCore server acceptance run.
+The host tests use a synthetic local SRP/authentication peer and a socket-option
+adapter to exercise denied descriptor-control calls. They do not execute the
+PS4 kernel or claim a live AzerothCore server acceptance run.
 
 Server reference: [AzerothCore networking](https://www.azerothcore.org/wiki/networking).

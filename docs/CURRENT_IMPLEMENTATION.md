@@ -1,8 +1,8 @@
-# Current implementation — WoWPS 2.10
+# Current implementation — WoWPS 2.11
 
 | Field | Value |
 |---|---|
-| Release / BUILD_VERSION | 2.10 / 02.10 |
+| Release / BUILD_VERSION | 2.11 / 02.11 |
 | Save writer / accepted versions | 45 / 1–45 |
 | LAN protocol | 109 |
 | Title ID | WOWE00001 |
@@ -11,8 +11,9 @@
 ## Connected realms
 
 The client implements authentication, realm and character selection, world
-transport and connected gameplay paths. Update 2.10 repairs TCP nonblocking
-setup, framing, partial writes and Wrath SRP byte handling. See
+transport and connected gameplay paths. Update 2.11 uses the PlayStation
+`SO_NBIO` socket option after a console rejected the 2.10 `fcntl` path. The
+framing, partial-write, Wrath SRP and world-encryption changes from 2.10 remain. See
 [connection setup](CONNECTING.md) and [verification scope](BUILD_VALIDATION.md).
 Automated protocol tests do not replace an actual PS4/live-server session.
 
