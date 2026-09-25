@@ -287,11 +287,19 @@ inline socket_t openResolvedSocket(const std::string& host, uint16_t port,
     }
     if (!setNonBlocking(fd)) {
         const int error = lastError();
+#ifdef WOWEE_PS4
+        LOG_ERROR("TCP setsockopt(SO_NBIO) failed: fd=", fd,
+#else
         LOG_ERROR("Failed to make TCP socket nonblocking: fd=", fd,
+#endif
                   " errno=", error, " (", errorString(error), ")");
         closeSocket(fd);
         return INVALID_SOCK;
     }
+
+#ifdef WOWEE_PS4
+    LOG_DEBUG("TCP nonblocking mode enabled with SO_NBIO: fd=", fd);
+#endif
 
 #ifdef WOWEE_PS4
     // The console's libc has no DNS behind getaddrinfo; the system resolver

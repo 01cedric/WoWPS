@@ -191,6 +191,11 @@ def main():
     os.environ.setdefault('UBSAN_OPTIONS', 'halt_on_error=1')
     with tempfile.TemporaryDirectory(prefix='wowps-network-') as temporary:
         out = Path(temporary)
+        ps4_control = out / 'ps4-socket-control'
+        subprocess.run(compiler + flags + [str(ROOT / 'tools/tests/ps4_socket_control_test.cpp'),
+                       str(ROOT / 'src/core/logger.cpp'), '-Wl,--wrap=fcntl', '-Wl,--wrap=ioctl',
+                       '-Wl,--wrap=setsockopt', '-o', str(ps4_control)], check=True)
+        subprocess.run([str(ps4_control)], cwd=out, check=True, timeout=10)
         common = ['src/network/tcp_socket.cpp', 'src/network/packet.cpp', 'src/core/logger.cpp']
         transport = out / 'transport'
         subprocess.run(compiler + flags + [str(ROOT / p) for p in common] +
