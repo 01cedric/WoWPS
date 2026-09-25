@@ -31,9 +31,13 @@ so coalesced or missing event notifications do not leave completed flips queued.
 Unrecoverable surface loss ends the render loop instead of repeating long waits.
 Character creation waits for the server character list.
 
+<<<<<<< HEAD
 
 Feature status
 ---
+=======
+## Feature status
+>>>>>>> 34767b145b6c4d1f0904d0ddac947a1b1035212a
 
 **✅** Working within the stated scope. **⚠️** Partially implemented, limited or still affected by bugs. **❌** No working standalone implementation / unsupported release target.
 
