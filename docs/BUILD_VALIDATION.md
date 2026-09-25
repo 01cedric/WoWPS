@@ -1,120 +1,70 @@
-# WoWPS Update 2.11 — build and package validation
+# WoWPS Update 2.12 — validation
 
-Validated on 2026-09-25. These results describe this release's source, host tests
-and package; they do not certify a PS4 installation or a live server session.
+Validated on 2026-09-25. PS4 Release compilation/linking and PKG creation completed
+with Clang 18.1.3 and the supplied OpenOrbis SDK. These results do not certify
+on-console runtime behavior or establish an FPS target.
 
 ## Release identity
 
-| Field | Value |
-|---|---|
-| Public release / CMake project | 2.11 / 2.11.0 |
-| BUILD_VERSION / packaged APP_VER / VERSION | 02.11 |
-| TITLE / TITLE_ID | WoWPS / WOWE00001 |
-| CONTENT_ID | IV0000-WOWE00001_00-WOWEEPS4CLIENT00 |
-| Build | PS4 Release, supplied OpenOrbis SDK |
-| Host compiler / build tools | Clang 18.1.3, CMake 3.28.3, Ninja 1.11.1 |
-| Save / LAN format | Save45 / LAN109, unchanged |
+- Public version: 2.12; BUILD_VERSION, packaged APP_VER and VERSION: 02.12.
+- Title: WoWPS; title ID: WOWE00001.
+- Content ID: IV0000-WOWE00001_00-WOWEEPS4CLIENT00.
+- Save45 and LAN109 are unchanged. Existing content and shader binaries are retained.
 
-## Build and package
+## Completed checks
 
-- Fresh CMake configuration, all 778 build steps including the PS4 compile/link,
-  and PKG creation completed successfully. Existing compiler warnings remain.
-- The compiled authentication/world socket objects call `setsockopt` with
-  `SOL_SOCKET=0xffff` and `SO_NBIO=0x1200`; neither imports `fcntl` or `ioctl`.
-  This verifies the target build uses the correction, not console acceptance.
-- The OpenOrbis package validator passed all **28 hash, signature and structural
-  checks**. These are homebrew package checks, not retail signing/notarization.
-- **148 extracted runtime files**, including the executable and **95 shader
-  binaries**, match their staged inputs by SHA-256. The generated keystone is
-  accounted for separately; the icon and SFO were extracted from package entries.
-- The actual package SFO contains APP_VER and VERSION `02.11`, TITLE `WoWPS`,
-  TITLE_ID `WOWE00001` and the content ID above.
-- **30 lighting GLSL/SPIR-V manifest pairs** passed their source/binary integrity
-  checks. Unchanged shader sources were not recompiled or hardware-rendered here.
+- All 12 self-contained release suites passed, including the 25-group TCP/SRP/world
+  socket suite and 30 lighting source/binary manifest pairs.
+- Six new regression groups execute production code or its actual predicate with
+  controlled dependencies: missed/coalesced VideoOut events, exact flip serials,
+  scanout ownership and timeout; WMO instance allocation rollback; restoration of
+  server-confirmed quests without a pending Accept click; world-map allocation
+  failures and pointer ownership; pending WMO upload/finalization failures; and
+  rejection of synthetic World/Cosmic IDs during automatic continent selection.
+- Five additional existing checks passed: WMO setup retry, WMO material retry,
+  WMO upload retirement, deferred-present reset, and memory recovery.
+- Updated two older WMO test fixtures to match current production material fields,
+  draw bounds and upload-completion helper. WMO setup exercised 14 allocation
+  failures; material construction exercised 13 CPU and 6 GPU allocation failures.
+- AddressSanitizer/UndefinedBehaviorSanitizer reported no errors in checks using
+  them. LeakSanitizer is disabled because the execution environment uses ptrace;
+  the new fault-injection fixtures use explicit ownership checks, not sanitizers.
+- OpenOrbis PKG validation passed 28 hash, signature and structure checks.
+- 147 extracted runtime files match staged input bytes by SHA-256. The generated
+  keystone is separate. The package's extracted SFO independently confirms 02.12.
 
-## Host regression checks
+## Runtime changes and limits
 
-The self-contained release runner passed **11 suites**. No AddressSanitizer or
-UndefinedBehaviorSanitizer errors were detected in their output. Instrumentation
-is enabled by the individual runners; not every check is sanitizer-instrumented.
+The quest message was a reconciliation branch, not itself a server rejection.
+The fix restores quests introduced by authoritative fields and keeps duplicate
+acceptance blocked. Character creation now waits for the character list; this is
+not proof that every server's character enumeration is compatible.
 
-| Suite | Coverage | Result |
-|---|---|---|
-| Network/authentication | PS4 socket-control fixture, production TCP/SRP and world socket | PASS |
-| Lighting shader pairs | Committed GLSL/SPIR-V manifest | PASS |
-| Package staging | Repeat staging and unsafe output-directory rejection | PASS |
-| M2 cutout shader | Source and alpha-coverage guards | PASS |
-| BLP DXT5 alpha | Alpha classification | PASS |
-| Ground recovery | Solid-floor recovery rules | PASS |
-| Graveyard sites | Eligibility and site selection | PASS |
-| Local wall clock | Clock synchronization | PASS |
-| Death FrameXML | Death interface bridge | PASS |
-| Ghost presentation | Presentation routing | PASS |
-| Settings access | Category access and input | PASS |
+WMO preparation counts queued uploads as well as running workers, caps retained
+predecoded textures at 8 MiB per job, and retains work across allocation failures.
+The source fixes concrete ownership/retry bugs; the excerpts alone cannot identify
+every consumer exhausting the PS4 CPU heap. Repeated renderer allocation failures
+queue normal session logout after bounded, paced retries. Unrelated unrecoverable
+allocation failures may still terminate the application.
 
-The network suite includes 25 reported passing groups. Two new groups compile
-the production PS4 mode-switch helper and use a host socket-option adapter while
-`fcntl` and `ioctl` explicitly return `EACCES`. They verify the `SO_NBIO` option
-and integer payload, loopback connection, two-way traffic, nonblocking empty
-receive, preserved descriptor flags and propagation of option/descriptor errors.
-The adapter maps the PS4 option to a Linux socket for the test; it does not
-execute a PlayStation syscall. This closes the earlier host-test coverage gap
-without claiming the previously failing console has been retested.
+The world-map automatic redirect now rejects overview sentinels rather than
+reloading a fictional physical map named World. Texture preparation retries retain
+completed tiles; map command recording no longer allocates texture-slot storage.
 
-The network suite also covers proof framing at every split for four client
-builds; fragmented realm lists; short writes; EINTR/EAGAIN; status-query failures;
-reconnects; terminal failure responses followed by FIN; and deadline/descriptor
-guards. Eighteen synthetic authentication exchanges cover normal login, proof
-splits, padded SRP values, a zero-prefixed shared secret, saved credential hashes,
-account rejection and invalid server proofs, using both system OpenSSL and the
-bundled PS4 crypto implementation.
+VideoOut status (matching currentBuffer and flipArg) proves which submitted flips
+completed, independent of event delivery. A genuine surface failure still requires
+application exit; the client no longer repeatedly waits on that lost surface. This
+is not automatic recovery from a GPU hang or a real VideoOut failure.
 
-Two additional world-transport exchanges test immediate encrypted replies and
-fragmented headers with the background receiver both disabled and enabled. They
-exercise the production socket/cipher transition using a fixture payload, not a
-complete GameHandler login or character/world-entry session. Host tests cannot
-prove console syscall behavior; the PS4 target was separately compiled/linked.
+## Console retest
 
-Reproduce the host checks from the source root:
+1. Log into the same AzerothCore realm and verify existing/new character selection.
+2. Accept quest 7 or revisit its giver, then reopen the quest log and tracker.
+3. Visit the area that failed while spawning game objects; test nearby doors and
+   transports and remain in the area long enough to exercise memory pressure.
+4. Open and navigate the world map repeatedly, including World/continent views.
+5. Turn the camera, change zones and return to login. Send fresh wowps, boot and
+   vulkan_icd logs if an allocation failure, surface loss or prolonged stall remains.
 
-```bash
-CXX=clang++ CC=clang python3 tools/tests/run_release_checks.py build-test-results
-```
-
-See [BUILD_PS4.md](BUILD_PS4.md) for build/package commands and
-[CONNECTING.md](CONNECTING.md) for endpoint settings and console acceptance.
-
-## Source preparation
-
-- Python and shell syntax checks passed for 148 Python files and 187 shell files.
-- Public documentation's local file links resolve. Every delivered source file
-  passes the repository's Git ignore check; no delivered file exceeds 100 MiB.
-- Project/third-party licences, notices and credits are retained. All 240
-  supplied runtime files under `assets/`, `Data/` and `addons/` remain unchanged.
-- Obsolete development handovers and superseded validation notes were removed
-  from the release copy. Public documentation is updated for Update 2.11.
-  Toolchains, build products, personal state, test logs and Python caches are
-  excluded from the source ZIP. Required renderer libraries remain included.
-
-## Still requires console testing
-
-No actual PS4 installation or live AzerothCore connection was performed here.
-Verify login, realm selection, character selection, world entry, logout and
-reconnection on your console/server. Original MPQ/DBC visuals, full LAN play,
-sustained FPS, long sessions, save migration and every class/quest/encounter
-remain outside these checks. Additional data-dependent tests were not all rerun.
-
-Back up saves and configuration before installing. `02.11` upgrades the public
-`02.10` package normally, but is numerically lower
-than higher-numbered development packages; do not delete saves to work around
-an installer version conflict. The display version does not downgrade save or
-LAN protocol identifiers.
-
-## Socket API references
-
-- [WebKit PlayStation nonblocking helper](https://github.com/WebKit/WebKit/blob/main/Source/WTF/wtf/playstation/UniStdExtrasPlayStation.cpp)
-  uses the `SO_NBIO` socket option.
-- [shadPS4 network ABI definitions](https://github.com/shadps4-emu/shadPS4/blob/main/src/core/libraries/network/net.h)
-  identify `SO_NBIO=0x1200` and `SOL_SOCKET=0xffff`.
-- The supplied OpenOrbis library exports the descriptor-based `setsockopt`
-  function. This release keeps the existing kernel socket descriptor API.
+Host fixtures do not emulate the PS4 display engine, allocator or a live realm.
+No console hardware run was performed for this build.

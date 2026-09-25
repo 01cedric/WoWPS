@@ -172,7 +172,22 @@ void EntitySpawner::update() {
     stage = "NPC equipment";
     processDeferredEquipmentQueue();
     stage = "gameobject spawn";
-    processGameObjectSpawnQueue();
+    if (std::chrono::steady_clock::now() >= gameObjectMemoryRetryAt_) {
+        try {
+            processGameObjectSpawnQueue();
+        } catch (const std::bad_alloc&) {
+            gameObjectMemoryRetryAt_ = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+            // Do not allocate a per-display retry-map entry on an exhausted heap.
+            if (assetManager_) assetManager_->trimFileCache();
+            trimPredecodedSkins(0);
+            for (auto& pending : pendingWmoUploads_) pending.result.predecodedTextures.clear();
+            for (auto& pending : asyncGameObjectLoads_)
+                if (pending.retrieved) pending.prepared.predecodedTextures.clear();
+            if (renderer_ && renderer_->getVkContext())
+                renderer_->getVkContext()->finishInterruptedUploadBatch();
+            std::fprintf(stderr, "[GAMEOBJECT_MEMORY] retained spawn work; retry after cache trim\n");
+        }
+    }
     stage = "transport registration";
     processPendingTransportRegistrations();
     stage = "transport doodads";

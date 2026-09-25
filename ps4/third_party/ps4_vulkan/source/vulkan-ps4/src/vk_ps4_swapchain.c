@@ -175,43 +175,15 @@ static GnmError vk_ps4_video_out_flip_submit(
 #endif
 }
 
-/* Collect one flip event.  Returns false only on a real failure; a
- * non-blocking call that found no event returns true with *out_reaped false. */
-static bool vk_ps4_video_out_reap_flip(
-    VkPs4Swapchain *sc, bool block, bool *out_reaped
-) {
-    if (out_reaped) *out_reaped = false;
-    if (!sc || sc->pending_flip_count == 0) return true;
-#if defined(__ORBIS__)
-    OrbisKernelEvent event;
-    memset(&event, 0, sizeof(event));
-    int32_t out = 0;
-    OrbisKernelUseconds timeout = block ? VK_PS4_VIDEO_OUT_FLIP_TIMEOUT_US : 0;
-    const int32_t result = sceKernelWaitEqueue(
-        (OrbisKernelEqueue)sc->video_out.flipqueue, &event, 1, &out, &timeout
-    );
-    if (result != 0 || out != 1) {
-        if (!block) return true;   /* nothing queued yet, and none required */
-        sc->video_out.last_error_code =
-            result != 0 ? result : GNM_ERROR_INTERNAL_FAILURE;
-        return false;
-    }
-#else
-    /* Generic backend (host tests only): model the hardware conservatively.
-     * A non-blocking check finds nothing, because nothing has told us a flip
-     * completed; a blocking wait retires exactly one. That keeps the FIFO and
-     * ownership bookkeeping below on the same code path the console takes. */
-    if (!block) return true;
-#endif
-    /* The oldest submitted flip is now on screen. The buffer it replaced is
-     * the one that becomes reusable - the newly displayed one is being
-     * scanned out and must stay untouched. */
+/* Retire only flips proved complete by VideoOut status. Flip events are wakeups:
+ * the kernel may coalesce them, so one event is not necessarily one flip. */
+static void vk_ps4_retire_flip(VkPs4Swapchain *sc) {
     const uint32_t now_displayed = sc->pending_flips[0];
     for (uint32_t i = 1; i < sc->pending_flip_count; ++i) {
         sc->pending_flips[i - 1] = sc->pending_flips[i];
+        sc->pending_flip_args[i - 1] = sc->pending_flip_args[i];
     }
     --sc->pending_flip_count;
-
     if (sc->displayed_image < sc->image_count) {
         sc->image_in_flight[sc->displayed_image] = false;
         sc->image_fences[sc->displayed_image] = NULL;
@@ -222,8 +194,46 @@ static bool vk_ps4_video_out_reap_flip(
         sc->last_present_confirmed = true;
         if (sc->device) sc->device->gnm_present_in_progress = false;
     }
+}
+
+static bool vk_ps4_video_out_reap_flip(VkPs4Swapchain *sc, bool block, bool *out_reaped) {
+    if (out_reaped) *out_reaped = false;
+    if (!sc || sc->pending_flip_count == 0) return true;
+#if defined(__ORBIS__)
+    const uint64_t start = sceKernelGetProcessTime();
+    for (;;) {
+        OrbisVideoOutFlipStatus status;
+        memset(&status, 0, sizeof(status));
+        const int32_t rc = sceVideoOutGetFlipStatus(sc->video_out.handle, &status);
+        if (rc != 0) { sc->video_out.last_error_code = rc; return false; }
+        for (uint32_t i = 0; i < sc->pending_flip_count; ++i) {
+            if (status.currentBuffer == (int32_t)sc->pending_flips[i] &&
+                status.flipArg == sc->pending_flip_args[i]) {
+                const uint32_t completed = i + 1;
+                for (uint32_t n = 0; n < completed; ++n) vk_ps4_retire_flip(sc);
+                if (out_reaped) *out_reaped = true;
+                return true;
+            }
+        }
+        if (!block) return true;
+        if (sceKernelGetProcessTime() - start >= VK_PS4_VIDEO_OUT_FLIP_TIMEOUT_US) {
+            sc->video_out.last_error_code = GNM_ERROR_INTERNAL_FAILURE;
+            return false;
+        }
+        // Short event waits also cover a missed notification without adding
+        // a second three-second drain after the first wait has already failed.
+        OrbisKernelEvent event;
+        int32_t out = 0;
+        OrbisKernelUseconds slice = 1000;
+        sceKernelWaitEqueue((OrbisKernelEqueue)sc->video_out.flipqueue,
+                            &event, 1, &out, &slice);
+    }
+#else
+    if (!block) return true;
+    vk_ps4_retire_flip(sc);
     if (out_reaped) *out_reaped = true;
     return true;
+#endif
 }
 
 /* Drain every outstanding flip.  Used before teardown and by the acquire
@@ -666,22 +676,7 @@ vk_ps4_AcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t t
             acquired = idx;
             break;
         }
-        /* Image is in-flight — check if its fence has been signaled.
-         * If so, the GPU work is done and we can reclaim it early
-         * (even before QueuePresentKHR clears the in-flight flag). */
-        if (sc->image_fences[idx]) {
-            VkPs4Fence *f = (VkPs4Fence *)sc->image_fences[idx];
-            bool done = f->signaled;
-            if (!done && f->label) {
-                done = (*f->label == f->signal_value);
-            }
-            if (done) {
-                sc->image_in_flight[idx] = false;
-                sc->image_fences[idx] = NULL;
-                acquired = idx;
-                break;
-            }
-        }
+
     }
 
     /* Still nothing free, but a flip is queued: block for its event. This is
@@ -690,7 +685,9 @@ vk_ps4_AcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t t
      * where it doubles as the frame pacer. */
     if (acquired >= sc->image_count && sc->pending_flip_count > 0) {
         bool reaped = false;
-        if (vk_ps4_video_out_reap_flip(sc, true, &reaped) && reaped) {
+        if (!vk_ps4_video_out_reap_flip(sc, true, &reaped))
+            return VK_ERROR_SURFACE_LOST_KHR;
+        if (reaped) {
             for (uint32_t attempt = 0; attempt < sc->image_count; attempt++) {
                 const uint32_t idx =
                     (sc->current_image + attempt) % sc->image_count;
@@ -703,81 +700,9 @@ vk_ps4_AcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t t
     }
 
     if (acquired >= sc->image_count) {
-        /* All images are in flight.  Wait for any one to become available.
-         * Collect all in-flight fences and wait with waitAll=false so
-         * we wait up to `timeout` for ANY fence, not the full timeout
-         * per fence. */
-        VkFence wait_fences[GNM_VIDEO_OUT_MAX_BUFFERS];
-        uint32_t wait_count = 0;
-        for (uint32_t i = 0; i < sc->image_count; i++) {
-            if (sc->image_fences[i]) {
-                wait_fences[wait_count++] = sc->image_fences[i];
-            }
-        }
-        if (wait_count > 0) {
-            VkResult wr = vk_ps4_WaitForFences(
-                device, wait_count, wait_fences, VK_FALSE, timeout
-            );
-            if (wr != VK_SUCCESS) {
-                return wr;  /* VK_TIMEOUT or error */
-            }
-            /* Find which fence signaled and reclaim its image. */
-            for (uint32_t i = 0; i < sc->image_count; i++) {
-                if (sc->image_fences[i]) {
-                    VkPs4Fence *f = (VkPs4Fence *)sc->image_fences[i];
-                    bool done = f->signaled;
-                    if (!done && f->label) {
-                        done = (*f->label == f->signal_value);
-                    }
-                    if (done) {
-                        sc->image_in_flight[i] = false;
-                        sc->image_fences[i] = NULL;
-                        acquired = i;
-                        break;
-                    }
-                }
-            }
-            if (acquired >= sc->image_count) {
-                /* WaitForFences returned success but we didn't find
-                 * a signaled fence — shouldn't happen, but handle it. */
-                acquired = sc->current_image;
-            }
-        } else {
-            /* No fences to wait on (all semaphore-only sync).
-             * Wait for all GPU work to complete before reusing the
-             * image, since we have no per-image fence to wait on.
-             * This is conservative but correct — without it, the GPU
-             * may still be rendering to the buffer we're about to
-             * hand back to the caller. */
-            VkResult idle_result = vk_ps4_DeviceWaitIdle(device);
-            if (idle_result != VK_SUCCESS) {
-                vk_ps4_log("AcquireNextImageKHR: device idle FAILED rc=%d",
-                           (int)idle_result);
-                return idle_result;
-            }
-            /* B39: a GPU idle says nothing about the display engine, which
-             * owns its buffers independently. Drain the outstanding flips
-             * before declaring every image reusable. */
-            if (!vk_ps4_video_out_drain_flips(sc)) {
-                vk_ps4_log("AcquireNextImageKHR: flip drain FAILED rc=%d",
-                           sc->video_out.last_error_code);
-                return VK_ERROR_SURFACE_LOST_KHR;
-            }
-            /* Clear all in-flight flags since the GPU is now idle and the
-             * display engine has reported every queued flip. The buffer being
-             * scanned out is still owned by VideoOut, so it stays reserved. */
-            for (uint32_t i = 0; i < sc->image_count; i++) {
-                if (i == sc->displayed_image) continue;
-                sc->image_in_flight[i] = false;
-            }
-            acquired = sc->image_count;
-            for (uint32_t attempt = 0; attempt < sc->image_count; attempt++) {
-                const uint32_t idx =
-                    (sc->current_image + attempt) % sc->image_count;
-                if (!sc->image_in_flight[idx]) { acquired = idx; break; }
-            }
-            if (acquired >= sc->image_count) acquired = sc->current_image;
-        }
+        // The app must present an acquired image before acquiring all buffers.
+        // Device idle and acquire fences cannot release display ownership.
+        return timeout == 0 ? VK_NOT_READY : VK_TIMEOUT;
     }
 
     /* Mark this image as in-flight */
@@ -917,12 +842,13 @@ vk_ps4_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
 
         const uint64_t flip_submit_start = vk_ps4_present_clock();
         const uint64_t flip_wait_us = flip_submit_start - flip_wait_start;
+        const int64_t submitted_arg = (int64_t)sc->video_out.frame + 1;
         GnmError flip_result = (sc->async_flip_enabled && sc->image_count > 1)
             ? vk_ps4_video_out_flip_submit(
-                  &sc->video_out, image_index, (int64_t)sc->video_out.frame,
+                  &sc->video_out, image_index, submitted_arg,
                   GNM_VIDEO_OUT_FLIP_VSYNC)
             : vk_ps4_video_out_flip_bounded(
-                  &sc->video_out, image_index, (int64_t)sc->video_out.frame,
+                  &sc->video_out, image_index, submitted_arg,
                   GNM_VIDEO_OUT_FLIP_VSYNC);
         const uint64_t flip_submit_us = vk_ps4_present_clock() - flip_submit_start;
         if (flip_result != GNM_ERROR_OK) {
@@ -939,6 +865,7 @@ vk_ps4_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
             /* Ownership stays latched: the display engine has been told to
              * read this buffer and has not yet reported that it started. The
              * next reap is what clears it. */
+            sc->pending_flip_args[sc->pending_flip_count] = submitted_arg;
             sc->pending_flips[sc->pending_flip_count++] = image_index;
         } else {
             sc->flip_submission_uncertain = false;

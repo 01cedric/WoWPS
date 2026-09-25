@@ -2741,6 +2741,8 @@ bool Application::rebuildSessionRenderer() {
 }
 
 void Application::performLogoutToLogin() {
+    rendererUpdateOomFrames_ = 0;
+    rendererMemoryRetryAt_ = {};
     stopCharacterIntro(false);
     introAttemptedGuid_ = 0;
     introEligibilityGuid_ = 0;
@@ -4410,7 +4412,8 @@ void Application::update(float deltaTime) {
 
     // Update renderer (camera, etc.) only when in-game
     updateCheckpoint = "renderer update";
-    if (renderer && state == AppState::IN_GAME) {
+    if (renderer && state == AppState::IN_GAME && !logoutToLoginPending_ &&
+        std::chrono::steady_clock::now() >= rendererMemoryRetryAt_) {
         auto rendererUpdateStart = std::chrono::steady_clock::now();
         bool rendererUpdateSucceeded = false;
         try {
@@ -4458,17 +4461,19 @@ void Application::update(float deltaTime) {
 #else
             std::fprintf(stderr, "%s\n", failureStage);
 #endif
+            rendererMemoryRetryAt_ = std::chrono::steady_clock::now() + std::chrono::seconds(1);
             updateCheckpoint = "renderer recovery: cache trim";
             if (assetManager) assetManager->trimFileCache();
+            if (addonManager_) addonManager_->interfaceSource().releaseSourceCache();
             updateCheckpoint = "renderer recovery: upload completion";
             if (renderer->getVkContext())
                 renderer->getVkContext()->finishInterruptedUploadBatch();
             updateCheckpoint = "renderer recovery: retry limit";
             constexpr unsigned kGiveUpAfterConsecutiveOomFrames = 30;
             if (++rendererUpdateOomFrames_ >= kGiveUpAfterConsecutiveOomFrames) {
-                std::fprintf(stderr, "[RENDERER_MEMORY] giving up after %u consecutive allocation failures\n",
+                std::fprintf(stderr, "[RENDERER_MEMORY] session unload queued after %u allocation failures\n",
                              rendererUpdateOomFrames_);
-                throw;
+                logoutToLoginPending_ = true;
             }
         } catch (const std::exception& e) {
             LOG_ERROR("Exception during Application::update stage 'renderer->update': ", e.what());

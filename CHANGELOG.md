@@ -1,6 +1,35 @@
 # Changelog
 
+## 2.12 — quest and memory stability
+
+- Restore server-confirmed quests to the local log without requiring a pending local Accept command; track an already accepted quest when reconciling the quest dialog.
+- Keep asynchronous game-object results until their upload owner is secured. Bound running/prepared WMO jobs together and cap each job's decoded texture reserve at 8 MiB.
+- Defer game-object allocation failures after releasing disposable caches. Retain queued requests and partial WMO uploads; clear borrowed decode-cache pointers on every exit.
+- Roll back WMO instance/spatial-index creation on allocation failure and resume transport/doodad follow-ups without duplicating the render instance.
+- Ignore synthetic World/Cosmic IDs during automatic continent selection, preventing unnecessary world-map data reloads. Keep map slot allocations outside command recording.
+- Publish world-map texture pointers only after ownership is committed. Preserve completed tiles across allocation failures and retry after a cooldown.
+- Pace renderer memory retries, release cached interface sources, and queue a normal session logout when repeated recovery fails.
+- Reconcile asynchronous VideoOut completion from the exact flip identifier and current scanout buffer. Do not reclaim displayed images from acquire fences or device-idle alone; stop retrying an unrecoverable lost surface every frame.
+- Keep online character creation on the selection screen until the server character list is ready. This does not bypass authentication or fabricate an empty character list.
+
+Build, regression and package results are recorded in [build validation](docs/BUILD_VALIDATION.md).
+Real PS4 memory-pressure and presentation behavior still require a console retest.
+
+
+## 2.11 — PS4 connection hotfix
+
+- **PS4 TCP setup:** use the PlayStation `SO_NBIO` socket option for authentication and world connections. This replaces the `fcntl` mode switch that returned `EACCES` on a reported console and stopped login before contacting the auth server.
+- **Failure handling:** report the failing `setsockopt(SO_NBIO)` operation and its error code. Failed setup still closes the socket; connection deadlines and nonblocking send/receive remain enforced.
+- **Regression coverage:** exercise the production PS4 mode-switch helper while `fcntl` and `ioctl` are denied. Verify a loopback connection, two-way traffic, an empty nonblocking receive and propagation of socket-option failures. This host fixture does not emulate the PS4 kernel.
+- **Release:** package/client version `02.11`, GitHub-ready source and updated connection instructions. Save45, LAN109, runtime content and the 2.10 authentication/encryption fixes are retained.
+
+PS4 installation and a live AzerothCore login through world entry still require
+console testing. See [build validation](docs/BUILD_VALIDATION.md).
+
 ## 2.10 — changes since 2.00
+
+Console feedback subsequently showed the nonblocking mode switch was still
+rejected; the targeted correction is listed under 2.11 above.
 
 - **Connected realms:** use the OpenOrbis nonblocking TCP path for authentication and world connections; set the BSD address length; check connection-status errors; retry interrupted and partial sends with a deadline; discard broken streams before further encrypted traffic.
 - **Wrath authentication:** frame proof responses by the announced client build, retain fixed-width SRP keys/salts, and handle zero-prefixed shared secrets. Send world authentication and enable encryption under one lock so an immediate encrypted reply cannot race the background receiver. Fragmented packets, stored credential hashes, account rejection and server-proof verification have dedicated regression coverage with both OpenSSL and the bundled crypto implementation.

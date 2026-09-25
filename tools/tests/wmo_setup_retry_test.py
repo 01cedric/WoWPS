@@ -42,7 +42,7 @@ struct Logger {
 }
 struct VkTexture { unsigned id; };
 static VkTexture textures[4]{{0},{1},{2},{3}};
-struct Material { uint32_t texture1,texture2,texture3,blendMode,flags; };
+struct Material { uint32_t texture1,texture2,texture3,blendMode,flags,shader=0; };
 struct Model {
     std::vector<std::string> textures;
     std::vector<Material> materials;
@@ -53,7 +53,7 @@ struct ModelData {
     size_t nextTextureIndex=0;
     std::vector<VkTexture*> textures;
     std::vector<std::string> textureNames;
-    std::vector<uint32_t> materialTextureIndices,materialBlendModes,materialFlags;
+    std::vector<uint32_t> materialTextureIndices,materialBlendModes,materialFlags,materialShaders;
 };
 enum class ModelLoadResult { InProgress,Complete };
 struct FakeContext { unsigned ended=0;void endUploadBatch(){++ended;} };
@@ -72,6 +72,7 @@ struct Renderer {
     }
     ModelLoadResult run(const Model& model, float budgetMs) {
         const auto loadStepStart=std::chrono::steady_clock::now();
+        const auto finishUploads=[&]{vkCtx_->endUploadBatch();};
 '''
 suffix = r'''
         return ModelLoadResult::Complete;
@@ -115,7 +116,7 @@ int main(){
         // Already-complete setup never loads or appends again.
         assert(renderer.run(model,0)==ModelLoadResult::Complete);verify(renderer,model);
     }
-    assert(failures>=10&&partialTextureFailures>0&&postTextureFailures==3);
+    assert(failures>=10&&partialTextureFailures>0&&postTextureFailures==4);
     Renderer budgeted;
     for(unsigned completed=1;completed<4;++completed){
         assert(budgeted.run(model,0.000000001f)==ModelLoadResult::InProgress);

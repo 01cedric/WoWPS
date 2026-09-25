@@ -6,13 +6,14 @@ ROOT=Path(__file__).resolve().parents[2]
 s=(ROOT/'src/rendering/wmo_renderer.cpp').read_text();h=(ROOT/'include/rendering/wmo_renderer.hpp').read_text()
 group=h[h.index('    struct GroupResources {'):h.index('\n    /**\n     * Portal data',h.index('    struct GroupResources {'))]
 ubo=h[h.index('    struct WMOMaterialUBO {'):h.index('\n    /**',h.index('    struct WMOMaterialUBO {'))]
-phase=s[s.index('    for (size_t materialGroup = modelData.nextMaterialGroupIndex;'):s.index('\n    vkCtx_->endUploadBatch();',s.index('    for (size_t materialGroup = modelData.nextMaterialGroupIndex;'))]
+phase=s[s.index('    for (size_t materialGroup = modelData.nextMaterialGroupIndex;'):s.index('\n    finishUploads();',s.index('    for (size_t materialGroup = modelData.nextMaterialGroupIndex;'))]
 fixture=r'''
 #include "rendering/triangle_cell_index.hpp"
 #include "rendering/shadow_ranges.hpp"
 #include "rendering/wmo_material_class.hpp"
 #include "rendering/wmo_shadow_material.hpp"
 #include "rendering/wmo_lighting.hpp"
+#include "rendering/wmo_draw_bounds.hpp"
 #include "rendering/pom_quality.hpp"
 #include <glm/glm.hpp>
 #include <chrono>
@@ -26,6 +27,9 @@ fixture=r'''
 using namespace wowee::rendering;
 namespace platform = wowee::platform;
 #define LOG_WARNING(...) ((void)0)
+enum class StreamLoadStage { Materials };
+static void* activeStreamLoadTiming=nullptr;
+struct StreamLoadStageScope { StreamLoadStageScope(void*, StreamLoadStage) {} };
 static long failAfter=-1;
 void* operator new(size_t n){if(failAfter==0)throw std::bad_alloc();if(failAfter>0)--failAfter;if(auto*p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void operator delete(void*p)noexcept{std::free(p);}void operator delete(void*p,size_t)noexcept{std::free(p);}
@@ -54,7 +58,7 @@ std::unique_ptr<VkTexture>whiteTexture_=std::make_unique<VkTexture>(),flatNormal
 bool wmoOnlyMap_=false,normalMappingEnabled_=true,pomEnabled_=true;int pomQuality_=2;float normalMapStrength_=1;
 enum class ModelLoadResult{Complete,InProgress,Failed};
 VkDescriptorSet allocateMaterialSet(){if(++gpuAttempts==failGpuAt)throw std::bad_alloc();return ++sets;}
-ModelLoadResult upload(ModelData& modelData){uint32_t id=1;float budgetMs=0;auto loadStepStart=std::chrono::steady_clock::now();
+ModelLoadResult upload(ModelData& modelData){uint32_t id=1;float budgetMs=0;auto loadStepStart=std::chrono::steady_clock::now();const auto finishUploads=[&]{vkCtx_->endUploadBatch();};
 '''
 cases=r'''
 return ModelLoadResult::Complete;}

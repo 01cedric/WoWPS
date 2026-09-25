@@ -434,7 +434,8 @@ void WorldMapFacade::render(const glm::vec3& playerRenderPos,
         // instead of opening Outland merely because the terrain map is 530.
         if (!d.virtualMapOverride && playerZone >= 0) {
             const Zone& zone = d.data.zones()[playerZone];
-            if (zone.displayMapID != 0 &&
+            // World/Cosmic are overview sentinels, not physical continents.
+            if (zone.displayMapID != 0 && zone.displayMapID < UINT32_MAX - 1 &&
                 zone.displayMapID != static_cast<uint32_t>(d.data.currentMapId())) {
                 const char* virtualFolder = mapIdToFolder(zone.displayMapID);
                 if (virtualFolder && *virtualFolder) {

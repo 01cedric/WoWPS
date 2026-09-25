@@ -2,6 +2,7 @@
 // Extracted from WorldMap (Phase 7 of refactoring plan).
 // SRP - all GPU resource management separated from domain logic.
 #pragma once
+#include <chrono>
 
 #include "rendering/world_map/world_map_types.hpp"
 #include <vulkan/vulkan.h>
@@ -155,6 +156,7 @@ private:
         std::vector<OverlaySlots> overlays;
     };
     std::vector<ZoneTextureSlots> zoneTextureSlots_;
+    std::chrono::steady_clock::time_point textureRetryAt_{};
 
     void ensureTextureSlots(size_t zoneCount, const std::vector<Zone>& zones);
 };

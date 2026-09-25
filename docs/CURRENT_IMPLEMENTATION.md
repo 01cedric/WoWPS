@@ -1,8 +1,8 @@
-# Current implementation — WoWPS 2.11
+# Current implementation — WoWPS 2.12
 
 | Field | Value |
 |---|---|
-| Release / BUILD_VERSION | 2.11 / 02.11 |
+| Release / BUILD_VERSION | 2.12 / 02.12 |
 | Save writer / accepted versions | 45 / 1–45 |
 | LAN protocol | 109 |
 | Title ID | WOWE00001 |

@@ -1064,6 +1064,7 @@ struct VkPs4Swapchain {
      * arrives, the buffer it replaces is what becomes reusable, so that one
      * index is what a reaped event frees. */
     uint32_t pending_flips[GNM_VIDEO_OUT_MAX_BUFFERS];
+    int64_t pending_flip_args[GNM_VIDEO_OUT_MAX_BUFFERS];
     uint32_t pending_flip_count;
     /* Successful-present interval timings, CPU wall time in microseconds. */
     uint64_t perf_present_samples, perf_render_wait_us;

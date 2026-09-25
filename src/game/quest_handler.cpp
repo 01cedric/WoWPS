@@ -1494,6 +1494,8 @@ void QuestHandler::acceptQuest() {
         // Ensure it's in our local log even if server already has it
         addQuestToLocalLogIfMissing(questId, currentQuestDetails_.title, currentQuestDetails_.objectives);
         requestQuestQuery(questId, false);
+        applyQuestStateFromFields(owner_.lastPlayerFieldsRef());
+        owner_.setQuestTracked(questId, true);
         // Re-query NPC status from server
         if (npcGuid && owner_.getSocket()) {
             network::Packet qsPkt(wireOpcode(Opcode::CMSG_QUESTGIVER_STATUS_QUERY));
@@ -2050,8 +2052,9 @@ void QuestHandler::applyQuestStateFromFields(const FlatFieldMap& fields) {
         uint32_t questId = idIt->second;
         if (questId == 0) continue;
 
-        // Add quest to local log only if we have a pending accept for it
-        if (!hasQuestInLog(questId) && pendingQuestAcceptTimeouts_.count(questId) != 0) {
+        // Server fields also introduce quests accepted before login or by a
+        // server script. A pending local Accept click is not required.
+        if (!hasQuestInLog(questId)) {
             addQuestToLocalLogIfMissing(questId, "Quest #" + std::to_string(questId), "");
             requestQuestQuery(questId, false);
             // Re-query quest giver status for the NPC that gave us this quest

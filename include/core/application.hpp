@@ -352,6 +352,7 @@ private:
     /// the first frame that builds; a long enough run gives up rather than
     /// spinning on a client that cannot draw anything.
     unsigned rendererUpdateOomFrames_ = 0;
+    std::chrono::steady_clock::time_point rendererMemoryRetryAt_{};
     unsigned localPresentationOomFrames_ = 0;
     uint32_t localRealmPositionRevision_ = 0;
     // The seat applied by useLocalRealmObject; any movement stands up.

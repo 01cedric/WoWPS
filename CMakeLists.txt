@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(wowee VERSION 2.11.0 LANGUAGES C CXX)
+project(wowee VERSION 2.12.0 LANGUAGES C CXX)
 
 if(NOT WOWEE_PS4 OR NOT OO_PS4_TOOLCHAIN)
     message(FATAL_ERROR "Use tools/ps4/build_ps4_pkg.sh or configure with -DCMAKE_TOOLCHAIN_FILE=cmake/ps4.toolchain.cmake. See README.md.")

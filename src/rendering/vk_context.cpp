@@ -3147,6 +3147,12 @@ VkCommandBuffer VkContext::beginFrame(uint32_t& imageIndex) {
         if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
             LOG_ERROR("Failed to acquire swapchain image: ", static_cast<int>(result));
             if (result == VK_ERROR_DEVICE_LOST) deviceLost_ = true;
+            if (result == VK_ERROR_SURFACE_LOST_KHR) {
+                surfaceLost_ = true;
+#ifdef WOWEE_PS4
+                deviceLost_ = true; // VideoOut ownership is no longer provable.
+#endif
+            }
             return VK_NULL_HANDLE;
         }
 

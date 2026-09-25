@@ -1068,8 +1068,8 @@ void EntitySpawner::processDeferredEquipmentQueue() {
 
 void EntitySpawner::processAsyncGameObjectResults() {
     for (auto it = asyncGameObjectLoads_.begin(); it != asyncGameObjectLoads_.end(); ) {
-        if (!it->future.valid() ||
-            it->future.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
+        if (!it->retrieved && (!it->future.valid() ||
+            it->future.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)) {
             ++it;
             continue;
         }
@@ -1077,9 +1077,15 @@ void EntitySpawner::processAsyncGameObjectResults() {
         // A loader that threw (a corrupt model, bad_alloc on the console's
         // 4 GB budget) must cost one creature, not the whole client: get()
         // rethrows on this thread and nothing above the frame loop catches.
-        decltype(it->future.get()) result;
         try {
-            result = it->future.get();
+            if (!it->retrieved) {
+                it->prepared = it->future.get();
+                it->retrieved = true;
+            }
+        } catch (const std::bad_alloc&) {
+            it->retrieved = true;
+            it->retryLoad = true;
+            throw;
         } catch (const std::exception& e) {
             LOG_ERROR("Async model load failed: ", e.what());
             it = asyncGameObjectLoads_.erase(it);
@@ -1089,22 +1095,31 @@ void EntitySpawner::processAsyncGameObjectResults() {
             it = asyncGameObjectLoads_.erase(it);
             continue;
         }
-        it = asyncGameObjectLoads_.erase(it);
+        auto& result = it->prepared;
+        if (it->retryLoad) {
+            const auto generation = gameObjectGenerations_.find(it->guid);
+            if (generation != gameObjectGenerations_.end() && generation->second == it->generation)
+                pendingGameObjectSpawns_.push_back(it->request);
+            it = asyncGameObjectLoads_.erase(it);
+            continue;
+        }
 
         if (result.generation != gameObjectGenerations_[result.guid]) {
             LOG_DEBUG("[TRANSPORT_RETIRE] discarded superseded load guid=", result.guid);
+            it = asyncGameObjectLoads_.erase(it);
             continue;
         }
         if (!result.valid || !result.isWmo || !result.wmoModel) {
             // Fallback: spawn via sync path (likely an M2 or failed WMO)
             spawnOnlineGameObject(result.guid, result.entry, result.displayId,
                                  result.x, result.y, result.z, result.orientation, result.scale);
+            it = asyncGameObjectLoads_.erase(it);
             continue;
         }
 
         // WMO parsed on background thread - do GPU upload + instance creation on main thread
         auto* wmoRenderer = renderer_ ? renderer_->getWMORenderer() : nullptr;
-        if (!wmoRenderer) continue;
+        if (!wmoRenderer) { it = asyncGameObjectLoads_.erase(it); continue; }
 
         uint32_t modelId = 0;
         auto itCache = gameObjectDisplayIdWmoCache_.find(result.displayId);
@@ -1113,15 +1128,18 @@ void EntitySpawner::processAsyncGameObjectResults() {
             // pushing the whole model through here, which stalled the frame for
             // as long as 40ms on a transport. The spawn finishes in
             // finishWmoSpawn once every texture and group is up.
-            PendingWmoUpload pending;
+            // Allocate the destination before moving the only parsed result.
+            pendingWmoUploads_.emplace_back();
+            auto& pending = pendingWmoUploads_.back();
             pending.result = std::move(result);
             pending.modelId = nextGameObjectWmoModelId_++;
-            pendingWmoUploads_.push_back(std::move(pending));
+            it = asyncGameObjectLoads_.erase(it);
             continue;
         }
         modelId = itCache->second;
 
-    finishWmoSpawn(result, modelId);
+        finishWmoSpawn(result, modelId);
+        it = asyncGameObjectLoads_.erase(it);
     }
 }
 
@@ -1129,20 +1147,31 @@ void EntitySpawner::processAsyncGameObjectResults() {
 // is fully uploaded. Split out so both the cached path and the incremental
 // uploader end the same way.
 void EntitySpawner::finishWmoSpawn(const PreparedGameObjectWMO& result, uint32_t modelId) {
-    if (result.generation != gameObjectGenerations_[result.guid] ||
-        isGameObjectSpawned(result.guid)) return;
+    const auto generation = gameObjectGenerations_.find(result.guid);
+    if (generation == gameObjectGenerations_.end() || result.generation != generation->second) return;
     auto* wmoRenderer = renderer_ ? renderer_->getWMORenderer() : nullptr;
     if (!wmoRenderer) return;
 
-    glm::vec3 renderPos = core::coords::canonicalToRender(
-        glm::vec3(result.x, result.y, result.z));
-    uint32_t instanceId = wmoRenderer->createInstance(
-        modelId, renderPos, glm::vec3(0.0f, 0.0f, result.orientation), result.scale);
-    if (instanceId == 0) return;
-
-    gameObjectInstances_[result.guid] = {.modelId = modelId, .instanceId = instanceId, .isWmo = true};
+    auto [owner, inserted] = gameObjectInstances_.try_emplace(result.guid);
+    if (!inserted && owner->second.presentationComplete) return;
+    uint32_t instanceId = owner->second.instanceId;
+    try {
+        if (inserted) {
+            glm::vec3 renderPos = core::coords::canonicalToRender(
+                glm::vec3(result.x, result.y, result.z));
+            instanceId = wmoRenderer->createInstance(
+                modelId, renderPos, glm::vec3(0.0f, 0.0f, result.orientation), result.scale);
+        }
+    } catch (...) {
+        gameObjectInstances_.erase(owner);
+        throw;
+    }
+    if (instanceId == 0) { gameObjectInstances_.erase(owner); return; }
+    owner->second = {.modelId = modelId, .instanceId = instanceId, .isWmo = true,
+                     .presentationComplete = false};
     applyBufferedDoorPresentation(result.guid);
 
+    pendingTransportDoodadBatches_.reserve(pendingTransportDoodadBatches_.size() + 1);
     // The synchronous WMO path notifies TransportManager after creating the
     // render instance. Do the same here: unique/uncached transport WMOs (notably
     // the Kraken icebreaker) otherwise become visible but remain unregistered
@@ -1172,6 +1201,7 @@ void EntitySpawner::finishWmoSpawn(const PreparedGameObjectWMO& result, uint32_t
             pendingTransportDoodadBatches_.push_back(batch);
         }
     }
+    owner->second.presentationComplete = true;
 }
 
 // Uploads one pending model per frame under a budget, finishing its spawn when
@@ -1185,6 +1215,10 @@ void EntitySpawner::processPendingWmoUploads() {
     auto& pending = pendingWmoUploads_.front();
 
     wmoRenderer->setPredecodedBLPCache(&pending.result.predecodedTextures);
+    struct CacheBinding {
+        rendering::WMORenderer* renderer;
+        ~CacheBinding() { renderer->setPredecodedBLPCache(nullptr); }
+    } binding{wmoRenderer};
     const auto status = wmoRenderer->loadModelIncremental(
         *pending.result.wmoModel, pending.modelId, kUploadBudgetMs);
     wmoRenderer->setPredecodedBLPCache(nullptr);
@@ -1257,12 +1291,16 @@ void EntitySpawner::processGameObjectSpawnQueue() {
         bool isCached = isWmo && gameObjectDisplayIdWmoCache_.count(s.displayId);
 
         if (isWmo && !isCached && !modelPath.empty() &&
-            static_cast<int>(asyncGameObjectLoads_.size()) < kMaxAsyncLoads) {
+            static_cast<int>(asyncGameObjectLoads_.size() + pendingWmoUploads_.size()) < kMaxAsyncLoads) {
             // Launch async WMO load - file I/O + parse on background thread
             auto* am = assetManager_;
             PendingGameObjectSpawn capture = s;
             std::string capturePath = modelPath;
             AsyncGameObjectLoad load;
+            // Reserve before starting a thread, so vector growth cannot lose
+            // the future and synchronously join it on an allocation failure.
+            asyncGameObjectLoads_.reserve(kMaxAsyncLoads);
+            load.request = capture;
             load.guid = capture.guid;
             load.generation = gameObjectGenerations_[capture.guid];
             const uint64_t generation = load.generation;
@@ -1300,8 +1338,12 @@ void EntitySpawner::processGameObjectSpawnQueue() {
                         }
                     }
 
-                    // Pre-decode WMO textures on background thread
+                    std::vector<uint8_t>().swap(wmoData);
+                    size_t preparedBytes = 0;
+                    constexpr size_t kPreparedTextureBudget = 8u * 1024u * 1024u;
+                    // Bound the CPU reserve; remaining textures load incrementally.
                     for (const auto& texPath : wmo->textures) {
+                        if (preparedBytes >= kPreparedTextureBudget) break;
                         if (texPath.empty()) continue;
                         std::string texKey = texPath;
                         size_t nul = texKey.find('\0');
@@ -1320,6 +1362,8 @@ void EntitySpawner::processGameObjectSpawnQueue() {
                         if (result.predecodedTextures.find(texKey) != result.predecodedTextures.end()) continue;
                         auto blp = am->loadTexture(texKey);
                         if (blp.isValid()) {
+                            if (blp.data.size() > kPreparedTextureBudget - preparedBytes) break;
+                            preparedBytes += blp.data.size();
                             result.predecodedTextures[texKey] = std::move(blp);
                         }
                     }
@@ -1349,8 +1393,7 @@ void EntitySpawner::processGameObjectSpawnQueue() {
             spawnOnlineGameObject(s.guid, s.entry, s.displayId, s.x, s.y, s.z, s.orientation, s.scale);
         } catch (const std::bad_alloc&) {
             // Retain the request, but yield to world memory recovery before retrying.
-            gameObjectUploadRetryAt_[s.displayId] = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-            LOG_WARNING("Gameobject allocation deferred: display=", s.displayId);
+            throw; // The queue-wide handler retains this front request without allocating.
         }
         if (gameObjectUploadRetryAt_.count(s.displayId)) {
             std::rotate(pendingGameObjectSpawns_.begin(), std::next(pendingGameObjectSpawns_.begin()), pendingGameObjectSpawns_.end());

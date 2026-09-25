@@ -702,6 +702,7 @@ private:
         uint32_t modelId = 0;
         uint32_t instanceId = 0;
         bool isWmo = false;
+        bool presentationComplete = true;
     };
     // Game objects spawned before their type was known, keyed by entry. Each is
     // frozen on the conservative assumption that it is state-driven until the
@@ -741,6 +742,7 @@ private:
     };
     std::deque<PendingGameObjectSpawn> pendingGameObjectSpawns_;
     void processGameObjectSpawnQueue();
+    std::chrono::steady_clock::time_point gameObjectMemoryRetryAt_{};
 
     // --- Async WMO loading for game objects ---
     struct PreparedGameObjectWMO {
@@ -760,6 +762,10 @@ private:
         uint64_t guid = 0;
         uint64_t generation = 0;
         std::future<PreparedGameObjectWMO> future;
+        PreparedGameObjectWMO prepared;
+        PendingGameObjectSpawn request;
+        bool retrieved = false;
+        bool retryLoad = false;
     };
 
     // A parsed WMO whose GPU upload is being spread across frames. Uploading a

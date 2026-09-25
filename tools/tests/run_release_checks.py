@@ -10,6 +10,7 @@ import subprocess
 import sys
 
 SUITES = {
+    'stability_212': 'tools/tests/run_212_regressions.py',
     'network_auth': 'tools/tests/run_network_auth_tests.py',
     'lighting_shader_pairs': 'tools/ps4/verify_shaders.py',
     'package_staging': 'tools/tests/package_staging_test.py',

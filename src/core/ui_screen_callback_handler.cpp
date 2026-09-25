@@ -174,6 +174,12 @@ void UIScreenCallbackHandler::setupCallbacks() {
 
     // "New Hero" button on character screen
     uiManager_.getCharacterScreen().setOnCreateCharacter([this]() {
+        if (!Application::getInstance().localCharacterFlowActive() &&
+            gameHandler_.getState() != game::WorldState::CHAR_LIST_RECEIVED) {
+            uiManager_.getCharacterScreen().setStatus(
+                "Waiting for the server character list. Reconnect if this persists.", true);
+            return;
+        }
         uiManager_.getCharacterCreateScreen().reset();
         // Apply expansion race/class constraints before showing the screen
         if (expansionRegistry_ && expansionRegistry_->getActive()) {

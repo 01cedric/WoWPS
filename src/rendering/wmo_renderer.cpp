@@ -1340,12 +1340,20 @@ uint32_t WMORenderer::createInstance(uint32_t modelId, const glm::vec3& position
         instance.worldGroupBounds.emplace_back(gMin, gMax);
     }
 
-    instances.push_back(instance);
-    size_t idx = instances.size() - 1;
-    instanceIndexById[instance.id] = idx;
-    insertBounds(spatialGrid, instance.worldBoundsMin, instance.worldBoundsMax, instance.id);
-    core::Logger::getInstance().debug("Created WMO instance ", instance.id, " (model ", modelId, ")");
-    return instance.id;
+    const uint32_t id = instance.id;
+    const auto boundsMin = instance.worldBoundsMin;
+    const auto boundsMax = instance.worldBoundsMax;
+    instances.push_back(std::move(instance));
+    try {
+        instanceIndexById.emplace(id, instances.size() - 1);
+        insertBounds(spatialGrid, boundsMin, boundsMax, id);
+    } catch (...) {
+        eraseBounds(spatialGrid, boundsMin, boundsMax, id);
+        instanceIndexById.erase(id);
+        instances.pop_back();
+        throw;
+    }
+    return id;
 }
 
 /// Recomputes an instance's world bounds from its model matrix.
