@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="ps4/sce\_sys/icon0.png" alt="WoWPS" width="160">
+  <img src="ps4/sce_sys/icon0.png" alt="WoWPS" width="160">
 </p>
 
 <h1 align="center">WoWPS</h1>
@@ -31,13 +31,7 @@ so coalesced or missing event notifications do not leave completed flips queued.
 Unrecoverable surface loss ends the render loop instead of repeating long waits.
 Character creation waits for the server character list.
 
-<<<<<<< HEAD
-
-Feature status
----
-=======
 ## Feature status
->>>>>>> 34767b145b6c4d1f0904d0ddac947a1b1035212a
 
 **✅** Working within the stated scope. **⚠️** Partially implemented, limited or still affected by bugs. **❌** No working standalone implementation / unsupported release target.
 
@@ -101,13 +95,13 @@ The client contains login, realm/character selection, movement, combat, quest, i
 
 ## Install and upgrade
 
-1. **Back up your saves first:** `/data/wow\_ps/saves/local\_realm/`. Keep the complete directory, including identity and backup files; retain your configuration/action-bar files as well.
+1. **Back up your saves first:** `/data/wow_ps/saves/local_realm/`. Keep the complete directory, including identity and backup files; retain your configuration/action-bar files as well.
 2. Install the **WoWPS 2.12** PKG on a compatible homebrew-enabled PS4. The title remains **WoWPS**, title ID **WOWE00001**.
-3. Copy your original WotLK client `Data` directory to `/data/wow\_ps/Data/`, retaining locale subdirectories and MPQ layout. Launch WoWPS.
+3. Copy your original WotLK client `Data` directory to `/data/wow_ps/Data/`, retaining locale subdirectories and MPQ layout. Launch WoWPS.
 
 For solo play choose **Single Player**. For LAN, one console chooses **Host LAN**, the others **Join LAN**. Use **2.12** with matching content on all consoles. External realms use the connected-client/server setup.
 
-**Compatibility:** this release uses `APP\_VER=02.12`, Save45 (reads
+**Compatibility:** this release uses `APP_VER=02.12`, Save45 (reads
 Save1–45), and LAN109. All LAN peers need this release and matching content.
 These save and network identifiers are independent of the display version.
 Back up saves before upgrading; do not open migrated saves with an older build.
@@ -121,7 +115,7 @@ must also be reachable from the PS4. See [connection setup and troubleshooting](
 
 **Optional collision data:** the local line-of-sight rule supports collision data extracted from your own MPQs. No extracted collision pack is supplied. Without one, that visibility query defaults to visible and cannot prevent casting through walls. A host and its guests must use matching collision content.
 
-Runtime logs are written below `/data/wow\_ps/wowps/logs/`. Keep `boot`, `wowps` and `vulkan\_icd` logs together when reporting a fault.
+Runtime logs are written below `/data/wow_ps/wowps/logs/`. Keep `boot`, `wowps` and `vulkan\_icd` logs together when reporting a fault.
 
 ## Controller
 
@@ -158,11 +152,11 @@ Local and locally hosted day/night lighting follows PS4 Date and Time changes du
 
 ## Build
 
-See [**docs/BUILD\_PS4.md**](docs/BUILD_PS4.md). On Linux, with the OpenOrbis toolchain installed:
+See [**docs/BUILD_PS4.md**](docs/BUILD_PS4.md). On Linux, with the OpenOrbis toolchain installed:
 
 ```bash
-export OO\_PS4\_TOOLCHAIN=/path/to/OpenOrbis-PS4-Toolchain
-./tools/ps4/build\_ps4\_pkg.sh --jobs 3
+export OO_PS4_TOOLCHAIN=/path/to/OpenOrbis-PS4-Toolchain
+./tools/ps4/build_ps4_pkg.sh --jobs 3
 ```
 
 `BUILD\_VERSION` is the shared source of client/package identity. Update 2.12 contains `02.12`. The source includes the required vendored PS4 rendering components and checked shader binaries, but not original client data or the external toolchain.
